@@ -1,0 +1,4 @@
+validator-service/
+  ├─ main.py
+  ├─ requirements.txt
+  └─ Dockerfile

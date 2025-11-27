@@ -1,0 +1,11 @@
+/DATA/AppData/docker/memory_mcp_server/
+│
+├── Dockerfile
+├── docker-compose.yml
+└── memory_mcp/
+    ├── __init__.py
+    ├── server.py
+    ├── config.py
+    ├── database.py
+    ├── auto_layer.py
+    ├── tools.py

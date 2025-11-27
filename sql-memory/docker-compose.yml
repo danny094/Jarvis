@@ -1,0 +1,23 @@
+services:
+  mcp-sql-memory:
+    build:
+      context: .
+    container_name: mcp-sql-memory
+
+    environment:
+      DB_PATH: /app/data/memory.db
+
+    volumes:
+      - ./data:/app/data
+
+    ports:
+      - "8082:8081"  # außen 8082, intern 8081
+
+    networks:
+      - big-bear-lobe-chat_default
+
+    restart: unless-stopped
+
+networks:
+  big-bear-lobe-chat_default:
+    external: true

@@ -1,0 +1,16 @@
+services:
+  validator-service:
+    build:
+      context: ./validator-service
+    container_name: validator-service
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434       # funktioniert, weil beide im gleichen Network sind
+      - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
+    ports:
+      - "8200:8000"
+    networks:
+      - big-bear-lobe-chat_default
+
+networks:
+  big-bear-lobe-chat_default:
+    external: true
