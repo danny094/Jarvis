@@ -1,4 +1,7 @@
 import sqlite3
+import sys
+sys.path.insert(0, '/app')  # Damit embedding.py gefunden wird
+from vector_store import get_vector_store
 from typing import Optional, List, Dict
 
 from .config import DB_PATH
@@ -33,6 +36,18 @@ def register_tools(mcp):
 
         new_id = insert_row(conversation_id, role_norm, content, tags, layer)
 
+        # NEU: Auch als Embedding speichern für semantische Suche
+        try:
+            vs = get_vector_store()
+            vs.add(
+                conversation_id=conversation_id,
+                content=content,
+                content_type="memory",
+                metadata={"role": role_norm, "layer": layer}
+            )
+        except Exception as e:
+            print(f"[memory_save] Embedding failed: {e}")
+
         return {
             "result": f"Saved memory {new_id}",
             "structuredContent": {
@@ -55,6 +70,19 @@ def register_tools(mcp):
     ) -> Dict:
         """Speichert strukturierte Fakten."""
         new_id = insert_fact(conversation_id, subject, key, value, layer)
+
+        # NEU: Auch als Embedding speichern für semantische Suche
+        try:
+            vs = get_vector_store()
+            content = f"{subject} {key}: {value}"
+            vs.add(
+                conversation_id=conversation_id,
+                content=content,
+                content_type="fact",
+                metadata={"key": key, "value": value, "subject": subject}
+            )
+        except Exception as e:
+            print(f"[memory_fact_save] Embedding failed: {e}")
 
         return {
             "result": f"Fact saved {new_id}",
@@ -260,3 +288,59 @@ def register_tools(mcp):
     def memory_autosave_hook(conversation_id: str, message: str) -> str:
         insert_row(conversation_id, "user", message, tags="", layer="auto")
         return "OK"
+    # --------------------------------------------------
+    # memory_semantic_save (NEU)
+    # --------------------------------------------------
+    @mcp.tool
+    def memory_semantic_save(
+        conversation_id: str,
+        content: str,
+        content_type: str = "fact",
+        key: str = None,
+        value: str = None
+    ) -> Dict:
+        """Speichert einen Eintrag mit Embedding für semantische Suche."""
+        vs = get_vector_store()
+
+        metadata = {}
+        if key:
+            metadata["key"] = key
+        if value:
+            metadata["value"] = value
+
+        entry_id = vs.add(
+            conversation_id=conversation_id,
+            content=content,
+            content_type=content_type,
+            metadata=metadata
+        )
+
+        if entry_id:
+            return {"success": True, "id": entry_id}
+        else:
+            return {"success": False, "error": "Could not save"}
+
+    # --------------------------------------------------
+    # memory_semantic_search (NEU)
+    # --------------------------------------------------
+    @mcp.tool
+    def memory_semantic_search(
+        query: str,
+        conversation_id: str = None,
+        limit: int = 5,
+        min_similarity: float = 0.5
+    ) -> Dict:
+        """Semantische Suche - findet ähnliche Einträge nach Bedeutung."""
+        vs = get_vector_store()
+
+        results = vs.search(
+            query=query,
+            conversation_id=conversation_id,
+            limit=limit,
+            min_similarity=min_similarity
+        )
+
+        return {
+            "results": results,
+            "count": len(results)
+        }

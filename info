@@ -1,0 +1,8 @@
+sql-memory/                      (MCP SERVER)
+├── embedding.py                 ← NEU: Embedding Client
+├── vector_store.py              ← NEU: Vector Storage + Search
+├── main.py                      ← ÄNDERN: Neue Tools
+└── requirements.txt             ← ÄNDERN: numpy hinzufügen
+
+assistant-proxy/                 (BRIDGE)
+└── mcp/client.py                ← ÄNDERN: Neues Tool aufrufen

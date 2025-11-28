@@ -21,6 +21,7 @@ from mcp.client import (
     autosave_assistant,
     get_fact_for_query,
     search_memory_fallback,
+    semantic_search,
     call_tool,
 )
 
@@ -76,19 +77,31 @@ class CoreBridge:
             for key in memory_keys:
                 log_info(f"[CoreBridge-Memory] Suche key='{key}'")
                 
-                # Erst in Facts suchen
+                # 1. Erst in Facts suchen (exakt)
                 fact_value = get_fact_for_query(conversation_id, key)
                 if fact_value:
                     retrieved_memory += f"{key}: {fact_value}\n"
                     memory_used = True
                     log_info(f"[CoreBridge-Memory] Found fact: {key}={fact_value}")
                 else:
-                    # Fallback: Text-Memory durchsuchen
-                    fallback = search_memory_fallback(conversation_id, key)
-                    if fallback:
-                        retrieved_memory += f"{key}: {fallback}\n"
+                    # 2. Semantische Suche als Fallback
+                    log_info(f"[CoreBridge-Memory] Trying semantic search for '{key}'")
+                    semantic_results = semantic_search(conversation_id, key)
+                    
+                    if semantic_results:
+                        for res in semantic_results[:3]:  # Top 3 Matches
+                            content = res.get("content", "")
+                            sim = res.get("similarity", 0)
+                            log_info(f"[CoreBridge-Memory] Semantic match (sim={sim}): {content[:50]}")
+                            retrieved_memory += f"{content}\n"
                         memory_used = True
-                        log_info(f"[CoreBridge-Memory] Found in text: {key}")
+                    else:
+                        # 3. Text-Fallback (LIKE-Suche)
+                        fallback = search_memory_fallback(conversation_id, key)
+                        if fallback:
+                            retrieved_memory += f"{key}: {fallback}\n"
+                            memory_used = True
+                            log_info(f"[CoreBridge-Memory] Found in text: {key}")
         
         log_info(f"[CoreBridge-Memory] memory_used={memory_used}")
 
@@ -138,11 +151,20 @@ class CoreBridge:
         # ═══════════════════════════════════════════════════════════
         log_info("[CoreBridge] === LAYER 3: OUTPUT ===")
         
+        # Check: Memory war nötig aber wurde nicht gefunden?
+        needs_memory = thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query")
+        high_risk = thinking_plan.get("hallucination_risk") == "high"
+        memory_required_but_missing = needs_memory and high_risk and not memory_used
+        
+        if memory_required_but_missing:
+            log_info("[CoreBridge-Output] WARNUNG: Memory benötigt aber nicht gefunden!")
+        
         answer = await self.output.generate(
             user_text=user_text,
             verified_plan=verified_plan,
             memory_data=retrieved_memory,
-            model=request.model
+            model=request.model,
+            memory_required_but_missing=memory_required_but_missing
         )
         
         log_info(f"[CoreBridge-Output] Generated {len(answer)} chars")

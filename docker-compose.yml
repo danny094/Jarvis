@@ -26,6 +26,8 @@ services:
       - ENABLE_VALIDATION=true
       - VALIDATION_HARD_FAIL=true
       - LOG_LEVEL=INFO
+    volumes:
+      - ./config:/app/config:ro  # Persona Config (read-only)
     networks:
       - big-bear-lobe-chat_default
     restart: unless-stopped

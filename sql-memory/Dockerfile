@@ -4,9 +4,11 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
 
-RUN pip install fastmcp
+RUN pip install fastmcp requests
 
 COPY memory_mcp ./memory_mcp
+COPY embedding.py ./embedding.py
+COPY vector_store.py ./vector_store.py
 
 RUN mkdir -p /app/data
 

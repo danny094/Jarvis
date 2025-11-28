@@ -226,6 +226,35 @@ def search_memory_fallback(conversation_id: str, key: str) -> str:
         log_error(f"[Fallback] Fehler: {e}")
         return ""
 
+def semantic_search(conversation_id: str, query: str, limit: int = 5) -> list:
+    """
+    Semantische Suche im Memory.
+    Findet Einträge nach BEDEUTUNG, nicht nur Keywords.
+    """
+    args = {
+        "query": query,
+        "conversation_id": conversation_id or "global",
+        "limit": limit,
+        "min_similarity": 0.5
+    }
+    
+    log_info(f"[Semantic] Suche: '{query}' in conv='{conversation_id}'")
+    
+    resp = call_tool("memory_semantic_search", args)
+
+    if not resp:
+        return []
+    
+    result = resp.get("result", {})
+    if isinstance(result, dict):
+        if "structuredContent" in result:
+            inner = result.get("structuredContent", {})
+            return inner.get("results", [])
+        return result.get("results", [])
+    
+    return []
+
+
 
 # ------------------------------------------------------
 # MCP Proxy (unverändert)
