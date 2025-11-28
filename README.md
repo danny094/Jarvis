@@ -110,8 +110,8 @@ Ollama-Pipeline-Bridge/
 ## 🔧 Local Installation
 
 ```bash
-git clone https://github.com/danny094/Ollama-Pipeline-Bridge.git
-cd Ollama-Pipeline-Bridge
+git clone https://github.com/danny094/ai-proxybridge.git
+cd ai-proxybridge
 
 pip install -r requirements.txt
 
