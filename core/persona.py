@@ -19,6 +19,8 @@ class Persona:
         self.name = config.get("name", "Assistent")
         self.role = config.get("role", "AI Assistent")
         self.language = config.get("language", "deutsch")
+        self.user_name = config.get("user_name", "User")
+        self.user_context = config.get("user_context", [])
         self.personality = config.get("personality", [])
         self.style = config.get("style", "freundlich")
         self.core_rules = config.get("core_rules", [])
@@ -35,6 +37,13 @@ class Persona:
         prompt_parts.append(f"Du bist {self.name}, {self.role}.")
         prompt_parts.append(f"Du sprichst {self.language}.")
         prompt_parts.append(f"Dein Stil ist: {self.style}.")
+        
+        # WICHTIG: Wer ist der User?
+        prompt_parts.append(f"\n### WER IST DER USER:")
+        prompt_parts.append(f"Der User heißt {self.user_name}.")
+        if self.user_context:
+            for ctx in self.user_context:
+                prompt_parts.append(f"- {ctx}")
         
         # Persönlichkeit
         if self.personality:

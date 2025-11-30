@@ -7,12 +7,13 @@ Formuliert die finale Antwort basierend auf dem verifizierten Plan.
 - Nutzt Memory-Daten wenn vorhanden
 - Nutzt Persona-Konfiguration für Persönlichkeit
 - Generiert NUR die Antwort, denkt nicht selbst nach
+- Unterstützt STREAMING für natürlichere UX
 """
 
 import json
 import requests
-from typing import Dict, Any, Optional
-from config import OLLAMA_BASE
+from typing import Dict, Any, Optional, Generator, AsyncGenerator
+from config import OLLAMA_BASE, OUTPUT_MODEL
 from utils.logger import log_info, log_error, log_debug
 from core.persona import get_persona
 
@@ -70,29 +71,101 @@ class OutputLayer:
         
         return "\n".join(prompt_parts)
     
-    async def generate(
+    def _build_full_prompt(
         self,
         user_text: str,
         verified_plan: Dict[str, Any],
         memory_data: str = "",
-        model: str = "deepseek-r1:8b",
         memory_required_but_missing: bool = False
     ) -> str:
-        """
-        Generiert die finale Antwort basierend auf dem verifizierten Plan.
-        
-        Args:
-            memory_required_but_missing: True wenn Memory gebraucht wurde aber nichts gefunden
-        """
-        
+        """Baut den vollständigen Prompt."""
         system_prompt = self._build_system_prompt(
             verified_plan, 
             memory_data,
             memory_required_but_missing
         )
+        return f"{system_prompt}\n\n### USER:\n{user_text}\n\n### DEINE ANTWORT:"
+
+    # ═══════════════════════════════════════════════════════════
+    # STREAMING GENERATOR
+    # ═══════════════════════════════════════════════════════════
+    def generate_stream(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        memory_data: str = "",
+        model: str = None,
+        memory_required_but_missing: bool = False
+    ) -> Generator[str, None, None]:
+        """
+        Generiert die Antwort als STREAM (Token für Token).
         
-        # Vollständiger Prompt
-        full_prompt = f"{system_prompt}\n\n### USER:\n{user_text}\n\n### DEINE ANTWORT:"
+        Yields:
+            Einzelne Text-Chunks wie sie vom Model kommen
+        """
+        model = model or OUTPUT_MODEL
+        full_prompt = self._build_full_prompt(
+            user_text, verified_plan, memory_data, memory_required_but_missing
+        )
+        
+        payload = {
+            "model": model,
+            "prompt": full_prompt,
+            "stream": True,  # STREAMING!
+        }
+        
+        try:
+            log_debug(f"[OutputLayer] Streaming with {model}...")
+            
+            with requests.post(
+                f"{self.ollama_base}/api/generate",
+                json=payload,
+                stream=True,
+                timeout=120
+            ) as r:
+                r.raise_for_status()
+                
+                total_chars = 0
+                for line in r.iter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            chunk = data.get("response", "")
+                            if chunk:
+                                total_chars += len(chunk)
+                                yield chunk
+                            
+                            # Check if done
+                            if data.get("done"):
+                                break
+                        except json.JSONDecodeError:
+                            continue
+                
+                log_info(f"[OutputLayer] Streamed {total_chars} chars")
+                
+        except Exception as e:
+            log_error(f"[OutputLayer] Stream Error: {e}")
+            yield f"Entschuldigung, es gab einen Fehler: {str(e)}"
+
+    # ═══════════════════════════════════════════════════════════
+    # NON-STREAMING (für Kompatibilität)
+    # ═══════════════════════════════════════════════════════════
+    async def generate(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        memory_data: str = "",
+        model: str = None,
+        memory_required_but_missing: bool = False
+    ) -> str:
+        """
+        Generiert die finale Antwort (NON-STREAMING).
+        Für Fälle wo die komplette Antwort auf einmal gebraucht wird.
+        """
+        model = model or OUTPUT_MODEL
+        full_prompt = self._build_full_prompt(
+            user_text, verified_plan, memory_data, memory_required_but_missing
+        )
         
         payload = {
             "model": model,

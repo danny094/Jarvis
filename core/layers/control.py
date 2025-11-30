@@ -12,10 +12,8 @@ Verifiziert den Plan vom ThinkingLayer BEVOR eine Antwort generiert wird:
 import json
 import requests
 from typing import Dict, Any
-from config import OLLAMA_BASE
+from config import OLLAMA_BASE, CONTROL_MODEL
 from utils.logger import log_info, log_error, log_debug
-
-CONTROL_MODEL = "qwen3:4b"
 
 CONTROL_PROMPT = """Du bist der CONTROL-Layer eines AI-Systems.
 Deine Aufgabe: Überprüfe den Plan vom Thinking-Layer BEVOR eine Antwort generiert wird.

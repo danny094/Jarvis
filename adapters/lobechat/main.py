@@ -60,32 +60,80 @@ async def chat(request: Request):
     
     Empfängt Ollama-Format, transformiert zu CoreChatRequest,
     ruft Core-Bridge auf, transformiert Response zurück.
+    
+    Unterstützt echtes Streaming wenn stream=true!
     """
     adapter = get_adapter()
     bridge = get_bridge()
     
     try:
         raw_data = await request.json()
-        log_info(f"[LobeChat-Adapter] /api/chat → model={raw_data.get('model')}")
+        model = raw_data.get('model', '')
+        stream_requested = raw_data.get('stream', False)
+        
+        log_info(f"[LobeChat-Adapter] /api/chat → model={model}, stream={stream_requested}")
         log_debug(f"[LobeChat-Adapter] Raw request: {raw_data}")
         
         # 1. Transform Request
         core_request = adapter.transform_request(raw_data)
         
-        # 2. Process via Core-Bridge
-        core_response = await bridge.process(core_request)
+        # 2. STREAMING MODE
+        if stream_requested:
+            from datetime import datetime
+            
+            async def stream_generator():
+                """Generiert NDJSON-Chunks für LobeChat."""
+                try:
+                    async for chunk, is_done, metadata in bridge.process_stream(core_request):
+                        created_at = datetime.utcnow().isoformat() + "Z"
+                        
+                        if is_done:
+                            # Final message
+                            response_data = {
+                                "model": model,
+                                "created_at": created_at,
+                                "message": {"role": "assistant", "content": ""},
+                                "done": True,
+                                "done_reason": metadata.get("done_reason", "stop"),
+                            }
+                        else:
+                            # Chunk message
+                            response_data = {
+                                "model": model,
+                                "created_at": created_at,
+                                "message": {"role": "assistant", "content": chunk},
+                                "done": False,
+                            }
+                        
+                        yield (json.dumps(response_data) + "\n").encode("utf-8")
+                        
+                except Exception as e:
+                    log_error(f"[LobeChat-Adapter] Stream error: {e}")
+                    error_data = {
+                        "model": model,
+                        "message": {"role": "assistant", "content": f"Fehler: {str(e)}"},
+                        "done": True,
+                        "done_reason": "error",
+                    }
+                    yield (json.dumps(error_data) + "\n").encode("utf-8")
+            
+            return StreamingResponse(
+                stream_generator(),
+                media_type="application/x-ndjson"
+            )
         
-        # 3. Transform Response
-        response_data = adapter.transform_response(core_response)
-        
-        # 4. Return as NDJSON (LobeChat erwartet das)
-        def iter_response():
-            yield (json.dumps(response_data) + "\n").encode("utf-8")
-        
-        return StreamingResponse(
-            iter_response(),
-            media_type="application/x-ndjson"
-        )
+        # 3. NON-STREAMING MODE (original)
+        else:
+            core_response = await bridge.process(core_request)
+            response_data = adapter.transform_response(core_response)
+            
+            def iter_response():
+                yield (json.dumps(response_data) + "\n").encode("utf-8")
+            
+            return StreamingResponse(
+                iter_response(),
+                media_type="application/x-ndjson"
+            )
         
     except Exception as e:
         log_error(f"[LobeChat-Adapter] Error: {e}")

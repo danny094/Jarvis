@@ -9,6 +9,7 @@ RUN pip install fastmcp requests
 COPY memory_mcp ./memory_mcp
 COPY embedding.py ./embedding.py
 COPY vector_store.py ./vector_store.py
+COPY graph ./graph
 
 RUN mkdir -p /app/data
 

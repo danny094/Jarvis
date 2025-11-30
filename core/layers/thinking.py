@@ -13,10 +13,8 @@ Analysiert die User-Anfrage und erstellt einen Plan:
 import json
 import requests
 from typing import Dict, Any, Optional
-from config import OLLAMA_BASE
+from config import OLLAMA_BASE, THINKING_MODEL
 from utils.logger import log_info, log_error, log_debug
-
-THINKING_MODEL = "deepseek-r1:8b"
 
 THINKING_PROMPT = """Du bist der THINKING-Layer eines AI-Systems.
 Deine Aufgabe: Analysiere die User-Anfrage und erstelle einen Plan.

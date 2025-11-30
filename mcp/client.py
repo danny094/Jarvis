@@ -254,6 +254,33 @@ def semantic_search(conversation_id: str, query: str, limit: int = 5) -> list:
     
     return []
 
+def graph_search(conversation_id: str, query: str, depth: int = 2, limit: int = 10) -> list:
+    """
+    Graph-basierte Such.
+    Findet verbundene Infirmationen über Graph-walk
+    """
+    args = {
+        "query": query,
+        "conversation_id": conversation_id or "global",
+        "depth": depth,
+        "limit": limit
+    }
+
+    log_info(f"[Graph] Suche: '{query}' in conv='{conversation_id}'")
+    
+    resp = call_tool("memory_graph_search", args)
+
+    if not resp:
+        return []
+
+    result = resp.get("result", {})
+    if isinstance(result, dict):
+        if "structuredContent" in result:
+            inner = result.get("structuredContent", {})
+            return inner.get("results", [])
+        return result.get("results",)
+
+    return []
 
 
 # ------------------------------------------------------

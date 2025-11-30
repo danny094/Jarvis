@@ -3,6 +3,7 @@
 Embedding Client - Holt Embeddings von Ollama.
 """
 
+import os
 import requests
 from typing import List, Optional
 import logging
@@ -10,8 +11,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Ollama URL (im Docker Network)
-OLLAMA_URL = "http://ollama:11434"
-EMBEDDING_MODEL = "hellord/mxbai-embed-large-v1:f16"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "hellord/mxbai-embed-large-v1:f16")
 
 
 def get_embedding(text: str) -> Optional[List[float]]:

@@ -20,9 +20,22 @@ services:
     ports:
       - "8100:8100"
     environment:
+      # Service URLs
       - OLLAMA_BASE=http://ollama:11434
       - MCP_BASE=http://mcp-sql-memory:8081/mcp
       - VALIDATOR_URL=http://validator-service:8000
+      
+      # Model Konfiguration (änderbar!)
+      - THINKING_MODEL=deepseek-r1:8b
+      - CONTROL_MODEL=qwen3:4b
+      - OUTPUT_MODEL=llama3.1:8b
+      - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
+      
+      # Layer Toggles (Speed-Optimierung!)
+      - ENABLE_CONTROL_LAYER=true
+      - SKIP_CONTROL_ON_LOW_RISK=true   # ← SPEED BOOST!
+      
+      # Validation
       - ENABLE_VALIDATION=true
       - VALIDATION_HARD_FAIL=true
       - LOG_LEVEL=INFO
@@ -63,6 +76,8 @@ services:
     container_name: mcp-sql-memory
     environment:
       - DB_PATH=/app/data/memory.db
+      - OLLAMA_URL=http://ollama:11434
+      - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
     volumes:
       - ../sql-memory/data:/app/data
     ports:
