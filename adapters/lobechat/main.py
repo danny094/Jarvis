@@ -27,14 +27,15 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from adapters.lobechat.adapter import get_adapter
 from core.bridge import get_bridge
+from mcp.endpoint import router as mcp_router
 from utils.logger import log_info, log_error, log_debug
 
 
 # FastAPI App
 app = FastAPI(
-    title="LobeChat Adapter",
-    description="Ollama-kompatible API für LobeChat → Core-Bridge",
-    version="1.0.0"
+    title="LobeChat Adapter + MCP Hub",
+    description="Ollama-kompatible API für LobeChat → Core-Bridge + MCP Hub",
+    version="1.1.0"
 )
 
 # CORS (LobeChat braucht das)
@@ -45,6 +46,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# MCP Hub Endpoint einbinden
+app.include_router(mcp_router)
 
 
 @app.get("/health")
@@ -220,15 +224,30 @@ async def tags():
 @app.get("/")
 async def root():
     """Root-Endpoint für Debugging."""
+    from mcp.hub import get_hub
+    hub = get_hub()
+    
     return {
-        "service": "LobeChat Adapter",
+        "service": "LobeChat Adapter + MCP Hub",
         "status": "running",
-        "endpoints": [
-            "/api/chat",
-            "/api/generate", 
-            "/api/tags",
-            "/health",
-        ]
+        "endpoints": {
+            "ollama": [
+                "/api/chat",
+                "/api/generate", 
+                "/api/tags",
+            ],
+            "mcp": [
+                "/mcp",           # Hauptendpoint für WebUIs
+                "/mcp/status",    # Status aller MCPs
+                "/mcp/tools",     # Tool-Liste
+                "/mcp/refresh",   # Tools neu laden
+            ],
+            "health": "/health",
+        },
+        "mcp_hub": {
+            "mcps": len(hub.list_mcps()),
+            "tools": len(hub.list_tools()),
+        }
     }
 
 

@@ -1,0 +1,13 @@
+services:
+  mcp-sequential:
+    build: ./mcp-sequential
+    container_name: mcp-sequential
+    restart: unless-stopped
+    ports:
+      - "8085:8085"
+    networks:
+      - big-bear-lobe-chat_default
+
+networks:
+  big-bear-lobe-chat_default:
+    external: true

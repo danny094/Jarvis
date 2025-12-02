@@ -69,6 +69,30 @@ def _call_mcp_raw(payload: Dict[str, Any], timeout: int = 5) -> Optional[Dict[st
 # Wrapper für alle Tools
 # ------------------------------------------------------
 def call_tool(name: str, arguments: Dict[str, Any], timeout: int = 5) -> Optional[Dict[str, Any]]:
+    """
+    Ruft ein MCP-Tool auf.
+    
+    Versucht zuerst den Hub (für alle registrierten MCPs),
+    fällt zurück auf direkten MCP-Call wenn Hub nicht verfügbar.
+    """
+    # Versuche Hub (aggregiert alle MCPs)
+    try:
+        from mcp.hub import get_hub
+        hub = get_hub()
+        result = hub.call_tool(name, arguments)
+        
+        # Wrap result in standard format
+        if result and not isinstance(result, dict):
+            result = {"result": result}
+        elif result and "error" not in result:
+            result = {"result": result}
+            
+        return result
+        
+    except Exception as e:
+        log_debug(f"[MCP] Hub not available, falling back to direct call: {e}")
+    
+    # Fallback: Direkter MCP-Call (alte Methode)
     payload = {
         "jsonrpc": "2.0",
         "id": f"call-{name}",

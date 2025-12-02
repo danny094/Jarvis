@@ -4,13 +4,13 @@ Core-Bridge: Orchestriert die drei Layer.
 
 Pipeline:
 1. ThinkingLayer (DeepSeek) → Analysiert und plant
-2. Memory Retrieval → Holt relevante Fakten
+2. Memory Retrieval → Holt relevante Fakten (inkl. System-Wissen!)
 3. ControlLayer (Qwen) → Verifiziert den Plan
 4. OutputLayer (beliebig) → Formuliert die Antwort
 5. Memory Save → Speichert neue Fakten
 """
 
-from typing import Optional, Dict, Any, Generator, Tuple, AsyncGenerator
+from typing import Optional, Dict, Any, Generator, Tuple, AsyncGenerator, List
 
 from .models import CoreChatRequest, CoreChatResponse
 from .layers import ThinkingLayer, ControlLayer, OutputLayer
@@ -26,6 +26,9 @@ from mcp.client import (
     call_tool,
 )
 
+# System conversation_id für Tool-Wissen
+SYSTEM_CONV_ID = "system"
+
 
 class CoreBridge:
     """
@@ -37,6 +40,97 @@ class CoreBridge:
         self.control = ControlLayer()
         self.output = OutputLayer()
         self.ollama_base = OLLAMA_BASE
+    
+    # ═══════════════════════════════════════════════════════════════
+    # MEMORY HELPERS: Sucht in User UND System Kontext
+    # ═══════════════════════════════════════════════════════════════
+    
+    def _search_memory_multi_context(
+        self, 
+        key: str, 
+        conversation_id: str,
+        include_system: bool = True
+    ) -> Tuple[str, bool]:
+        """
+        Sucht Memory in mehreren Kontexten:
+        1. User's conversation_id
+        2. System-Wissen (Tool-Infos, Anleitungen)
+        
+        Returns:
+            Tuple[str, bool]: (gefundener Content, wurde etwas gefunden)
+        """
+        found_content = ""
+        found = False
+        
+        # Kontexte die durchsucht werden
+        contexts = [conversation_id]
+        if include_system and conversation_id != SYSTEM_CONV_ID:
+            contexts.append(SYSTEM_CONV_ID)
+        
+        for ctx in contexts:
+            ctx_label = "system" if ctx == SYSTEM_CONV_ID else "user"
+            
+            # 1. Facts suchen
+            fact_value = get_fact_for_query(ctx, key)
+            if fact_value:
+                found_content += f"{key}: {fact_value}\n"
+                found = True
+                log_info(f"[CoreBridge-Memory] Found fact ({ctx_label}): {key}={fact_value[:50]}...")
+                continue  # Nächster Kontext
+            
+            # 2. Graph search
+            graph_results = graph_search(ctx, key)
+            if graph_results:
+                for res in graph_results[:3]:
+                    content = res.get("content", "")
+                    log_info(f"[CoreBridge-Memory] Graph match ({ctx_label}): {content[:50]}")
+                    found_content += f"{content}\n"
+                found = True
+                continue
+            
+            # 3. Semantic search (nur für User-Kontext, System ist meist Fakten)
+            if ctx != SYSTEM_CONV_ID:
+                semantic_results = semantic_search(ctx, key)
+                if semantic_results:
+                    for res in semantic_results[:3]:
+                        content = res.get("content", "")
+                        found_content += f"{content}\n"
+                    found = True
+                    continue
+            
+            # 4. Text-Fallback (nur User)
+            if ctx != SYSTEM_CONV_ID:
+                fallback = search_memory_fallback(ctx, key)
+                if fallback:
+                    found_content += f"{key}: {fallback}\n"
+                    found = True
+        
+        return found_content, found
+    
+    def _search_system_tools(self, query: str) -> str:
+        """
+        Sucht speziell nach Tool-Wissen im System-Kontext.
+        
+        Nützlich wenn die Anfrage nach Tools/Funktionen fragt.
+        """
+        # Suche nach allgemeinen Tool-Infos
+        tool_keywords = ["tool", "function", "mcp", "think", "sequential", "hilfe", "können"]
+        
+        query_lower = query.lower()
+        if any(kw in query_lower for kw in tool_keywords):
+            log_info(f"[CoreBridge-Memory] Searching system tools for: {query}")
+            
+            # Lade Tool-Übersicht
+            tools_info = get_fact_for_query(SYSTEM_CONV_ID, "available_mcp_tools")
+            if tools_info:
+                return f"Verfügbare Tools: {tools_info}\n"
+            
+            # Fallback: Graph-Suche im System
+            graph_results = graph_search(SYSTEM_CONV_ID, query)
+            if graph_results:
+                return "\n".join([r.get("content", "") for r in graph_results[:2]])
+        
+        return ""
     
     async def process(self, request: CoreChatRequest) -> CoreChatResponse:
         """
@@ -72,48 +166,29 @@ class CoreBridge:
         retrieved_memory = ""
         memory_used = False
         
+        # Erst: System-Tools checken wenn relevant
+        system_tools = self._search_system_tools(user_text)
+        if system_tools:
+            retrieved_memory += system_tools
+            memory_used = True
+            log_info(f"[CoreBridge-Memory] Found system tool info")
+        
         if thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query"):
             memory_keys = thinking_plan.get("memory_keys", [])
 
             for key in memory_keys:
-                log_info(f"[CoreBridge-Memory] Suche key='{key}'") 
-
-                # 1. Erst in Facts suchen 
-                fact_value = get_fact_for_query(conversation_id, key)
-                if fact_value:
-                    retrieved_memory += f"{key}: {fact_value}\n"
+                log_info(f"[CoreBridge-Memory] Suche key='{key}'")
+                
+                # Multi-Context Suche (User + System)
+                content, found = self._search_memory_multi_context(
+                    key, 
+                    conversation_id,
+                    include_system=True
+                )
+                
+                if found:
+                    retrieved_memory += content
                     memory_used = True
-                    log_info(f"[CoreBridge-Memory] Found fact: {key}={fact_value}")
-                else:
-                    # Graph search
-                    log_info(f"[CoreBridge-Memory] Trying graph search for '{key}'")
-                    graph_results = graph_search(conversation_id, key)
-
-                    if graph_results:
-                        for res in graph_results[:3]:
-                            content = res.get("content", "")
-                            log_info(f"[CoreBridge-Memory] Graph match: {content[:50]}")
-                            retrieved_memory += f"{content}\n"
-                        memory_used = True
-                    else:
-                        # 3. Sematic search Fallback
-                        log_info(f"[CoreBridge-Memory] Trying semantic search for '{key}'")
-                        semantic_results = semantic_search(conversation_id, key)
-
-                        if semantic_results:
-                            for res in semantic_results[:3]:
-                                content = res.get("content", "")
-                                sim = res.get("similarity", 0)
-                                log_info(f"[CoreBridge-Memory] Semantic match (sim={sim}): {content[:50]}")
-                                retrieved_memory += f"{content}\n"
-                            memory_used = True
-                        else:
-                            # 4. Text-Fallback
-                            fallback = search_memory_fallback(conversation_id, key)
-                            if fallback:
-                                retrieved_memory += f"{key}: {fallback}\n"
-                                memory_used = True
-                                log_info(f"[CoreBridge-Memory] Found in text: {key}")
 
                         
 
@@ -290,41 +365,29 @@ class CoreBridge:
         retrieved_memory = ""
         memory_used = False
         
+        # Erst: System-Tools checken wenn relevant
+        system_tools = self._search_system_tools(user_text)
+        if system_tools:
+            retrieved_memory += system_tools
+            memory_used = True
+            log_info(f"[CoreBridge-Memory] Found system tool info")
+        
         if thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query"):
             memory_keys = thinking_plan.get("memory_keys", [])
 
             for key in memory_keys:
-                log_info(f"[CoreBridge-Memory] Suche key='{key}'") 
-
-                fact_value = get_fact_for_query(conversation_id, key)
-                if fact_value:
-                    retrieved_memory += f"{key}: {fact_value}\n"
+                log_info(f"[CoreBridge-Memory] Suche key='{key}'")
+                
+                # Multi-Context Suche (User + System)
+                content, found = self._search_memory_multi_context(
+                    key, 
+                    conversation_id,
+                    include_system=True
+                )
+                
+                if found:
+                    retrieved_memory += content
                     memory_used = True
-                    log_info(f"[CoreBridge-Memory] Found fact: {key}={fact_value}")
-                else:
-                    log_info(f"[CoreBridge-Memory] Trying graph search for '{key}'")
-                    graph_results = graph_search(conversation_id, key)
-
-                    if graph_results:
-                        for res in graph_results[:3]:
-                            content = res.get("content", "")
-                            log_info(f"[CoreBridge-Memory] Graph match: {content[:50]}")
-                            retrieved_memory += f"{content}\n"
-                        memory_used = True
-                    else:
-                        log_info(f"[CoreBridge-Memory] Trying semantic search for '{key}'")
-                        semantic_results = semantic_search(conversation_id, key)
-
-                        if semantic_results:
-                            for res in semantic_results[:3]:
-                                content = res.get("content", "")
-                                retrieved_memory += f"{content}\n"
-                            memory_used = True
-                        else:
-                            fallback = search_memory_fallback(conversation_id, key)
-                            if fallback:
-                                retrieved_memory += f"{key}: {fallback}\n"
-                                memory_used = True
 
         # ═══════════════════════════════════════════════════════════
         # LAYER 2: CONTROL - Non-Streaming (optional skip)
