@@ -433,7 +433,7 @@ class CoreBridge:
         full_answer = ""
         
         # Streame die Antwort
-        for chunk in self.output.generate_stream(
+        async for chunk in self.output.generate_stream(
             user_text=user_text,
             verified_plan=verified_plan,
             memory_data=retrieved_memory,

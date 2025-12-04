@@ -11,7 +11,7 @@ Formuliert die finale Antwort basierend auf dem verifizierten Plan.
 """
 
 import json
-import requests
+import httpx
 from typing import Dict, Any, Optional, Generator, AsyncGenerator
 from config import OLLAMA_BASE, OUTPUT_MODEL
 from utils.logger import log_info, log_error, log_debug
@@ -87,18 +87,20 @@ class OutputLayer:
         return f"{system_prompt}\n\n### USER:\n{user_text}\n\n### DEINE ANTWORT:"
 
     # ═══════════════════════════════════════════════════════════
-    # STREAMING GENERATOR
+    # ASYNC STREAMING GENERATOR
     # ═══════════════════════════════════════════════════════════
-    def generate_stream(
+    async def generate_stream(
         self,
         user_text: str,
         verified_plan: Dict[str, Any],
         memory_data: str = "",
         model: str = None,
         memory_required_but_missing: bool = False
-    ) -> Generator[str, None, None]:
+    ) -> AsyncGenerator[str, None]:
         """
-        Generiert die Antwort als STREAM (Token für Token).
+        Generiert die Antwort als ASYNC STREAM (Token für Token).
+        
+        Nutzt httpx.AsyncClient für non-blocking streaming.
         
         Yields:
             Einzelne Text-Chunks wie sie vom Model kommen
@@ -115,40 +117,115 @@ class OutputLayer:
         }
         
         try:
-            log_debug(f"[OutputLayer] Streaming with {model}...")
+            log_debug(f"[OutputLayer] Async streaming with {model}...")
             
-            with requests.post(
-                f"{self.ollama_base}/api/generate",
-                json=payload,
-                stream=True,
-                timeout=120
-            ) as r:
-                r.raise_for_status()
+            total_chars = 0
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.ollama_base}/api/generate",
+                    json=payload
+                ) as response:
+                    response.raise_for_status()
+                    
+                    async for line in response.aiter_lines():
+                        if line:
+                            try:
+                                data = json.loads(line)
+                                chunk = data.get("response", "")
+                                if chunk:
+                                    total_chars += len(chunk)
+                                    yield chunk
+                                
+                                # Check if done
+                                if data.get("done"):
+                                    break
+                            except json.JSONDecodeError:
+                                continue
+            
+            log_info(f"[OutputLayer] Streamed {total_chars} chars")
                 
-                total_chars = 0
-                for line in r.iter_lines():
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            chunk = data.get("response", "")
-                            if chunk:
-                                total_chars += len(chunk)
-                                yield chunk
-                            
-                            # Check if done
-                            if data.get("done"):
-                                break
-                        except json.JSONDecodeError:
-                            continue
-                
-                log_info(f"[OutputLayer] Streamed {total_chars} chars")
-                
+        except httpx.TimeoutException:
+            log_error(f"[OutputLayer] Stream Timeout nach 120s")
+            yield "Entschuldigung, die Anfrage hat zu lange gedauert."
+        except httpx.HTTPStatusError as e:
+            log_error(f"[OutputLayer] Stream HTTP Error: {e.response.status_code}")
+            yield f"Entschuldigung, Server-Fehler: {e.response.status_code}"
+        except httpx.ConnectError as e:
+            log_error(f"[OutputLayer] Stream Connection Error: {e}")
+            yield "Entschuldigung, konnte keine Verbindung zum Model herstellen."
         except Exception as e:
-            log_error(f"[OutputLayer] Stream Error: {e}")
+            log_error(f"[OutputLayer] Stream Error: {type(e).__name__}: {e}")
             yield f"Entschuldigung, es gab einen Fehler: {str(e)}"
 
     # ═══════════════════════════════════════════════════════════
-    # NON-STREAMING (für Kompatibilität)
+    # SYNC STREAMING (für SSE-Kompatibilität)
+    # ═══════════════════════════════════════════════════════════
+    def generate_stream_sync(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        memory_data: str = "",
+        model: str = None,
+        memory_required_but_missing: bool = False
+    ) -> Generator[str, None, None]:
+        """
+        Synchroner Stream Generator für SSE-Endpoints.
+        
+        HINWEIS: Blockiert den Event-Loop! Nur in ThreadPool verwenden
+        oder wenn SSE sync Generator erwartet.
+        """
+        model = model or OUTPUT_MODEL
+        full_prompt = self._build_full_prompt(
+            user_text, verified_plan, memory_data, memory_required_but_missing
+        )
+        
+        payload = {
+            "model": model,
+            "prompt": full_prompt,
+            "stream": True,
+        }
+        
+        try:
+            log_debug(f"[OutputLayer] Sync streaming with {model}...")
+            
+            total_chars = 0
+            with httpx.Client(timeout=120.0) as client:
+                with client.stream(
+                    "POST",
+                    f"{self.ollama_base}/api/generate",
+                    json=payload
+                ) as response:
+                    response.raise_for_status()
+                    
+                    for line in response.iter_lines():
+                        if line:
+                            try:
+                                data = json.loads(line)
+                                chunk = data.get("response", "")
+                                if chunk:
+                                    total_chars += len(chunk)
+                                    yield chunk
+                                
+                                if data.get("done"):
+                                    break
+                            except json.JSONDecodeError:
+                                continue
+            
+            log_info(f"[OutputLayer] Sync streamed {total_chars} chars")
+                
+        except httpx.TimeoutException:
+            log_error(f"[OutputLayer] Sync Stream Timeout")
+            yield "Entschuldigung, die Anfrage hat zu lange gedauert."
+        except httpx.HTTPStatusError as e:
+            log_error(f"[OutputLayer] Sync Stream HTTP Error: {e.response.status_code}")
+            yield f"Entschuldigung, Server-Fehler: {e.response.status_code}"
+        except Exception as e:
+            log_error(f"[OutputLayer] Sync Stream Error: {type(e).__name__}: {e}")
+            yield f"Entschuldigung, es gab einen Fehler: {str(e)}"
+
+    # ═══════════════════════════════════════════════════════════
+    # NON-STREAMING ASYNC
     # ═══════════════════════════════════════════════════════════
     async def generate(
         self,
@@ -159,8 +236,9 @@ class OutputLayer:
         memory_required_but_missing: bool = False
     ) -> str:
         """
-        Generiert die finale Antwort (NON-STREAMING).
-        Für Fälle wo die komplette Antwort auf einmal gebraucht wird.
+        Generiert die finale Antwort (NON-STREAMING, ASYNC).
+        
+        Nutzt httpx.AsyncClient für non-blocking HTTP.
         """
         model = model or OUTPUT_MODEL
         full_prompt = self._build_full_prompt(
@@ -176,12 +254,12 @@ class OutputLayer:
         try:
             log_debug(f"[OutputLayer] Generating with {model}...")
             
-            r = requests.post(
-                f"{self.ollama_base}/api/generate",
-                json=payload,
-                timeout=120
-            )
-            r.raise_for_status()
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(
+                    f"{self.ollama_base}/api/generate",
+                    json=payload
+                )
+                r.raise_for_status()
             
             data = r.json()
             response = data.get("response", "").strip()
@@ -194,6 +272,15 @@ class OutputLayer:
             log_info(f"[OutputLayer] Generated {len(response)} chars")
             return response
             
+        except httpx.TimeoutException:
+            log_error(f"[OutputLayer] Timeout nach 120s")
+            return "Entschuldigung, die Anfrage hat zu lange gedauert."
+        except httpx.HTTPStatusError as e:
+            log_error(f"[OutputLayer] HTTP Error: {e.response.status_code}")
+            return f"Entschuldigung, Server-Fehler: {e.response.status_code}"
+        except httpx.ConnectError as e:
+            log_error(f"[OutputLayer] Connection Error: {e}")
+            return "Entschuldigung, konnte keine Verbindung zum Model herstellen."
         except Exception as e:
-            log_error(f"[OutputLayer] Error: {e}")
+            log_error(f"[OutputLayer] Error: {type(e).__name__}: {e}")
             return f"Entschuldigung, es gab einen Fehler: {str(e)}"

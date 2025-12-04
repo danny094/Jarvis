@@ -1,5 +1,13 @@
-fastapi
-uvicorn[standard]
-requests
-httpx
-pyyaml
+# === Web Framework ===
+fastapi>=0.109.0,<1.0.0
+uvicorn[standard]>=0.27.0,<1.0.0
+
+# === HTTP Clients ===
+requests>=2.31.0,<3.0.0
+httpx>=0.26.0,<1.0.0        # Für async HTTP
+
+# === Utils ===
+pyyaml>=6.0,<7.0
+
+# === Typing (optional aber nützlich) ===
+pydantic>=2.0.0,<3.0.0

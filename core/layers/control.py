@@ -10,10 +10,11 @@ Verifiziert den Plan vom ThinkingLayer BEVOR eine Antwort generiert wird:
 """
 
 import json
-import requests
+import httpx
 from typing import Dict, Any
 from config import OLLAMA_BASE, CONTROL_MODEL
 from utils.logger import log_info, log_error, log_debug
+from utils.json_parser import safe_parse_json
 
 CONTROL_PROMPT = """Du bist der CONTROL-Layer eines AI-Systems.
 Deine Aufgabe: Überprüfe den Plan vom Thinking-Layer BEVOR eine Antwort generiert wird.
@@ -93,6 +94,8 @@ class ControlLayer:
     ) -> Dict[str, Any]:
         """
         Verifiziert den Plan vom ThinkingLayer.
+        
+        Nutzt httpx.AsyncClient für non-blocking HTTP.
         """
         prompt = f"""{CONTROL_PROMPT}
 
@@ -117,16 +120,18 @@ Deine Bewertung (nur JSON):"""
         try:
             log_debug(f"[ControlLayer] Verifying plan...")
             
-            r = requests.post(
-                f"{self.ollama_base}/api/generate",
-                json=payload,
-                timeout=30
-            )
-            r.raise_for_status()
+            # Async HTTP Request (non-blocking)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(
+                    f"{self.ollama_base}/api/generate",
+                    json=payload
+                )
+                r.raise_for_status()
             
             data = r.json()
             content = data.get("response", "").strip()
             
+            # Qwen manchmal "thinking" statt "response"
             if not content and data.get("thinking"):
                 content = data.get("thinking", "").strip()
             
@@ -134,22 +139,27 @@ Deine Bewertung (nur JSON):"""
                 log_error(f"[ControlLayer] Leere Antwort")
                 return self._default_verification(thinking_plan)
             
-            try:
-                if "{" in content:
-                    start = content.index("{")
-                    end = content.rindex("}") + 1
-                    content = content[start:end]
+            # Robustes JSON-Parsing
+            result = safe_parse_json(
+                content,
+                default=self._default_verification(thinking_plan),
+                context="ControlLayer"
+            )
+            
+            log_info(f"[ControlLayer] approved={result.get('approved')}, warnings={result.get('warnings', [])}")
+            return result
                 
-                result = json.loads(content)
-                log_info(f"[ControlLayer] approved={result.get('approved')}, warnings={result.get('warnings', [])}")
-                return result
-                
-            except json.JSONDecodeError as e:
-                log_error(f"[ControlLayer] JSON Parse Error: {e}")
-                return self._default_verification(thinking_plan)
-                
+        except httpx.TimeoutException:
+            log_error(f"[ControlLayer] Timeout nach 30s")
+            return self._default_verification(thinking_plan)
+        except httpx.HTTPStatusError as e:
+            log_error(f"[ControlLayer] HTTP Error: {e.response.status_code}")
+            return self._default_verification(thinking_plan)
+        except httpx.ConnectError as e:
+            log_error(f"[ControlLayer] Connection Error: {e}")
+            return self._default_verification(thinking_plan)
         except Exception as e:
-            log_error(f"[ControlLayer] Error: {e}")
+            log_error(f"[ControlLayer] Unexpected Error: {type(e).__name__}: {e}")
             return self._default_verification(thinking_plan)
     
     def _default_verification(self, thinking_plan: Dict[str, Any]) -> Dict[str, Any]:

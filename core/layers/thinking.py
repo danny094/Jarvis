@@ -10,11 +10,11 @@ Analysiert die User-Anfrage und erstellt einen Plan:
 - Halluzinations-Risiko?
 """
 
-import json
-import requests
-from typing import Dict, Any, Optional
+import httpx
+from typing import Dict, Any
 from config import OLLAMA_BASE, THINKING_MODEL
 from utils.logger import log_info, log_error, log_debug
+from utils.json_parser import safe_parse_json
 
 THINKING_PROMPT = """Du bist der THINKING-Layer eines AI-Systems.
 Deine Aufgabe: Analysiere die User-Anfrage und erstelle einen Plan.
@@ -101,6 +101,8 @@ class ThinkingLayer:
     async def analyze(self, user_text: str, memory_context: str = "") -> Dict[str, Any]:
         """
         Analysiert die User-Anfrage und erstellt einen Plan.
+        
+        Nutzt httpx.AsyncClient für non-blocking HTTP.
         """
         prompt = f"{THINKING_PROMPT}\n\n"
         
@@ -119,12 +121,13 @@ class ThinkingLayer:
         try:
             log_debug(f"[ThinkingLayer] Analyzing: {user_text[:50]}...")
             
-            r = requests.post(
-                f"{self.ollama_base}/api/generate",
-                json=payload,
-                timeout=60
-            )
-            r.raise_for_status()
+            # Async HTTP Request
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(
+                    f"{self.ollama_base}/api/generate",
+                    json=payload
+                )
+                r.raise_for_status()
             
             data = r.json()
             content = data.get("response", "").strip()
@@ -137,22 +140,22 @@ class ThinkingLayer:
                 log_error(f"[ThinkingLayer] Leere Antwort")
                 return self._default_plan()
             
-            # JSON extrahieren
-            try:
-                # Falls das Model zusätzlichen Text drumrum schreibt
-                if "{" in content:
-                    start = content.index("{")
-                    end = content.rindex("}") + 1
-                    content = content[start:end]
+            # Robustes JSON-Parsing
+            result = safe_parse_json(
+                content, 
+                default=self._default_plan(),
+                context="ThinkingLayer"
+            )
+            
+            log_info(f"[ThinkingLayer] Plan: intent={result.get('intent')}, needs_memory={result.get('needs_memory')}")
+            return result
                 
-                result = json.loads(content)
-                log_info(f"[ThinkingLayer] Plan: intent={result.get('intent')}, needs_memory={result.get('needs_memory')}")
-                return result
-                
-            except json.JSONDecodeError as e:
-                log_error(f"[ThinkingLayer] JSON Parse Error: {e}, Content: {content[:200]}")
-                return self._default_plan()
-                
+        except httpx.TimeoutException:
+            log_error(f"[ThinkingLayer] Timeout nach 60s")
+            return self._default_plan()
+        except httpx.HTTPStatusError as e:
+            log_error(f"[ThinkingLayer] HTTP Error: {e.response.status_code}")
+            return self._default_plan()
         except Exception as e:
             log_error(f"[ThinkingLayer] Error: {e}")
             return self._default_plan()
