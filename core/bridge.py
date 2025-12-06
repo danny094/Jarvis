@@ -276,7 +276,8 @@ class CoreBridge:
             verified_plan=verified_plan,
             memory_data=retrieved_memory,
             model=request.model,
-            memory_required_but_missing=memory_required_but_missing
+            memory_required_but_missing=memory_required_but_missing,
+            chat_history=request.messages  # ← NEU: History für Kontext!
         )
         
         log_info(f"[CoreBridge-Output] Generated {len(answer)} chars")
@@ -330,19 +331,19 @@ class CoreBridge:
         )
 
     # ═══════════════════════════════════════════════════════════════
-    # STREAMING VERSION
+    # STREAMING VERSION MIT LIVE THINKING
     # ═══════════════════════════════════════════════════════════════
     async def process_stream(self, request: CoreChatRequest) -> AsyncGenerator[Tuple[str, bool, Dict], None]:
         """
-        Streaming-Version von process().
+        Streaming-Version von process() MIT LIVE THINKING.
         
-        Führt Layer 1+2 aus, dann streamt Layer 3.
+        Zeigt das "Nachdenken" live an, wie bei Claude Extended Thinking.
         
         Yields:
             Tuple[str, bool, Dict]: (chunk, is_done, metadata)
             - chunk: Text-Chunk
             - is_done: True wenn fertig
-            - metadata: Info über memory_used etc.
+            - metadata: Info über type, thinking, memory_used etc.
         """
         log_info(f"[CoreBridge] Processing STREAM from adapter={request.source_adapter}")
         
@@ -350,11 +351,38 @@ class CoreBridge:
         conversation_id = request.conversation_id
 
         # ═══════════════════════════════════════════════════════════
-        # LAYER 1: THINKING (DeepSeek) - Non-Streaming
+        # LAYER 1: THINKING (DeepSeek) - LIVE STREAMING! 🧠
         # ═══════════════════════════════════════════════════════════
-        log_info("[CoreBridge] === LAYER 1: THINKING ===")
+        log_info("[CoreBridge] === LAYER 1: THINKING (STREAMING) ===")
         
-        thinking_plan = await self.thinking.analyze(user_text)
+        thinking_plan = {}
+        thinking_text = ""
+        
+        async for chunk, is_done, plan in self.thinking.analyze_stream(user_text):
+            if not is_done:
+                # Live thinking chunk
+                thinking_text += chunk
+                yield ("", False, {
+                    "type": "thinking_stream",
+                    "thinking_chunk": chunk
+                })
+            else:
+                # Thinking fertig - Plan erhalten
+                thinking_plan = plan
+                
+                # Sende "Thinking Done" Signal
+                yield ("", False, {
+                    "type": "thinking_done",
+                    "thinking": {
+                        "intent": thinking_plan.get("intent", ""),
+                        "needs_memory": thinking_plan.get("needs_memory", False),
+                        "memory_keys": thinking_plan.get("memory_keys", []),
+                        "hallucination_risk": thinking_plan.get("hallucination_risk", "medium"),
+                        "reasoning": thinking_plan.get("reasoning", ""),
+                        "is_fact_query": thinking_plan.get("is_fact_query", False),
+                        "is_new_fact": thinking_plan.get("is_new_fact", False),
+                    }
+                })
         
         log_info(f"[CoreBridge-Thinking] intent={thinking_plan.get('intent')}")
         log_info(f"[CoreBridge-Thinking] hallucination_risk={thinking_plan.get('hallucination_risk')}")
@@ -432,16 +460,17 @@ class CoreBridge:
         # Sammle komplette Antwort für Memory-Save
         full_answer = ""
         
-        # Streame die Antwort
+        # Streame die Antwort MIT Chat-History für Kontext
         async for chunk in self.output.generate_stream(
             user_text=user_text,
             verified_plan=verified_plan,
             memory_data=retrieved_memory,
             model=request.model,
-            memory_required_but_missing=memory_required_but_missing
+            memory_required_but_missing=memory_required_but_missing,
+            chat_history=request.messages  # ← NEU: History für Kontext!
         ):
             full_answer += chunk
-            yield (chunk, False, {"memory_used": memory_used})
+            yield (chunk, False, {"type": "content", "memory_used": memory_used})
         
         log_info(f"[CoreBridge-Output] Streamed {len(full_answer)} chars")
         

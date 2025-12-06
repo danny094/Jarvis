@@ -76,15 +76,39 @@ class OutputLayer:
         user_text: str,
         verified_plan: Dict[str, Any],
         memory_data: str = "",
-        memory_required_but_missing: bool = False
+        memory_required_but_missing: bool = False,
+        chat_history: list = None
     ) -> str:
-        """Baut den vollständigen Prompt."""
+        """Baut den vollständigen Prompt MIT Chat-History."""
         system_prompt = self._build_system_prompt(
             verified_plan, 
             memory_data,
             memory_required_but_missing
         )
-        return f"{system_prompt}\n\n### USER:\n{user_text}\n\n### DEINE ANTWORT:"
+        
+        prompt_parts = [system_prompt]
+        
+        # Chat-History einbauen (letzte N Nachrichten)
+        if chat_history and len(chat_history) > 1:
+            prompt_parts.append("\n\n### BISHERIGE KONVERSATION:")
+            
+            # Nur die letzten 10 Nachrichten (ohne die aktuelle)
+            history_to_show = chat_history[-11:-1] if len(chat_history) > 11 else chat_history[:-1]
+            
+            for msg in history_to_show:
+                role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
+                content = msg.content
+                
+                if role == "user":
+                    prompt_parts.append(f"USER: {content}")
+                elif role == "assistant":
+                    prompt_parts.append(f"ASSISTANT: {content}")
+        
+        # Aktuelle User-Nachricht
+        prompt_parts.append(f"\n\n### USER:\n{user_text}")
+        prompt_parts.append("\n\n### DEINE ANTWORT:")
+        
+        return "\n".join(prompt_parts)
 
     # ═══════════════════════════════════════════════════════════
     # ASYNC STREAMING GENERATOR
@@ -95,19 +119,24 @@ class OutputLayer:
         verified_plan: Dict[str, Any],
         memory_data: str = "",
         model: str = None,
-        memory_required_but_missing: bool = False
+        memory_required_but_missing: bool = False,
+        chat_history: list = None
     ) -> AsyncGenerator[str, None]:
         """
         Generiert die Antwort als ASYNC STREAM (Token für Token).
         
         Nutzt httpx.AsyncClient für non-blocking streaming.
         
+        Args:
+            chat_history: Liste der bisherigen Nachrichten für Kontext
+        
         Yields:
             Einzelne Text-Chunks wie sie vom Model kommen
         """
         model = model or OUTPUT_MODEL
         full_prompt = self._build_full_prompt(
-            user_text, verified_plan, memory_data, memory_required_but_missing
+            user_text, verified_plan, memory_data, memory_required_but_missing,
+            chat_history=chat_history
         )
         
         payload = {
@@ -167,7 +196,8 @@ class OutputLayer:
         verified_plan: Dict[str, Any],
         memory_data: str = "",
         model: str = None,
-        memory_required_but_missing: bool = False
+        memory_required_but_missing: bool = False,
+        chat_history: list = None
     ) -> Generator[str, None, None]:
         """
         Synchroner Stream Generator für SSE-Endpoints.
@@ -177,7 +207,8 @@ class OutputLayer:
         """
         model = model or OUTPUT_MODEL
         full_prompt = self._build_full_prompt(
-            user_text, verified_plan, memory_data, memory_required_but_missing
+            user_text, verified_plan, memory_data, memory_required_but_missing,
+            chat_history=chat_history
         )
         
         payload = {
@@ -233,7 +264,8 @@ class OutputLayer:
         verified_plan: Dict[str, Any],
         memory_data: str = "",
         model: str = None,
-        memory_required_but_missing: bool = False
+        memory_required_but_missing: bool = False,
+        chat_history: list = None
     ) -> str:
         """
         Generiert die finale Antwort (NON-STREAMING, ASYNC).
@@ -242,7 +274,8 @@ class OutputLayer:
         """
         model = model or OUTPUT_MODEL
         full_prompt = self._build_full_prompt(
-            user_text, verified_plan, memory_data, memory_required_but_missing
+            user_text, verified_plan, memory_data, memory_required_but_missing,
+            chat_history=chat_history
         )
         
         payload = {

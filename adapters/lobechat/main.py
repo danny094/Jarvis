@@ -86,22 +86,43 @@ async def chat(request: Request):
             from datetime import datetime
             
             async def stream_generator():
-                """Generiert NDJSON-Chunks für LobeChat."""
+                """Generiert NDJSON-Chunks für LobeChat mit Live Thinking."""
                 try:
                     async for chunk, is_done, metadata in bridge.process_stream(core_request):
                         created_at = datetime.utcnow().isoformat() + "Z"
+                        chunk_type = metadata.get("type", "content")
                         
-                        if is_done:
-                            # Final message
+                        # Live Thinking Stream
+                        if chunk_type == "thinking_stream":
+                            response_data = {
+                                "model": model,
+                                "created_at": created_at,
+                                "thinking_stream": metadata.get("thinking_chunk", ""),
+                                "done": False,
+                            }
+                        
+                        # Thinking Done (mit Plan)
+                        elif chunk_type == "thinking_done":
+                            response_data = {
+                                "model": model,
+                                "created_at": created_at,
+                                "thinking": metadata.get("thinking", {}),
+                                "done": False,
+                            }
+                        
+                        # Final Done
+                        elif is_done:
                             response_data = {
                                 "model": model,
                                 "created_at": created_at,
                                 "message": {"role": "assistant", "content": ""},
                                 "done": True,
                                 "done_reason": metadata.get("done_reason", "stop"),
+                                "memory_used": metadata.get("memory_used", False),
                             }
+                        
+                        # Content Chunk
                         else:
-                            # Chunk message
                             response_data = {
                                 "model": model,
                                 "created_at": created_at,

@@ -8,10 +8,12 @@ Analysiert die User-Anfrage und erstellt einen Plan:
 - Welche Fakten sind relevant?
 - Wie sollte die Antwort strukturiert sein?
 - Halluzinations-Risiko?
+
+STREAMING: Zeigt das "Nachdenken" live an!
 """
 
 import httpx
-from typing import Dict, Any
+from typing import Dict, Any, AsyncGenerator, Tuple
 from config import OLLAMA_BASE, THINKING_MODEL
 from utils.logger import log_info, log_error, log_debug
 from utils.json_parser import safe_parse_json
@@ -19,7 +21,7 @@ from utils.json_parser import safe_parse_json
 THINKING_PROMPT = """Du bist der THINKING-Layer eines AI-Systems.
 Deine Aufgabe: Analysiere die User-Anfrage und erstelle einen Plan.
 
-Du antwortest NUR mit validem JSON, nichts anderes.
+WICHTIG: Denke Schritt für Schritt nach, dann gib am Ende JSON aus.
 
 Analysiere:
 1. Was will der User wirklich?
@@ -28,7 +30,9 @@ Analysiere:
 4. Ist dies eine Fakten-Abfrage oder neue Information?
 5. Wie hoch ist das Halluzinations-Risiko?
 
-JSON-Format:
+Am Ende deiner Überlegungen, gib NUR dieses JSON aus:
+
+```json
 {
     "intent": "Was der User will (kurz)",
     "needs_memory": true/false,
@@ -41,14 +45,17 @@ JSON-Format:
     "suggested_response_style": "kurz/ausführlich/freundlich",
     "reasoning": "Kurze Begründung"
 }
+```
 
 BEISPIELE:
 
 User: "Wie alt bin ich?"
+Überlegung: Der User fragt nach seinem Alter. Das ist ein persönlicher Fakt, den ich nicht wissen kann. Ich muss im Memory nachschauen. Wenn ich rate, ist das Halluzination.
+```json
 {
     "intent": "User fragt nach seinem Alter",
     "needs_memory": true,
-    "memory_keys": ["age"],
+    "memory_keys": ["age", "alter", "birthday"],
     "is_fact_query": true,
     "is_new_fact": false,
     "new_fact_key": null,
@@ -57,22 +64,11 @@ User: "Wie alt bin ich?"
     "suggested_response_style": "kurz",
     "reasoning": "Alter ist persönlicher Fakt, muss aus Memory kommen"
 }
-
-User: "Ich bin 31 Jahre alt"
-{
-    "intent": "User teilt sein Alter mit",
-    "needs_memory": false,
-    "memory_keys": [],
-    "is_fact_query": false,
-    "is_new_fact": true,
-    "new_fact_key": "age",
-    "new_fact_value": "31",
-    "hallucination_risk": "low",
-    "suggested_response_style": "freundlich",
-    "reasoning": "Neuer Fakt zum Speichern"
-}
+```
 
 User: "Was ist die Hauptstadt von Frankreich?"
+Überlegung: Das ist Allgemeinwissen. Paris ist die Hauptstadt. Kein Memory nötig, kein Halluzinationsrisiko.
+```json
 {
     "intent": "Allgemeine Wissensfrage",
     "needs_memory": false,
@@ -85,11 +81,7 @@ User: "Was ist die Hauptstadt von Frankreich?"
     "suggested_response_style": "kurz",
     "reasoning": "Allgemeinwissen, kein persönlicher Fakt"
 }
-
-WICHTIG:
-- NUR JSON ausgeben
-- KEIN Text vor oder nach dem JSON
-- Bei Unsicherheit: hallucination_risk = "high"
+```
 """
 
 
@@ -98,67 +90,113 @@ class ThinkingLayer:
         self.model = model
         self.ollama_base = OLLAMA_BASE
     
-    async def analyze(self, user_text: str, memory_context: str = "") -> Dict[str, Any]:
+    async def analyze_stream(
+        self, 
+        user_text: str, 
+        memory_context: str = ""
+    ) -> AsyncGenerator[Tuple[str, bool, Dict[str, Any]], None]:
         """
-        Analysiert die User-Anfrage und erstellt einen Plan.
+        Analysiert die User-Anfrage MIT STREAMING.
         
-        Nutzt httpx.AsyncClient für non-blocking HTTP.
+        Yields:
+            Tuple[str, bool, Dict]: (thinking_chunk, is_done, plan_if_done)
+            - thinking_chunk: Text des Denkprozesses
+            - is_done: True wenn fertig
+            - plan_if_done: Der finale Plan (nur wenn is_done=True)
         """
         prompt = f"{THINKING_PROMPT}\n\n"
         
         if memory_context:
             prompt += f"VERFÜGBARER MEMORY-KONTEXT:\n{memory_context}\n\n"
         
-        prompt += f"USER-ANFRAGE:\n{user_text}\n\nDein JSON-Plan:"
+        prompt += f"USER-ANFRAGE:\n{user_text}\n\nDeine Überlegung:"
         
         payload = {
             "model": self.model,
             "prompt": prompt,
-            "stream": False,
-            "format": "json",
+            "stream": True,  # STREAMING!
         }
         
+        full_response = ""
+        
         try:
-            log_debug(f"[ThinkingLayer] Analyzing: {user_text[:50]}...")
+            log_debug(f"[ThinkingLayer] Streaming analysis: {user_text[:50]}...")
             
-            # Async HTTP Request
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post(
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                async with client.stream(
+                    "POST",
                     f"{self.ollama_base}/api/generate",
                     json=payload
-                )
-                r.raise_for_status()
+                ) as response:
+                    response.raise_for_status()
+                    
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        
+                        try:
+                            import json
+                            data = json.loads(line)
+                            chunk = data.get("response", "")
+                            
+                            if chunk:
+                                full_response += chunk
+                                # Yield thinking chunk (nicht done)
+                                yield (chunk, False, {})
+                            
+                            if data.get("done"):
+                                break
+                                
+                        except Exception:
+                            continue
             
-            data = r.json()
-            content = data.get("response", "").strip()
+            # Jetzt JSON aus der Response extrahieren
+            plan = self._extract_plan(full_response)
             
-            # Qwen/DeepSeek manchmal "thinking" statt "response"
-            if not content and data.get("thinking"):
-                content = data.get("thinking", "").strip()
+            log_info(f"[ThinkingLayer] Plan: intent={plan.get('intent')}, needs_memory={plan.get('needs_memory')}")
             
-            if not content:
-                log_error(f"[ThinkingLayer] Leere Antwort")
-                return self._default_plan()
-            
-            # Robustes JSON-Parsing
-            result = safe_parse_json(
-                content, 
-                default=self._default_plan(),
-                context="ThinkingLayer"
-            )
-            
-            log_info(f"[ThinkingLayer] Plan: intent={result.get('intent')}, needs_memory={result.get('needs_memory')}")
-            return result
+            # Final yield mit Plan
+            yield ("", True, plan)
                 
         except httpx.TimeoutException:
-            log_error(f"[ThinkingLayer] Timeout nach 60s")
-            return self._default_plan()
+            log_error(f"[ThinkingLayer] Timeout nach 90s")
+            yield ("", True, self._default_plan())
         except httpx.HTTPStatusError as e:
             log_error(f"[ThinkingLayer] HTTP Error: {e.response.status_code}")
-            return self._default_plan()
+            yield ("", True, self._default_plan())
         except Exception as e:
             log_error(f"[ThinkingLayer] Error: {e}")
-            return self._default_plan()
+            yield ("", True, self._default_plan())
+    
+    def _extract_plan(self, full_response: str) -> Dict[str, Any]:
+        """Extrahiert den JSON-Plan aus der Thinking-Response."""
+        
+        # Versuche JSON zu finden
+        plan = safe_parse_json(
+            full_response,
+            default=None,
+            context="ThinkingLayer"
+        )
+        
+        if plan and "intent" in plan:
+            return plan
+        
+        # Fallback
+        return self._default_plan()
+    
+    async def analyze(self, user_text: str, memory_context: str = "") -> Dict[str, Any]:
+        """
+        NON-STREAMING Version (für Kompatibilität).
+        Sammelt alle Chunks und gibt nur den Plan zurück.
+        """
+        plan = self._default_plan()
+        
+        async for chunk, is_done, result in self.analyze_stream(user_text, memory_context):
+            if is_done:
+                plan = result
+                break
+        
+        return plan
     
     def _default_plan(self) -> Dict[str, Any]:
         """Fallback-Plan wenn Analyse fehlschlägt."""
