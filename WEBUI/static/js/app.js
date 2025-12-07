@@ -1,6 +1,6 @@
 // app.js - Main Application mit Settings & Debug
 
-import { getModels, checkHealth, setApiBase } from "./api.js";
+import { getModels, checkHealth, setApiBase, getApiBase } from "./api.js";
 import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount } from "./chat.js";
 import { log, clearLogs, setVerbose } from "./debug.js";
 
@@ -202,6 +202,22 @@ function setupEventListeners() {
         }
     });
     
+    // Tools modal
+    document.getElementById("tools-btn").addEventListener("click", async () => {
+        document.getElementById("tools-modal").classList.remove("hidden");
+        await loadTools();
+    });
+    
+    document.getElementById("close-tools-btn").addEventListener("click", () => {
+        document.getElementById("tools-modal").classList.add("hidden");
+    });
+    
+    document.getElementById("tools-modal").addEventListener("click", (e) => {
+        if (e.target.id === "tools-modal") {
+            document.getElementById("tools-modal").classList.add("hidden");
+        }
+    });
+    
     // History length slider
     document.getElementById("history-length").addEventListener("input", (e) => {
         document.getElementById("history-length-value").textContent = e.target.value;
@@ -241,5 +257,83 @@ function sendMessage() {
         handleUserMessage(text);
         input.value = "";
         input.style.height = "auto";
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// LOAD TOOLS
+// ═══════════════════════════════════════════════════════════
+async function loadTools() {
+    const contentEl = document.getElementById("tools-content");
+    
+    try {
+        log("debug", "Loading tools...");
+        const res = await fetch(`${getApiBase()}/api/tools`);
+        
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+        }
+        
+        const data = await res.json();
+        log("info", `Loaded ${data.total_tools} tools from ${data.total_mcps} MCPs`);
+        
+        // Render MCPs
+        let html = "";
+        
+        for (const mcp of data.mcps) {
+            const statusColor = mcp.online ? "bg-green-500" : "bg-red-500";
+            const statusText = mcp.online ? "Online" : "Offline";
+            
+            html += `
+                <div class="mb-4 border border-dark-border rounded-lg overflow-hidden">
+                    <div class="px-4 py-3 bg-dark-hover flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 ${statusColor} rounded-full"></span>
+                            <span class="font-medium">${mcp.name}</span>
+                            <span class="text-xs text-gray-500">(${mcp.transport})</span>
+                        </div>
+                        <span class="text-xs text-gray-400">${mcp.tools_count} tools</span>
+                    </div>
+                    <div class="px-4 py-2 text-sm text-gray-400">
+                        ${mcp.description || 'Keine Beschreibung'}
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Tool Liste
+        html += `<h3 class="font-medium mt-6 mb-3">Alle Tools (${data.total_tools})</h3>`;
+        html += `<div class="space-y-2">`;
+        
+        for (const tool of data.tools) {
+            const desc = tool.description || 'Keine Beschreibung';
+            const shortDesc = desc.length > 100 ? desc.substring(0, 100) + '...' : desc;
+            
+            html += `
+                <details class="border border-dark-border rounded-lg">
+                    <summary class="px-3 py-2 cursor-pointer hover:bg-dark-hover text-sm">
+                        <span class="font-mono text-accent-primary">${tool.name}</span>
+                    </summary>
+                    <div class="px-3 py-2 border-t border-dark-border text-xs text-gray-400">
+                        ${desc}
+                    </div>
+                </details>
+            `;
+        }
+        
+        html += `</div>`;
+        
+        contentEl.innerHTML = html;
+        lucide.createIcons();
+        
+    } catch (error) {
+        log("error", `Failed to load tools: ${error.message}`);
+        contentEl.innerHTML = `
+            <div class="text-red-400 text-center py-8">
+                <i data-lucide="alert-circle" class="w-8 h-8 mx-auto mb-2"></i>
+                Fehler: ${error.message}
+            </div>
+        `;
+        lucide.createIcons();
     }
 }

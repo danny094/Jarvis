@@ -114,7 +114,11 @@ class CoreBridge:
         Nützlich wenn die Anfrage nach Tools/Funktionen fragt.
         """
         # Suche nach allgemeinen Tool-Infos
-        tool_keywords = ["tool", "function", "mcp", "think", "sequential", "hilfe", "können"]
+        tool_keywords = [
+            "tool", "tools", "function", "funktionen", "mcp", 
+            "think", "sequential", "hilfe", "können", "kannst",
+            "zugriff", "fähigkeiten", "features", "was kannst"
+        ]
         
         query_lower = query.lower()
         if any(kw in query_lower for kw in tool_keywords):
@@ -124,6 +128,11 @@ class CoreBridge:
             tools_info = get_fact_for_query(SYSTEM_CONV_ID, "available_mcp_tools")
             if tools_info:
                 return f"Verfügbare Tools: {tools_info}\n"
+            
+            # Auch Usage Guide laden
+            usage_guide = get_fact_for_query(SYSTEM_CONV_ID, "tool_usage_guide")
+            if usage_guide:
+                return f"Tool-Info: {usage_guide}\n"
             
             # Fallback: Graph-Suche im System
             graph_results = graph_search(SYSTEM_CONV_ID, query)
@@ -377,6 +386,7 @@ class CoreBridge:
                         "intent": thinking_plan.get("intent", ""),
                         "needs_memory": thinking_plan.get("needs_memory", False),
                         "memory_keys": thinking_plan.get("memory_keys", []),
+                        "needs_chat_history": thinking_plan.get("needs_chat_history", False),
                         "hallucination_risk": thinking_plan.get("hallucination_risk", "medium"),
                         "reasoning": thinking_plan.get("reasoning", ""),
                         "is_fact_query": thinking_plan.get("is_fact_query", False),

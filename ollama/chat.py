@@ -206,7 +206,7 @@ async def chat(request: Request):
     # 2) META DECISION LAYER
     # ----------------------------------------------------
     try:
-        decision = ask_meta_decision(user_text)
+        decision = await ask_meta_decision(user_text)
     except Exception as e:
         log_error(f"[MetaDecision] Fehler: {e}")
         decision = {

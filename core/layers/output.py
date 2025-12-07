@@ -26,7 +26,8 @@ class OutputLayer:
         self, 
         verified_plan: Dict[str, Any], 
         memory_data: str,
-        memory_required_but_missing: bool = False
+        memory_required_but_missing: bool = False,
+        needs_chat_history: bool = False
     ) -> str:
         """Baut den System-Prompt mit Persona und Kontext."""
         
@@ -46,6 +47,14 @@ class OutputLayer:
             prompt_parts.append("Du MUSST ehrlich sagen, dass du diese Information nicht hast.")
             prompt_parts.append("ERFINDE NIEMALS persönliche Daten wie Geburtstage, Alter, Namen, etc.")
             prompt_parts.append("Antworte stattdessen: 'Das habe ich leider nicht gespeichert.' oder ähnlich.")
+        
+        # CHAT-HISTORY Hinweis
+        if needs_chat_history:
+            prompt_parts.append("\n### WICHTIG - NUTZE DIE CHAT-HISTORY:")
+            prompt_parts.append("Der User fragt nach dem Inhalt unserer AKTUELLEN Konversation.")
+            prompt_parts.append("Schau dir die 'BISHERIGE KONVERSATION' unten an und beantworte die Frage basierend darauf.")
+            prompt_parts.append("Du hast Zugriff auf alle bisherigen Nachrichten - nutze sie!")
+            prompt_parts.append("ERFINDE KEINE Gesprächsinhalte - nur was wirklich in der History steht.")
         
         # Anweisung vom Control-Layer
         instruction = verified_plan.get("_final_instruction", "")
@@ -80,10 +89,15 @@ class OutputLayer:
         chat_history: list = None
     ) -> str:
         """Baut den vollständigen Prompt MIT Chat-History."""
+        
+        # Prüfe ob Chat-History explizit gebraucht wird
+        needs_chat_history = verified_plan.get("needs_chat_history", False)
+        
         system_prompt = self._build_system_prompt(
             verified_plan, 
             memory_data,
-            memory_required_but_missing
+            memory_required_but_missing,
+            needs_chat_history=needs_chat_history
         )
         
         prompt_parts = [system_prompt]

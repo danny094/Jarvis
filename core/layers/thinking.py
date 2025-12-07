@@ -28,7 +28,8 @@ Analysiere:
 2. Braucht die Antwort gespeicherte Fakten? (Memory)
 3. Welcher Memory-Key ist relevant? (z.B. "age", "name", "birthday")
 4. Ist dies eine Fakten-Abfrage oder neue Information?
-5. Wie hoch ist das Halluzinations-Risiko?
+5. Bezieht sich die Frage auf die AKTUELLE KONVERSATION? (Chat-History)
+6. Wie hoch ist das Halluzinations-Risiko?
 
 Am Ende deiner Überlegungen, gib NUR dieses JSON aus:
 
@@ -37,8 +38,9 @@ Am Ende deiner Überlegungen, gib NUR dieses JSON aus:
     "intent": "Was der User will (kurz)",
     "needs_memory": true/false,
     "memory_keys": ["key1", "key2"],
+    "needs_chat_history": true/false,
     "is_fact_query": true/false,
-    "is_new_fact": true/false,
+    "is_new_fact": false,
     "new_fact_key": "key oder null",
     "new_fact_value": "value oder null",
     "hallucination_risk": "low/medium/high",
@@ -56,6 +58,7 @@ User: "Wie alt bin ich?"
     "intent": "User fragt nach seinem Alter",
     "needs_memory": true,
     "memory_keys": ["age", "alter", "birthday"],
+    "needs_chat_history": false,
     "is_fact_query": true,
     "is_new_fact": false,
     "new_fact_key": null,
@@ -66,6 +69,24 @@ User: "Wie alt bin ich?"
 }
 ```
 
+User: "Was haben wir heute besprochen?" / "Worüber haben wir geredet?" / "Was war meine letzte Frage?"
+Überlegung: Der User fragt nach dem Inhalt unserer AKTUELLEN Konversation. Das steht in der Chat-History, nicht im Memory. Ich muss die bisherigen Nachrichten nutzen.
+```json
+{
+    "intent": "User fragt nach Gesprächsinhalt",
+    "needs_memory": false,
+    "memory_keys": [],
+    "needs_chat_history": true,
+    "is_fact_query": false,
+    "is_new_fact": false,
+    "new_fact_key": null,
+    "new_fact_value": null,
+    "hallucination_risk": "low",
+    "suggested_response_style": "ausführlich",
+    "reasoning": "Gesprächsinhalt steht in der Chat-History, nicht im Memory"
+}
+```
+
 User: "Was ist die Hauptstadt von Frankreich?"
 Überlegung: Das ist Allgemeinwissen. Paris ist die Hauptstadt. Kein Memory nötig, kein Halluzinationsrisiko.
 ```json
@@ -73,6 +94,7 @@ User: "Was ist die Hauptstadt von Frankreich?"
     "intent": "Allgemeine Wissensfrage",
     "needs_memory": false,
     "memory_keys": [],
+    "needs_chat_history": false,
     "is_fact_query": false,
     "is_new_fact": false,
     "new_fact_key": null,
@@ -80,6 +102,24 @@ User: "Was ist die Hauptstadt von Frankreich?"
     "hallucination_risk": "low",
     "suggested_response_style": "kurz",
     "reasoning": "Allgemeinwissen, kein persönlicher Fakt"
+}
+```
+
+User: "Welche MCP-Tools hast du?" / "Auf welche Tools hast du Zugriff?" / "Was kannst du alles?"
+Überlegung: Der User fragt nach meinen System-Fähigkeiten und verfügbaren Tools. Das ist System-Wissen, gespeichert unter "available_mcp_tools". Ich muss im System-Memory nachschauen.
+```json
+{
+    "intent": "User fragt nach verfügbaren Tools/Fähigkeiten",
+    "needs_memory": true,
+    "memory_keys": ["available_mcp_tools", "tool_usage_guide"],
+    "needs_chat_history": false,
+    "is_fact_query": true,
+    "is_new_fact": false,
+    "new_fact_key": null,
+    "new_fact_value": null,
+    "hallucination_risk": "high",
+    "suggested_response_style": "ausführlich",
+    "reasoning": "Tool-Info ist System-Wissen, muss aus Memory kommen. Ohne Memory wäre es Halluzination."
 }
 ```
 """
@@ -204,6 +244,7 @@ class ThinkingLayer:
             "intent": "unknown",
             "needs_memory": False,
             "memory_keys": [],
+            "needs_chat_history": False,
             "is_fact_query": False,
             "is_new_fact": False,
             "new_fact_key": None,

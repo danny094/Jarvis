@@ -145,18 +145,24 @@ function finalizeThinking(thinkingId, thinking) {
         metaEl.classList.remove("hidden");
         metaEl.innerHTML = `
             <div class="flex items-start gap-2">
-                <span class="text-gray-500 min-w-[80px]">Intent:</span>
+                <span class="text-gray-500 min-w-[100px]">Intent:</span>
                 <span class="text-gray-300">${thinking.intent || '-'}</span>
             </div>
             <div class="flex items-start gap-2">
-                <span class="text-gray-500 min-w-[80px]">Memory:</span>
+                <span class="text-gray-500 min-w-[100px]">Memory:</span>
                 <span class="text-gray-300">
                     ${thinking.needs_memory ? '✅ Benötigt' : '❌ Nicht benötigt'}
                     ${thinking.memory_keys?.length ? `(${thinking.memory_keys.join(', ')})` : ''}
                 </span>
             </div>
             <div class="flex items-start gap-2">
-                <span class="text-gray-500 min-w-[80px]">Reasoning:</span>
+                <span class="text-gray-500 min-w-[100px]">Chat-History:</span>
+                <span class="text-gray-300">
+                    ${thinking.needs_chat_history ? '✅ Wird genutzt' : '❌ Nicht benötigt'}
+                </span>
+            </div>
+            <div class="flex items-start gap-2">
+                <span class="text-gray-500 min-w-[100px]">Reasoning:</span>
                 <span class="text-gray-300">${thinking.reasoning || '-'}</span>
             </div>
         `;

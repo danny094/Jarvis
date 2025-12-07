@@ -90,6 +90,13 @@
         </div>
         
         <div class="flex items-center gap-2">
+            <!-- Tools Button -->
+            <button id="tools-btn" 
+                    class="p-2 text-gray-400 hover:text-white hover:bg-dark-hover rounded-lg transition-colors"
+                    title="MCP Tools">
+                <i data-lucide="wrench" class="w-5 h-5"></i>
+            </button>
+            
             <!-- Debug Toggle -->
             <button id="debug-toggle-btn" 
                     class="p-2 text-gray-400 hover:text-white hover:bg-dark-hover rounded-lg transition-colors"
@@ -224,6 +231,27 @@
                 <button id="save-settings-btn" class="px-4 py-2 bg-accent-primary hover:bg-blue-600 rounded-lg transition-colors">
                     save
                 </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Tools Modal -->
+    <div id="tools-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div class="bg-dark-card border border-dark-border rounded-xl w-full max-w-2xl m-4 shadow-2xl max-h-[80vh] flex flex-col">
+            <div class="p-4 border-b border-dark-border flex items-center justify-between">
+                <h2 class="font-semibold flex items-center gap-2">
+                    <i data-lucide="wrench" class="w-5 h-5"></i>
+                    MCP Tools
+                </h2>
+                <button id="close-tools-btn" class="text-gray-400 hover:text-white">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            <div id="tools-content" class="p-4 overflow-y-auto flex-1">
+                <div class="text-gray-400 text-center py-8">
+                    <i data-lucide="loader" class="w-8 h-8 mx-auto mb-2 animate-spin"></i>
+                    Lade Tools...
+                </div>
             </div>
         </div>
     </div>
