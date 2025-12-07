@@ -129,7 +129,11 @@ Ollama-Pipeline-Bridge/
 
 
 ---
+<img width="1915" height="756" alt="Bildschirmfoto 2025-12-07 um 19 01 38" src="https://github.com/user-attachments/assets/305dde6d-ccdc-461c-937d-2e3a1d0503ef" />
 
+<img width="1915" height="1034" alt="Bildschirmfoto 2025-12-07 um 19 03 01" src="https://github.com/user-attachments/assets/5e3277ce-3514-4aad-ab42-5deb2892799c" />
+
+___
 
 ### Backend
 
@@ -217,6 +221,8 @@ Configurable options include:
 4. Memory is queried for relevant context.  
 5. The agent processes the request or calls Ollama.  
 6. The formatted response is returned to the UI.
+
+
 
 ---
 
