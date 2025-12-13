@@ -100,13 +100,15 @@ async def generate(request: Request):
 
 @app.get("/api/tags")
 async def tags():
-    import requests
+    import httpx
     from config import OLLAMA_BASE
     
     try:
-        resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=10)
-        return JSONResponse(resp.json())
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/tags")
+            return JSONResponse(resp.json())
     except Exception as e:
+        log_error(f"[OpenWebUI-Adapter] Tags error: {e}")
         return JSONResponse({"models": []})
 
 

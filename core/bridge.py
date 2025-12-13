@@ -3,20 +3,32 @@
 Core-Bridge: Orchestriert die drei Layer.
 
 Pipeline:
-1. ThinkingLayer (DeepSeek) → Analysiert und plant
-2. Memory Retrieval → Holt relevante Fakten (inkl. System-Wissen!)
-3. ControlLayer (Qwen) → Verifiziert den Plan
-4. OutputLayer (beliebig) → Formuliert die Antwort
-5. Memory Save → Speichert neue Fakten
+1. ThinkingLayer (Mistral) → Analysiert und plant
+2. Memory Retrieval → Holt relevante Fakten PARALLEL (inkl. System-Wissen!)
+3. Container Execution → Führt Code in Sandbox aus (wenn nötig)
+4. ControlLayer (Qwen) → Verifiziert den Plan (optional skip bei low-risk)
+5. OutputLayer (beliebig) → Formuliert die Antwort (nutzt CODE_MODEL wenn Code)
+6. Memory Save → Speichert neue Fakten (async, blockiert nicht)
 """
 
+import asyncio
+import httpx
+import re
 from typing import Optional, Dict, Any, Generator, Tuple, AsyncGenerator, List
+from concurrent.futures import ThreadPoolExecutor
 
 from .models import CoreChatRequest, CoreChatResponse
 from .layers import ThinkingLayer, ControlLayer, OutputLayer
 
-from config import OLLAMA_BASE, ENABLE_CONTROL_LAYER, SKIP_CONTROL_ON_LOW_RISK
-from utils.logger import log_debug, log_error, log_info, log_warn
+from config import (
+    OLLAMA_BASE, 
+    ENABLE_CONTROL_LAYER, 
+    SKIP_CONTROL_ON_LOW_RISK,
+    CONTAINER_MANAGER_URL,
+    ENABLE_CONTAINER_MANAGER,
+    CODE_MODEL,
+)
+from utils.logger import log_debug, log_error, log_info, log_warn, log_warning
 from mcp.client import (
     autosave_assistant,
     get_fact_for_query,
@@ -40,6 +52,187 @@ class CoreBridge:
         self.control = ControlLayer()
         self.output = OutputLayer()
         self.ollama_base = OLLAMA_BASE
+        self.container_manager_url = CONTAINER_MANAGER_URL
+    
+    # ═══════════════════════════════════════════════════════════════
+    # CONTAINER HELPERS: Sandbox Container Management
+    # ═══════════════════════════════════════════════════════════════
+    
+    async def _execute_in_container(
+        self,
+        container_name: str,
+        code: str,
+        task: str = "execute"
+    ) -> Dict[str, Any]:
+        """
+        Führt Code in einem Sandbox-Container aus.
+        
+        Args:
+            container_name: Name des Containers (z.B. "code-sandbox")
+            code: Der auszuführende Code
+            task: "execute", "analyze", "test"
+            
+        Returns:
+            Dict mit stdout, stderr, exit_code
+        """
+        if not ENABLE_CONTAINER_MANAGER:
+            log_warning("[CoreBridge-Container] Container-Manager disabled")
+            return {"error": "Container-Manager ist deaktiviert"}
+        
+        try:
+            log_info(f"[CoreBridge-Container] Starting {container_name} for task={task}")
+            
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                # Container starten und Code ausführen
+                response = await client.post(
+                    f"{self.container_manager_url}/containers/start",
+                    json={
+                        "container_name": container_name,
+                        "code": code,
+                        "timeout": 60
+                    }
+                )
+                
+                if response.status_code == 403:
+                    error_data = response.json()
+                    log_error(f"[CoreBridge-Container] Not allowed: {error_data}")
+                    return {"error": f"Container '{container_name}' nicht erlaubt"}
+                
+                response.raise_for_status()
+                result = response.json()
+                
+                # Container stoppen (Cleanup)
+                container_id = result.get("container_id")
+                if container_id:
+                    try:
+                        await client.post(
+                            f"{self.container_manager_url}/containers/stop",
+                            json={"container_id": container_id}
+                        )
+                        log_info(f"[CoreBridge-Container] Stopped {container_id}")
+                    except Exception as e:
+                        log_warning(f"[CoreBridge-Container] Stop failed: {e}")
+                
+                execution_result = result.get("execution_result") or {}
+                log_info(f"[CoreBridge-Container] Exit code: {execution_result.get('exit_code')}")
+                
+                # Falls kein Result, leeres Dict mit Hinweis
+                if not execution_result:
+                    execution_result = {"error": "Keine Ausführung durchgeführt (kein Code?)"}
+                
+                return execution_result
+                
+        except httpx.TimeoutException:
+            log_error("[CoreBridge-Container] Timeout nach 120s")
+            return {"error": "Container-Ausführung Timeout (120s)"}
+        except httpx.HTTPStatusError as e:
+            log_error(f"[CoreBridge-Container] HTTP Error: {e.response.status_code}")
+            return {"error": f"Container-Manager Fehler: {e.response.status_code}"}
+        except Exception as e:
+            log_error(f"[CoreBridge-Container] Error: {e}")
+            return {"error": str(e)}
+    
+    def _extract_code_from_message(self, text: str) -> Optional[str]:
+        """
+        Extrahiert Code aus einer User-Nachricht.
+        Sucht nach Code-Blöcken (```...```) oder inline Code.
+        """
+        log_info(f"[CoreBridge-Container] Extracting code from: {text[:100]}...")
+        
+        # Code-Block mit Sprache (mit oder ohne Newline nach Sprache)
+        match = re.search(r'```(\w+)[\s\n](.*?)```', text, re.DOTALL)
+        if match:
+            code = match.group(2).strip()
+            log_info(f"[CoreBridge-Container] Found code block with language '{match.group(1)}': {len(code)} chars")
+            return code
+        
+        # Code-Block ohne Sprache
+        match = re.search(r'```\n?(.*?)```', text, re.DOTALL)
+        if match:
+            code = match.group(1).strip()
+            log_info(f"[CoreBridge-Container] Found code block without language: {len(code)} chars")
+            return code
+        
+        # Inline Code (nur wenn es wie Code aussieht)
+        if '`' in text:
+            match = re.search(r'`([^`]+)`', text)
+            if match and len(match.group(1)) > 10:
+                code = match.group(1).strip()
+                log_info(f"[CoreBridge-Container] Found inline code: {len(code)} chars")
+                return code
+        
+        log_warning(f"[CoreBridge-Container] No code found in message")
+        return None
+    
+    def _should_auto_execute_code(self, text: str, thinking_plan: Dict[str, Any]) -> bool:
+        """
+        Heuristik: Soll Code automatisch ausgeführt werden?
+        
+        Wird als FALLBACK verwendet, wenn ThinkingLayer needs_container=false sagt,
+        aber der Kontext eine Ausführung nahelegt.
+        
+        Returns:
+            True wenn Code ausgeführt werden sollte
+        """
+        # Wenn ThinkingLayer schon ja gesagt hat, nicht überschreiben
+        if thinking_plan.get("needs_container"):
+            return True
+        
+        # Prüfen ob überhaupt Code vorhanden ist
+        has_code_block = '```' in text
+        if not has_code_block:
+            return False
+        
+        text_lower = text.lower()
+        
+        # POSITIVE Trigger: Diese Phrasen deuten auf Ausführungswunsch hin
+        execute_triggers = [
+            # Explizit
+            "teste", "test", "ausführen", "führe aus", "run", "execute",
+            "probier", "starte", "laufen lassen",
+            # Implizit - Output-Fragen
+            "was gibt", "was kommt", "was ist das ergebnis", "was passiert",
+            "output", "ausgabe", "ergebnis",
+            # Implizit - Validierung
+            "funktioniert", "läuft", "geht das", "klappt",
+            "korrekt", "richtig", "stimmt",
+            # Implizit - Check
+            "check", "prüf", "validier",
+            # Kurze Präsentation (Code mit wenig Text drumrum)
+            "hier", "schau", "guck",
+        ]
+        
+        # NEGATIVE Trigger: Diese Phrasen deuten auf KEINE Ausführung hin
+        no_execute_triggers = [
+            "erklär", "erkläre", "explain", "was macht", "wie funktioniert",
+            "warum", "wieso", "weshalb",
+            "verbessere", "optimiere", "refactor", "improve",
+            "schreib mir", "erstelle", "generiere", "create", "write",
+            "was ist falsch", "fehler finden", "debug",  # Erst analysieren
+            "verstehe nicht", "versteh nicht",
+        ]
+        
+        # Erst negative Trigger prüfen (haben Vorrang)
+        for trigger in no_execute_triggers:
+            if trigger in text_lower:
+                log_info(f"[CoreBridge-AutoExec] NO - found negative trigger: '{trigger}'")
+                return False
+        
+        # Dann positive Trigger prüfen
+        for trigger in execute_triggers:
+            if trigger in text_lower:
+                log_info(f"[CoreBridge-AutoExec] YES - found positive trigger: '{trigger}'")
+                return True
+        
+        # Sonderfall: Nur Code-Block mit sehr wenig Text (< 50 Zeichen außerhalb)
+        # User will vermutlich Output sehen
+        text_without_code = re.sub(r'```[\s\S]*?```', '', text).strip()
+        if len(text_without_code) < 50 and has_code_block:
+            log_info(f"[CoreBridge-AutoExec] YES - minimal text with code block ({len(text_without_code)} chars)")
+            return True
+        
+        log_info(f"[CoreBridge-AutoExec] NO - no triggers matched")
+        return False
     
     # ═══════════════════════════════════════════════════════════════
     # MEMORY HELPERS: Sucht in User UND System Kontext
@@ -107,37 +300,95 @@ class CoreBridge:
         
         return found_content, found
     
+    async def _search_memory_parallel(
+        self,
+        memory_keys: List[str],
+        conversation_id: str,
+        include_system: bool = True
+    ) -> Tuple[str, bool]:
+        """
+        Sucht ALLE Memory-Keys PARALLEL statt sequentiell.
+        
+        Performance: 4 Keys × 0.5s = 2s sequentiell → 0.5s parallel!
+        """
+        if not memory_keys:
+            return "", False
+        
+        log_info(f"[CoreBridge-Memory] Parallel search for {len(memory_keys)} keys: {memory_keys}")
+        
+        # Führe alle Suchen parallel aus
+        loop = asyncio.get_event_loop()
+        
+        async def search_single_key(key: str) -> Tuple[str, bool, str]:
+            """Wrapper für einzelne Key-Suche."""
+            # _search_memory_multi_context ist sync, also in ThreadPool
+            content, found = await loop.run_in_executor(
+                None,  # Default ThreadPoolExecutor
+                lambda: self._search_memory_multi_context(key, conversation_id, include_system)
+            )
+            return content, found, key
+        
+        # Alle Suchen gleichzeitig starten
+        tasks = [search_single_key(key) for key in memory_keys]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Ergebnisse sammeln
+        all_content = ""
+        any_found = False
+        
+        for result in results:
+            if isinstance(result, Exception):
+                log_error(f"[CoreBridge-Memory] Parallel search error: {result}")
+                continue
+            
+            content, found, key = result
+            if found:
+                all_content += content
+                any_found = True
+                log_info(f"[CoreBridge-Memory] Found key '{key}'")
+        
+        return all_content, any_found
+    
     def _search_system_tools(self, query: str) -> str:
         """
         Sucht speziell nach Tool-Wissen im System-Kontext.
         
-        Nützlich wenn die Anfrage nach Tools/Funktionen fragt.
+        Nur bei EXPLIZITEN Tool-Fragen, nicht bei allgemeinen Begriffen.
         """
-        # Suche nach allgemeinen Tool-Infos
-        tool_keywords = [
-            "tool", "tools", "function", "funktionen", "mcp", 
-            "think", "sequential", "hilfe", "können", "kannst",
-            "zugriff", "fähigkeiten", "features", "was kannst"
+        query_lower = query.lower()
+        
+        # PRÄZISE Patterns - nur explizite Tool-Fragen
+        explicit_tool_patterns = [
+            "welche tools",
+            "welche mcp",
+            "liste tools",
+            "list tools", 
+            "available tools",
+            "verfügbare tools",
+            "was für tools",
+            "auf welche tools",
+            "mcp tools",
+            "zeig mir die tools",
+            "tool übersicht",
+            "was kannst du alles",  # Nur als volle Phrase
+            "was sind deine fähigkeiten",
         ]
         
-        query_lower = query.lower()
-        if any(kw in query_lower for kw in tool_keywords):
-            log_info(f"[CoreBridge-Memory] Searching system tools for: {query}")
-            
-            # Lade Tool-Übersicht
-            tools_info = get_fact_for_query(SYSTEM_CONV_ID, "available_mcp_tools")
-            if tools_info:
-                return f"Verfügbare Tools: {tools_info}\n"
-            
-            # Auch Usage Guide laden
-            usage_guide = get_fact_for_query(SYSTEM_CONV_ID, "tool_usage_guide")
-            if usage_guide:
-                return f"Tool-Info: {usage_guide}\n"
-            
-            # Fallback: Graph-Suche im System
-            graph_results = graph_search(SYSTEM_CONV_ID, query)
-            if graph_results:
-                return "\n".join([r.get("content", "") for r in graph_results[:2]])
+        # Nur triggern wenn explizites Pattern matcht
+        is_tool_query = any(pattern in query_lower for pattern in explicit_tool_patterns)
+        
+        if not is_tool_query:
+            return ""
+        
+        log_info(f"[CoreBridge-Memory] Explicit tool query detected: {query}")
+        
+        # Lade Tool-Übersicht (mit Limit)
+        tools_info = get_fact_for_query(SYSTEM_CONV_ID, "available_mcp_tools")
+        if tools_info:
+            # Truncate auf max 1500 chars
+            if len(tools_info) > 1500:
+                tools_info = tools_info[:1500] + "..."
+            return f"Verfügbare Tools: {tools_info}\n"
         
         return ""
     
@@ -170,7 +421,7 @@ class CoreBridge:
         log_info(f"[CoreBridge-Thinking] hallucination_risk={thinking_plan.get('hallucination_risk')}")
         
         # ═══════════════════════════════════════════════════════════
-        # MEMORY RETRIEVAL basierend auf Plan
+        # MEMORY RETRIEVAL basierend auf Plan (PARALLEL!)
         # ═══════════════════════════════════════════════════════════
         retrieved_memory = ""
         memory_used = False
@@ -184,25 +435,29 @@ class CoreBridge:
         
         if thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query"):
             memory_keys = thinking_plan.get("memory_keys", [])
-
-            for key in memory_keys:
-                log_info(f"[CoreBridge-Memory] Suche key='{key}'")
-                
-                # Multi-Context Suche (User + System)
-                content, found = self._search_memory_multi_context(
-                    key, 
+            
+            if memory_keys:
+                # PARALLEL Memory-Suche für alle Keys gleichzeitig! ⚡
+                parallel_content, parallel_found = await self._search_memory_parallel(
+                    memory_keys,
                     conversation_id,
                     include_system=True
                 )
                 
-                if found:
-                    retrieved_memory += content
+                if parallel_found:
+                    retrieved_memory += parallel_content
                     memory_used = True
 
-                        
-
-
-
+        # ═══════════════════════════════════════════════════════════
+        # MEMORY SIZE LIMIT - Verhindert Prompt-Überflutung
+        # ═══════════════════════════════════════════════════════════
+        MAX_MEMORY_CHARS = 2500
+        if len(retrieved_memory) > MAX_MEMORY_CHARS:
+            log_warning(f"[CoreBridge-Memory] Truncating memory: {len(retrieved_memory)} → {MAX_MEMORY_CHARS} chars")
+            retrieved_memory = retrieved_memory[:MAX_MEMORY_CHARS] + "\n[... weitere Einträge gekürzt]"
+        
+        if retrieved_memory:
+            log_info(f"[CoreBridge-Memory] Total retrieved: {len(retrieved_memory)} chars")
         # ═══════════════════════════════════════════════════════════
         # LAYER 2: CONTROL (Qwen) - Verifiziert BEVOR Output!
         # ═══════════════════════════════════════════════════════════
@@ -391,6 +646,12 @@ class CoreBridge:
                         "reasoning": thinking_plan.get("reasoning", ""),
                         "is_fact_query": thinking_plan.get("is_fact_query", False),
                         "is_new_fact": thinking_plan.get("is_new_fact", False),
+                        # Container & Code Model Felder
+                        "needs_container": thinking_plan.get("needs_container", False),
+                        "container_name": thinking_plan.get("container_name"),
+                        "container_task": thinking_plan.get("container_task"),
+                        "use_code_model": thinking_plan.get("use_code_model", False),
+                        "code_language": thinking_plan.get("code_language"),
                     }
                 })
         
@@ -398,7 +659,17 @@ class CoreBridge:
         log_info(f"[CoreBridge-Thinking] hallucination_risk={thinking_plan.get('hallucination_risk')}")
         
         # ═══════════════════════════════════════════════════════════
-        # MEMORY RETRIEVAL - Non-Streaming
+        # AUTO-EXECUTE HEURISTIK: Fallback wenn ThinkingLayer unsicher
+        # ═══════════════════════════════════════════════════════════
+        if self._should_auto_execute_code(user_text, thinking_plan):
+            if not thinking_plan.get("needs_container"):
+                log_info(f"[CoreBridge-AutoExec] Overriding: needs_container = True (heuristic)")
+                thinking_plan["needs_container"] = True
+                thinking_plan["container_name"] = thinking_plan.get("container_name") or "code-sandbox"
+                thinking_plan["container_task"] = thinking_plan.get("container_task") or "execute"
+        
+        # ═══════════════════════════════════════════════════════════
+        # MEMORY RETRIEVAL - PARALLEL! ⚡
         # ═══════════════════════════════════════════════════════════
         retrieved_memory = ""
         memory_used = False
@@ -412,20 +683,99 @@ class CoreBridge:
         
         if thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query"):
             memory_keys = thinking_plan.get("memory_keys", [])
-
-            for key in memory_keys:
-                log_info(f"[CoreBridge-Memory] Suche key='{key}'")
-                
-                # Multi-Context Suche (User + System)
-                content, found = self._search_memory_multi_context(
-                    key, 
+            
+            if memory_keys:
+                # PARALLEL Memory-Suche für alle Keys gleichzeitig! ⚡
+                parallel_content, parallel_found = await self._search_memory_parallel(
+                    memory_keys,
                     conversation_id,
                     include_system=True
                 )
                 
-                if found:
-                    retrieved_memory += content
+                if parallel_found:
+                    retrieved_memory += parallel_content
                     memory_used = True
+
+        # ═══════════════════════════════════════════════════════════
+        # MEMORY SIZE LIMIT - Verhindert Prompt-Überflutung
+        # ═══════════════════════════════════════════════════════════
+        MAX_MEMORY_CHARS = 2500
+        if len(retrieved_memory) > MAX_MEMORY_CHARS:
+            log_warning(f"[CoreBridge-Memory] Truncating memory: {len(retrieved_memory)} → {MAX_MEMORY_CHARS} chars")
+            retrieved_memory = retrieved_memory[:MAX_MEMORY_CHARS] + "\n[... weitere Einträge gekürzt]"
+        
+        if retrieved_memory:
+            log_info(f"[CoreBridge-Memory] Total retrieved: {len(retrieved_memory)} chars")
+
+        # ═══════════════════════════════════════════════════════════
+        # CONTAINER EXECUTION (wenn ThinkingLayer es angefordert hat)
+        # ═══════════════════════════════════════════════════════════
+        container_result = None
+        
+        if thinking_plan.get("needs_container") and ENABLE_CONTAINER_MANAGER:
+            container_name = thinking_plan.get("container_name")
+            container_task = thinking_plan.get("container_task", "execute")
+            
+            if container_name:
+                log_info(f"[CoreBridge] === CONTAINER EXECUTION: {container_name} ===")
+                
+                # Signal an Client: Container wird gestartet
+                log_info(f"[CoreBridge-Container] Yielding container_start event")
+                yield ("", False, {
+                    "type": "container_start",
+                    "container": container_name,
+                    "task": container_task
+                })
+                
+                # Code aus der Nachricht extrahieren
+                code = self._extract_code_from_message(user_text)
+                
+                if code:
+                    log_info(f"[CoreBridge-Container] Executing {len(code)} chars of code")
+                    
+                    # Code in Container ausführen
+                    container_result = await self._execute_in_container(
+                        container_name=container_name,
+                        code=code,
+                        task=container_task
+                    )
+                    
+                    log_info(f"[CoreBridge-Container] Execution done, result: {container_result}")
+                    
+                    # Signal an Client: Container fertig
+                    yield ("", False, {
+                        "type": "container_done",
+                        "result": container_result
+                    })
+                    log_info(f"[CoreBridge-Container] Yielded container_done event")
+                    
+                    # Container-Ergebnis zum Memory hinzufügen für OutputLayer
+                    if container_result and not container_result.get("error"):
+                        execution_info = f"\n\n=== CODE-AUSFÜHRUNG ({container_name}) ===\n"
+                        execution_info += f"Exit-Code: {container_result.get('exit_code', 'N/A')}\n"
+                        
+                        stdout = container_result.get("stdout", "")
+                        stderr = container_result.get("stderr", "")
+                        
+                        if stdout:
+                            execution_info += f"Output:\n{stdout}\n"
+                        if stderr:
+                            execution_info += f"Errors:\n{stderr}\n"
+                        
+                        retrieved_memory += execution_info
+                        log_info(f"[CoreBridge-Container] Added execution result to context")
+                else:
+                    log_warning("[CoreBridge-Container] No code found in message")
+                    container_result = {"error": "Kein Code in der Nachricht gefunden"}
+
+        # ═══════════════════════════════════════════════════════════
+        # MODEL SELECTION: Code-Model wenn nötig
+        # ═══════════════════════════════════════════════════════════
+        use_code_model = thinking_plan.get("use_code_model", False)
+        selected_model = CODE_MODEL if use_code_model else request.model
+        
+        if use_code_model:
+            log_info(f"[CoreBridge] Using CODE_MODEL: {CODE_MODEL} (instead of {request.model})")
 
         # ═══════════════════════════════════════════════════════════
         # LAYER 2: CONTROL - Non-Streaming (optional skip)
@@ -471,16 +821,22 @@ class CoreBridge:
         full_answer = ""
         
         # Streame die Antwort MIT Chat-History für Kontext
+        # Nutzt CODE_MODEL wenn use_code_model=true
         async for chunk in self.output.generate_stream(
             user_text=user_text,
             verified_plan=verified_plan,
             memory_data=retrieved_memory,
-            model=request.model,
+            model=selected_model,  # ← CODE_MODEL oder request.model
             memory_required_but_missing=memory_required_but_missing,
-            chat_history=request.messages  # ← NEU: History für Kontext!
+            chat_history=request.messages
         ):
             full_answer += chunk
-            yield (chunk, False, {"type": "content", "memory_used": memory_used})
+            yield (chunk, False, {
+                "type": "content", 
+                "memory_used": memory_used,
+                "model": selected_model,
+                "code_model_used": use_code_model
+            })
         
         log_info(f"[CoreBridge-Output] Streamed {len(full_answer)} chars")
         
@@ -516,7 +872,13 @@ class CoreBridge:
             log_error(f"[CoreBridge-Autosave] Error: {e}")
         
         # Final done signal
-        yield ("", True, {"memory_used": memory_used, "done_reason": "stop"})
+        yield ("", True, {
+            "memory_used": memory_used, 
+            "done_reason": "stop",
+            "model": selected_model,
+            "code_model_used": use_code_model,
+            "container_used": container_result is not None
+        })
 
 
 # Singleton-Instanz

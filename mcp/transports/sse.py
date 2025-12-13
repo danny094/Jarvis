@@ -159,5 +159,5 @@ class SSETransport:
         try:
             tools = self.list_tools()
             return True
-        except:
+        except Exception:
             return False

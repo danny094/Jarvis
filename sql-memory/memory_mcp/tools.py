@@ -299,6 +299,71 @@ def register_tools(mcp):
             conn.close()
 
     # --------------------------------------------------
+    # memory_list_conversations
+    # --------------------------------------------------
+    @mcp.tool
+    def memory_list_conversations(limit: int = 100) -> Dict:
+        """Listet alle Conversation-IDs mit Statistiken."""
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT conversation_id, 
+                       COUNT(*) as entry_count,
+                       MAX(id) as latest_id
+                FROM memory
+                GROUP BY conversation_id
+                ORDER BY latest_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            
+            conversations = []
+            for row in cur.fetchall():
+                conversations.append({
+                    "conversation_id": row[0],
+                    "entry_count": row[1],
+                    "latest_id": row[2]
+                })
+            
+            return {
+                "conversations": conversations,
+                "total": len(conversations)
+            }
+        finally:
+            conn.close()
+
+    # --------------------------------------------------
+    # memory_all_recent (für Maintenance)
+    # --------------------------------------------------
+    @mcp.tool
+    def memory_all_recent(limit: int = 500) -> Dict:
+        """Holt die neuesten Einträge aus ALLEN Conversations."""
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT *
+                FROM memory
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            
+            entries = [row_to_memory_dict(r) for r in cur.fetchall()]
+            
+            return {
+                "entries": entries,
+                "total": len(entries)
+            }
+        finally:
+            conn.close()
+
+    # --------------------------------------------------
     # autosave hook
     # --------------------------------------------------
     @mcp.tool

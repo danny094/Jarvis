@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from utils.ollama import query_model
+from config import THINKING_MODEL
 
 PROMPT_PATH = Path(__file__).parent / "decision_prompt.txt"
 DECISION_PROMPT = PROMPT_PATH.read_text(encoding="utf-8")
@@ -16,7 +17,7 @@ async def run_decision_layer(payload: dict):
         .replace("<<<MEMORY>>>", memory_text) \
         .replace("<<<USER>>>", user_text)
 
-    model = "deepseek-r1:8b"
+    model = THINKING_MODEL
 
     raw = await query_model(
         model=model,

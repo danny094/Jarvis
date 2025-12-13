@@ -28,6 +28,7 @@ sys.path.insert(0, PROJECT_ROOT)
 from adapters.lobechat.adapter import get_adapter
 from core.bridge import get_bridge
 from mcp.endpoint import router as mcp_router
+from maintenance.routes import router as maintenance_router
 from utils.logger import log_info, log_error, log_debug
 
 
@@ -38,10 +39,12 @@ app = FastAPI(
     version="1.1.0"
 )
 
-# CORS (LobeChat braucht das)
+# CORS - Security (aus config.py)
+from config import ALLOW_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -49,6 +52,9 @@ app.add_middleware(
 
 # MCP Hub Endpoint einbinden
 app.include_router(mcp_router)
+
+# Maintenance Endpoint einbinden
+app.include_router(maintenance_router, prefix="/api/maintenance")
 
 
 @app.get("/health")
@@ -86,7 +92,7 @@ async def chat(request: Request):
             from datetime import datetime
             
             async def stream_generator():
-                """Generiert NDJSON-Chunks für LobeChat mit Live Thinking."""
+                """Generiert NDJSON-Chunks für LobeChat mit Live Thinking + Container."""
                 try:
                     async for chunk, is_done, metadata in bridge.process_stream(core_request):
                         created_at = datetime.utcnow().isoformat() + "Z"
@@ -110,24 +116,50 @@ async def chat(request: Request):
                                 "done": False,
                             }
                         
+                        # Container Start
+                        elif chunk_type == "container_start":
+                            response_data = {
+                                "model": model,
+                                "created_at": created_at,
+                                "container_start": {
+                                    "container": metadata.get("container", ""),
+                                    "task": metadata.get("task", "execute")
+                                },
+                                "done": False,
+                            }
+                        
+                        # Container Done
+                        elif chunk_type == "container_done":
+                            response_data = {
+                                "model": model,
+                                "created_at": created_at,
+                                "container_done": {
+                                    "result": metadata.get("result", {})
+                                },
+                                "done": False,
+                            }
+                        
                         # Final Done
                         elif is_done:
                             response_data = {
-                                "model": model,
+                                "model": metadata.get("model", model),
                                 "created_at": created_at,
                                 "message": {"role": "assistant", "content": ""},
                                 "done": True,
                                 "done_reason": metadata.get("done_reason", "stop"),
                                 "memory_used": metadata.get("memory_used", False),
+                                "code_model_used": metadata.get("code_model_used", False),
+                                "container_used": metadata.get("container_used", False),
                             }
                         
                         # Content Chunk
                         else:
                             response_data = {
-                                "model": model,
+                                "model": metadata.get("model", model),
                                 "created_at": created_at,
                                 "message": {"role": "assistant", "content": chunk},
                                 "done": False,
+                                "code_model_used": metadata.get("code_model_used", False),
                             }
                         
                         yield (json.dumps(response_data) + "\n").encode("utf-8")
@@ -229,17 +261,219 @@ async def tags():
     LobeChat fragt das ab, um die Model-Liste anzuzeigen.
     Wir leiten das an den echten Ollama-Server weiter.
     """
-    import requests
+    import httpx
     from config import OLLAMA_BASE
     
     try:
-        resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=10)
-        resp.raise_for_status()
-        return JSONResponse(resp.json())
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/tags")
+            resp.raise_for_status()
+            return JSONResponse(resp.json())
     except Exception as e:
         log_error(f"[LobeChat-Adapter] Tags error: {e}")
         # Fallback: Leere Liste
         return JSONResponse({"models": []})
+
+
+# ============================================================
+# API TOOLS ENDPOINTS (für WebUI)
+# ============================================================
+
+@app.get("/api/tools")
+async def list_tools():
+    """Listet alle verfügbaren MCP-Tools."""
+    from mcp.hub import get_hub
+    
+    try:
+        hub = get_hub()
+        tools = hub.list_tools()
+        mcps = hub.list_mcps()
+        
+        return JSONResponse({
+            "mcps": mcps,
+            "tools": tools,
+            "total_tools": len(tools),
+            "total_mcps": len([m for m in mcps if m.get("online")])
+        })
+    except Exception as e:
+        log_error(f"[LobeChat-Adapter] Tools error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/mcps")
+async def list_mcps():
+    """Listet alle MCPs mit Status."""
+    from mcp.hub import get_hub
+    
+    try:
+        hub = get_hub()
+        mcps = hub.list_mcps()
+        return JSONResponse({"mcps": mcps})
+    except Exception as e:
+        log_error(f"[LobeChat-Adapter] MCPs error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/debug/memory/{conversation_id}")
+async def debug_memory(conversation_id: str, request: Request):
+    """Debug-Endpoint: Zeigt Memory für eine Conversation (NUR LOCALHOST!)."""
+    from mcp.client import call_tool
+    from fastapi import HTTPException
+    
+    # Security: Nur von localhost erlaubt!
+    client_host = request.client.host
+    if client_host not in ["127.0.0.1", "localhost", "::1"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Debug-Endpoints nur von localhost erlaubt (requested from: {client_host})"
+        )
+    
+    resp = call_tool(
+        "memory_recent",
+        {"conversation_id": conversation_id, "limit": 20},
+        timeout=5,
+    )
+
+    if not resp:
+        return JSONResponse(
+            {"error": "Keine Antwort vom MCP-Server"},
+            status_code=500
+        )
+
+    return JSONResponse(resp)
+
+
+@app.post("/api/reload-prompt")
+async def reload_prompt():
+    """Hot-Reload: Lädt den System-Prompt neu ohne Neustart."""
+    from core.persona import reload_persona
+    
+    try:
+        persona = reload_persona()
+        prompt = persona.build_system_prompt()
+        
+        return JSONResponse({
+            "status": "ok",
+            "message": "System-Prompt neu geladen",
+            "prompt_length": len(prompt),
+            "prompt_preview": prompt[:500] + "..." if len(prompt) > 500 else prompt
+        })
+    except Exception as e:
+        log_error(f"[LobeChat-Adapter] Reload error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/system-prompt")
+async def get_system_prompt():
+    """Zeigt den aktuellen System-Prompt an."""
+    from core.persona import get_persona
+    
+    try:
+        persona = get_persona()
+        prompt = persona.build_system_prompt()
+        
+        return JSONResponse({
+            "name": persona.name,
+            "prompt_length": len(prompt),
+            "prompt": prompt
+        })
+    except Exception as e:
+        log_error(f"[LobeChat-Adapter] Get prompt error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ============================================================
+# DIRECT CODE EXECUTION (für WebUI Run-Button)
+# ============================================================
+@app.post("/api/execute")
+async def execute_code(request: Request):
+    """
+    Führt Code direkt in einem Sandbox-Container aus.
+    
+    Verwendet für den "Run"-Button in interaktiven Code-Blöcken.
+    Kein Chat-Context, nur Code-Ausführung.
+    
+    Request Body:
+    {
+        "code": "print('Hello')",
+        "language": "python",
+        "container": "code-sandbox"
+    }
+    """
+    import httpx
+    from config import CONTAINER_MANAGER_URL, ENABLE_CONTAINER_MANAGER
+    
+    if not ENABLE_CONTAINER_MANAGER:
+        return JSONResponse({
+            "error": "Container-Manager ist deaktiviert"
+        }, status_code=503)
+    
+    try:
+        data = await request.json()
+        code = data.get("code", "")
+        language = data.get("language", "python")
+        container = data.get("container", "code-sandbox")
+        
+        if not code:
+            return JSONResponse({
+                "error": "Kein Code angegeben"
+            }, status_code=400)
+        
+        log_info(f"[LobeChat-Adapter] /api/execute → {language} in {container}")
+        
+        # Container-Manager aufrufen
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{CONTAINER_MANAGER_URL}/containers/start",
+                json={
+                    "container_name": container,
+                    "code": code,
+                    "timeout": 60
+                }
+            )
+            
+            if response.status_code == 403:
+                return JSONResponse({
+                    "error": f"Container '{container}' nicht erlaubt"
+                }, status_code=403)
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            # Container stoppen
+            container_id = result.get("container_id")
+            if container_id:
+                try:
+                    await client.post(
+                        f"{CONTAINER_MANAGER_URL}/containers/stop",
+                        json={"container_id": container_id}
+                    )
+                except Exception as e:
+                    log_error(f"[LobeChat-Adapter] Container stop failed: {e}")
+            
+            execution_result = result.get("execution_result", {})
+            
+            return JSONResponse({
+                "exit_code": execution_result.get("exit_code"),
+                "stdout": execution_result.get("stdout", ""),
+                "stderr": execution_result.get("stderr", ""),
+                "container": container,
+                "language": language
+            })
+            
+    except httpx.TimeoutException:
+        return JSONResponse({
+            "error": "Container-Ausführung Timeout (120s)"
+        }, status_code=504)
+    except httpx.HTTPStatusError as e:
+        return JSONResponse({
+            "error": f"Container-Manager Fehler: {e.response.status_code}"
+        }, status_code=502)
+    except Exception as e:
+        log_error(f"[LobeChat-Adapter] Execute error: {e}")
+        return JSONResponse({
+            "error": str(e)
+        }, status_code=500)
 
 
 @app.get("/")
@@ -257,11 +491,27 @@ async def root():
                 "/api/generate", 
                 "/api/tags",
             ],
+            "api": [
+                "/api/tools",          # Tool-Liste (für WebUI)
+                "/api/mcps",           # MCP-Status (für WebUI)
+                "/api/system-prompt",  # System-Prompt anzeigen
+                "/api/reload-prompt",  # System-Prompt hot-reload (POST)
+                "/api/execute",        # Direct code execution (POST)
+            ],
             "mcp": [
                 "/mcp",           # Hauptendpoint für WebUIs
                 "/mcp/status",    # Status aller MCPs
                 "/mcp/tools",     # Tool-Liste
                 "/mcp/refresh",   # Tools neu laden
+            ],
+            "maintenance": [
+                "/api/maintenance/status",   # Memory-Status
+                "/api/maintenance/start",    # Maintenance starten
+                "/api/maintenance/cancel",   # Abbrechen
+                "/api/maintenance/history",  # Historie
+            ],
+            "debug": [
+                "/debug/memory/{id}",  # Memory für Conversation
             ],
             "health": "/health",
         },

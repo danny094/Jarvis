@@ -1,10 +1,11 @@
-# docker-compose.yml (Neue modulare Version)
+# docker-compose.yml (Modulare Version mit n8n)
 #
 # Services:
-# - lobechat-adapter:  Port 8100 → LobeChat trägt diese URL ein
-# - openwebui-adapter: Port 8200 → Open WebUI trägt diese URL ein (optional)
-# - mcp-sql-memory:    Port 8082 → Memory-Server (intern 8081)
-# - validator-service: Port 8300 → Validator (intern 8000)
+# - lobechat-adapter:   Port 8100 → LobeChat trägt diese URL ein
+# - mcp-sql-memory:     Port 8082 → Memory-Server
+# - validator-service:  Port 8300 → Validator
+# - n8n:                Port 5678 → Workflow Automation
+# - container-manager:  Port 8400 → Container MCP-Server
 #
 # Netzwerk: big-bear-lobe-chat_default (extern, muss existieren)
 
@@ -24,48 +25,32 @@ services:
       - OLLAMA_BASE=http://ollama:11434
       - MCP_BASE=http://mcp-sql-memory:8081/mcp
       - VALIDATOR_URL=http://validator-service:8000
+      - N8N_WEBHOOK_URL=http://n8n:5678/webhook
+      - CONTAINER_MANAGER_URL=http://container-manager:8400
       
-      # Model Konfiguration (änderbar!)
+      # Model Konfiguration
       - THINKING_MODEL=deepseek-r1:8b
       - CONTROL_MODEL=qwen3:4b
       - OUTPUT_MODEL=llama3.1:8b
+      - CODE_MODEL=qwen2.5-coder:3b
       - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
       
-      # Layer Toggles (Speed-Optimierung!)
+      # Layer Toggles
       - ENABLE_CONTROL_LAYER=true
-      - SKIP_CONTROL_ON_LOW_RISK=true   # ← SPEED BOOST!
+      - SKIP_CONTROL_ON_LOW_RISK=true
       
       # Validation
       - ENABLE_VALIDATION=true
       - VALIDATION_HARD_FAIL=true
       - LOG_LEVEL=INFO
     volumes:
-      - ./config:/app/config:ro  # Persona Config (read-only)
+      - ./config:/app/config:ro
     networks:
       - big-bear-lobe-chat_default
     restart: unless-stopped
     depends_on:
       - mcp-sql-memory
-
-  # ============================================================
-  # OPEN WEBUI ADAPTER (optional - auskommentieren wenn nicht gebraucht)
-  # ============================================================
-  # openwebui-adapter:
-  #   build:
-  #     context: .
-  #     dockerfile: adapters/openwebui/Dockerfile
-  #   container_name: openwebui-adapter
-  #   ports:
-  #     - "8200:8200"
-  #   environment:
-  #     - OLLAMA_BASE=http://ollama:11434
-  #     - MCP_BASE=http://mcp-sql-memory:8081/mcp
-  #     - VALIDATOR_URL=http://validator-service:8000
-  #     - ENABLE_VALIDATION=true
-  #     - LOG_LEVEL=INFO
-  #   networks:
-  #     - big-bear-lobe-chat_default
-  #   restart: unless-stopped
+      - container-manager
 
   # ============================================================
   # MCP SQL MEMORY SERVER
@@ -103,6 +88,57 @@ services:
       - big-bear-lobe-chat_default
     restart: unless-stopped
 
+  # ============================================================
+  # N8N - WORKFLOW AUTOMATION
+  # ============================================================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://n8n:5678
+      - GENERIC_TIMEZONE=Europe/Berlin
+      # Sicherheit: Nur interne Webhooks erlauben
+      - N8N_ENDPOINT_WEBHOOK=webhook
+      - N8N_ENDPOINT_WEBHOOK_TEST=webhook-test
+    volumes:
+      - ./n8n/data:/home/node/.n8n
+      # Docker Socket für Container-Management!
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - big-bear-lobe-chat_default
+    restart: unless-stopped
+    # n8n braucht root für Docker-Socket
+    user: root
+
+  # ============================================================
+  # CONTAINER MANAGER - MCP Server für Sandbox-Container
+  # ============================================================
+  container-manager:
+    build:
+      context: ./container-manager
+    container_name: container-manager
+    ports:
+      - "8400:8400"
+    environment:
+      - N8N_WEBHOOK_URL=http://n8n:5678/webhook
+      - REGISTRY_PATH=/app/containers/registry.yaml
+    volumes:
+      # Container-Registry (read-only)
+      - ./containers:/app/containers:ro
+      # Docker Socket für direkte Container-Operationen
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - big-bear-lobe-chat_default
+    restart: unless-stopped
+    depends_on:
+      - n8n
+
 networks:
   big-bear-lobe-chat_default:
     external: true
+
