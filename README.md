@@ -937,7 +937,7 @@ This document provides a comprehensive overview of:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/your-repo/assistant-proxy.git
+git clone 
 
 # 2. Start services
 cd assistant-proxy
