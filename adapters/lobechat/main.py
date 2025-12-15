@@ -103,6 +103,7 @@ async def chat(request: Request):
                             response_data = {
                                 "model": model,
                                 "created_at": created_at,
+                                "message": {"role": "assistant", "content": ""},  # Required for LobeChat
                                 "thinking_stream": metadata.get("thinking_chunk", ""),
                                 "done": False,
                             }
@@ -112,6 +113,7 @@ async def chat(request: Request):
                             response_data = {
                                 "model": model,
                                 "created_at": created_at,
+                                "message": {"role": "assistant", "content": ""},  # Required for LobeChat
                                 "thinking": metadata.get("thinking", {}),
                                 "done": False,
                             }
@@ -121,6 +123,7 @@ async def chat(request: Request):
                             response_data = {
                                 "model": model,
                                 "created_at": created_at,
+                                "message": {"role": "assistant", "content": ""},  # Required for LobeChat
                                 "container_start": {
                                     "container": metadata.get("container", ""),
                                     "task": metadata.get("task", "execute")
@@ -133,6 +136,7 @@ async def chat(request: Request):
                             response_data = {
                                 "model": model,
                                 "created_at": created_at,
+                                "message": {"role": "assistant", "content": ""},  # Required for LobeChat
                                 "container_done": {
                                     "result": metadata.get("result", {})
                                 },

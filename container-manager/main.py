@@ -4,19 +4,27 @@ Container Manager MCP Server
 
 Verwaltet Sandbox-Container für sichere Code-Ausführung.
 Nur Container aus der Registry sind erlaubt!
+
+Features:
+- Sichere Container-Isolation
+- Persistente Sessions mit TTL
+- Auto-Cleanup nach Inaktivität
+- ttyd Integration für Live-Terminal
 """
 
 import os
+import uuid
 import yaml
 import asyncio
 import base64
 import docker
 import docker.errors
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 
 # ============================================================
 # CONFIG
@@ -24,6 +32,9 @@ from pydantic import BaseModel
 
 REGISTRY_PATH = os.environ.get("REGISTRY_PATH", "/app/containers/registry.yaml")
 MAX_OUTPUT_LENGTH = 10000  # Max chars für Container-Output
+DEFAULT_SESSION_TTL = 300  # 5 Minuten default
+MAX_SESSION_TTL = 3600     # 1 Stunde max
+CLEANUP_INTERVAL = 30      # Alle 30 Sekunden prüfen
 
 # ============================================================
 # MODELS
@@ -34,6 +45,10 @@ class ContainerStartRequest(BaseModel):
     code: Optional[str] = None
     command: Optional[str] = None
     timeout: Optional[int] = 60
+    # Session Management
+    keep_alive: bool = False          # Container nach Ausführung behalten
+    ttl_seconds: Optional[int] = 300  # Time-to-Live für persistente Sessions
+    enable_ttyd: bool = False         # Live Terminal aktivieren
 
 class ContainerExecRequest(BaseModel):
     container_id: str
@@ -43,14 +58,86 @@ class ContainerExecRequest(BaseModel):
 class ContainerStopRequest(BaseModel):
     container_id: str
 
+class SessionExtendRequest(BaseModel):
+    session_id: str
+    extend_seconds: int = 300  # Default: +5 Minuten
+
+# ============================================================
+# LIFESPAN & BACKGROUND TASKS
+# ============================================================
+
+cleanup_task = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup & Shutdown lifecycle."""
+    global cleanup_task
+    # Startup: Cleanup-Task starten
+    cleanup_task = asyncio.create_task(session_cleanup_loop())
+    print("[ContainerManager] Session cleanup task started")
+    
+    yield
+    
+    # Shutdown: Cleanup-Task stoppen und Container aufräumen
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+    print("[ContainerManager] Shutting down, cleaning up containers...")
+    container_cleanup()
+
+async def session_cleanup_loop():
+    """Background task: Räumt abgelaufene Sessions auf."""
+    while True:
+        try:
+            await asyncio.sleep(CLEANUP_INTERVAL)
+            cleanup_expired_sessions()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[ContainerManager] Cleanup error: {e}")
+
+def cleanup_expired_sessions():
+    """Prüft und entfernt abgelaufene Sessions."""
+    docker_client = get_docker_client()
+    if not docker_client:
+        return
+    
+    now = datetime.now()
+    tracked = get_tracked_containers()
+    
+    for container_id, info in tracked.items():
+        if not info.get("persistent"):
+            continue
+        
+        last_activity = info.get("last_activity", info.get("started_at"))
+        if isinstance(last_activity, str):
+            last_activity = datetime.fromisoformat(last_activity)
+        
+        ttl = info.get("ttl_seconds", DEFAULT_SESSION_TTL)
+        expires_at = last_activity + timedelta(seconds=ttl)
+        
+        if now > expires_at:
+            print(f"[ContainerManager] Session expired: {container_id} (inactive {(now - last_activity).seconds}s)")
+            try:
+                container = docker_client.containers.get(container_id)
+                container.stop(timeout=5)
+                container.remove()
+            except:
+                pass
+            untrack_container(container_id)
+
 # ============================================================
 # APP
 # ============================================================
 
 app = FastAPI(
     title="Container Manager",
-    description="MCP Server für Sandbox-Container",
-    version="1.0.0"
+    description="MCP Server für Sandbox-Container mit Session-Support",
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # Docker Client - LAZY INIT (nicht beim Import!)
@@ -86,7 +173,28 @@ active_containers_lock = threading.Lock()
 def track_container(container_id: str, info: Dict[str, Any]) -> None:
     """Thread-safe: Container zum Tracking hinzufügen."""
     with active_containers_lock:
+        # Session-ID generieren wenn nicht vorhanden
+        if "session_id" not in info:
+            info["session_id"] = str(uuid.uuid4())
+        # Timestamps als ISO-Strings
+        if "started_at" not in info:
+            info["started_at"] = datetime.now().isoformat()
+        if "last_activity" not in info:
+            info["last_activity"] = datetime.now().isoformat()
         active_containers[container_id] = info
+
+def update_container_activity(container_id: str) -> bool:
+    """Thread-safe: Aktualisiert last_activity timestamp."""
+    with active_containers_lock:
+        if container_id in active_containers:
+            active_containers[container_id]["last_activity"] = datetime.now().isoformat()
+            return True
+        return False
+
+def get_container_session(container_id: str) -> Optional[Dict[str, Any]]:
+    """Thread-safe: Holt Session-Info für Container."""
+    with active_containers_lock:
+        return active_containers.get(container_id)
 
 def untrack_container(container_id: str) -> bool:
     """Thread-safe: Container aus Tracking entfernen. Returns True wenn entfernt."""
@@ -252,6 +360,14 @@ def container_start(request: ContainerStartRequest):
     if network_mode == "none":
         container_options["network_mode"] = "none"
     
+    # ttyd Port wenn aktiviert (braucht Netzwerk!)
+    if request.enable_ttyd:
+        # ttyd braucht Netzwerk-Zugang zum Host
+        if network_mode == "none":
+            # Override für ttyd
+            container_options.pop("network_mode", None)
+        container_options["ports"] = {'7681/tcp': None}  # Random Host-Port
+    
     # Ressourcen-Limits
     if resources.get("memory"):
         container_options["mem_limit"] = resources["memory"]
@@ -276,14 +392,48 @@ def container_start(request: ContainerStartRequest):
         container = docker_client.containers.run(**container_options)
         container_id = container.id[:12]
         
-        # Tracken (thread-safe)
-        track_container(container_id, {
+        # Session-Info erstellen
+        session_info = {
             "name": container_name,
-            "started_at": datetime.now().isoformat(),
-            "config": config
-        })
+            "config": config,
+            "persistent": request.keep_alive,
+            "ttl_seconds": min(request.ttl_seconds or DEFAULT_SESSION_TTL, MAX_SESSION_TTL),
+        }
         
-        print(f"[ContainerManager] Started {container_name} as {container_id}")
+        # ttyd starten wenn aktiviert
+        ttyd_url = None
+        if request.enable_ttyd:
+            try:
+                # ttyd im Container starten (als root, da sandbox user keinen Port öffnen kann)
+                container.exec_run(
+                    "ttyd -W -p 7681 bash",
+                    detach=True,
+                    user="root"
+                )
+                
+                # Container neu laden um Ports zu bekommen
+                container.reload()
+                
+                # Host-Port ermitteln
+                port_info = container.ports.get('7681/tcp')
+                if port_info and len(port_info) > 0:
+                    host_port = port_info[0]['HostPort']
+                    # URL konstruieren (nutzt Host-IP des Docker-Hosts)
+                    ttyd_url = f"http://localhost:{host_port}"
+                    print(f"[ContainerManager] ttyd started on port {host_port}")
+                    session_info["ttyd_port"] = host_port
+                    
+            except Exception as e:
+                print(f"[ContainerManager] ttyd start failed: {e}")
+            
+            session_info["ttyd_enabled"] = True
+            session_info["ttyd_url"] = ttyd_url
+        
+        # Tracken (thread-safe)
+        track_container(container_id, session_info)
+        session_id = get_container_session(container_id).get("session_id")
+        
+        print(f"[ContainerManager] Started {container_name} as {container_id} (session: {session_id[:8]}, persistent: {request.keep_alive})")
         
         # Wenn Code mitgegeben wurde, direkt ausführen
         result = None
@@ -325,12 +475,32 @@ def container_start(request: ContainerStartRequest):
             
             print(f"[ContainerManager] Code executed, exit_code={exec_result.exit_code}")
         
-        return {
+        # Bei nicht-persistenter Session: Container stoppen
+        if not request.keep_alive and result:
+            try:
+                container.stop(timeout=5)
+                container.remove()
+                untrack_container(container_id)
+                print(f"[ContainerManager] Container {container_id} cleaned up (non-persistent)")
+            except:
+                pass
+        
+        # Response mit Session-Info
+        response = {
             "status": "started",
             "container_id": container_id,
             "container_name": container_name,
-            "execution_result": result
+            "execution_result": result,
+            # Session Info
+            "session": {
+                "session_id": session_id,
+                "persistent": request.keep_alive,
+                "ttl_seconds": session_info.get("ttl_seconds"),
+                "ttyd_url": ttyd_url
+            } if request.keep_alive else None
         }
+        
+        return response
         
     except docker.errors.ImageNotFound:
         raise HTTPException(
@@ -358,6 +528,9 @@ def container_exec(request: ContainerExecRequest):
             status_code=404,
             detail=f"Container '{container_id}' nicht gefunden oder nicht aktiv"
         )
+    
+    # Activity updaten (verlängert TTL)
+    update_container_activity(container_id)
     
     try:
         docker_client = get_docker_client()
@@ -494,11 +667,30 @@ def container_status():
     for container_id, info in tracked.items():
         try:
             container = docker_client.containers.get(container_id)
+            
+            # Session-Info berechnen
+            session_info = None
+            if info.get("persistent"):
+                last_activity = info.get("last_activity", info.get("started_at"))
+                if isinstance(last_activity, str):
+                    last_activity_dt = datetime.fromisoformat(last_activity)
+                else:
+                    last_activity_dt = last_activity
+                ttl = info.get("ttl_seconds", DEFAULT_SESSION_TTL)
+                remaining = ttl - (datetime.now() - last_activity_dt).seconds
+                session_info = {
+                    "session_id": info.get("session_id"),
+                    "ttl_seconds": ttl,
+                    "remaining_seconds": max(0, remaining)
+                }
+            
             result.append({
                 "container_id": container_id,
                 "name": info["name"],
                 "status": container.status,
-                "started_at": info["started_at"]
+                "started_at": info.get("started_at"),
+                "persistent": info.get("persistent", False),
+                "session": session_info
             })
         except docker.errors.NotFound:
             # Container ist weg - aus Tracking entfernen
@@ -542,7 +734,116 @@ def container_cleanup():
     return {"stopped": stopped, "count": len(stopped)}
 
 # ============================================================
-# STARTUP
+# SESSION MANAGEMENT
+# ============================================================
+
+@app.get("/sessions")
+def list_sessions():
+    """Listet alle aktiven Sessions."""
+    tracked = get_tracked_containers()
+    sessions = []
+    
+    for container_id, info in tracked.items():
+        if info.get("persistent"):
+            last_activity = info.get("last_activity", info.get("started_at"))
+            if isinstance(last_activity, str):
+                last_activity_dt = datetime.fromisoformat(last_activity)
+            else:
+                last_activity_dt = last_activity
+            
+            ttl = info.get("ttl_seconds", DEFAULT_SESSION_TTL)
+            remaining = ttl - (datetime.now() - last_activity_dt).seconds
+            
+            sessions.append({
+                "session_id": info.get("session_id"),
+                "container_id": container_id,
+                "name": info.get("name"),
+                "started_at": info.get("started_at"),
+                "last_activity": info.get("last_activity"),
+                "ttl_seconds": ttl,
+                "remaining_seconds": max(0, remaining),
+                "ttyd_enabled": info.get("ttyd_enabled", False)
+            })
+    
+    return {"sessions": sessions, "count": len(sessions)}
+
+@app.get("/sessions/{session_id}")
+def get_session(session_id: str):
+    """Holt Session-Details."""
+    tracked = get_tracked_containers()
+    
+    for container_id, info in tracked.items():
+        if info.get("session_id") == session_id:
+            last_activity = info.get("last_activity", info.get("started_at"))
+            if isinstance(last_activity, str):
+                last_activity_dt = datetime.fromisoformat(last_activity)
+            else:
+                last_activity_dt = last_activity
+            
+            ttl = info.get("ttl_seconds", DEFAULT_SESSION_TTL)
+            remaining = ttl - (datetime.now() - last_activity_dt).seconds
+            
+            return {
+                "session_id": session_id,
+                "container_id": container_id,
+                "name": info.get("name"),
+                "started_at": info.get("started_at"),
+                "last_activity": info.get("last_activity"),
+                "ttl_seconds": ttl,
+                "remaining_seconds": max(0, remaining),
+                "ttyd_enabled": info.get("ttyd_enabled", False),
+                "config": info.get("config", {})
+            }
+    
+    raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+@app.post("/sessions/{session_id}/extend")
+def extend_session(session_id: str, request: SessionExtendRequest):
+    """Verlängert TTL einer Session."""
+    with active_containers_lock:
+        for container_id, info in active_containers.items():
+            if info.get("session_id") == session_id:
+                # Activity updaten und TTL verlängern
+                info["last_activity"] = datetime.now().isoformat()
+                new_ttl = min(info.get("ttl_seconds", DEFAULT_SESSION_TTL) + request.extend_seconds, MAX_SESSION_TTL)
+                info["ttl_seconds"] = new_ttl
+                
+                return {
+                    "session_id": session_id,
+                    "extended_by": request.extend_seconds,
+                    "new_ttl": new_ttl,
+                    "message": f"Session extended by {request.extend_seconds}s"
+                }
+    
+    raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+@app.delete("/sessions/{session_id}")
+def close_session(session_id: str):
+    """Schließt eine Session manuell."""
+    docker_client = get_docker_client()
+    
+    tracked = get_tracked_containers()
+    for container_id, info in tracked.items():
+        if info.get("session_id") == session_id:
+            if docker_client:
+                try:
+                    container = docker_client.containers.get(container_id)
+                    container.stop(timeout=5)
+                    container.remove()
+                except:
+                    pass
+            
+            untrack_container(container_id)
+            return {
+                "session_id": session_id,
+                "container_id": container_id,
+                "status": "closed"
+            }
+    
+    raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+# ============================================================
+# STARTUP (Legacy - wird von lifespan ersetzt, aber behalten für Kompatibilität)
 # ============================================================
 
 @app.on_event("startup")
@@ -555,11 +856,4 @@ async def startup():
     for name, config in containers.items():
         print(f"  - {name}: {config.get('description', 'No description')}")
     
-    print("[ContainerManager] Ready!")
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Shutdown: Alle Container aufräumen."""
-    print("[ContainerManager] Shutting down, cleaning up containers...")
-    # container_cleanup ist jetzt sync - direkt aufrufen
-    container_cleanup()
+    print("[ContainerManager] Ready with Session Support!")

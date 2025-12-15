@@ -62,7 +62,9 @@ class CoreBridge:
         self,
         container_name: str,
         code: str,
-        task: str = "execute"
+        task: str = "execute",
+        keep_alive: bool = False,
+        enable_ttyd: bool = False
     ) -> Dict[str, Any]:
         """
         Führt Code in einem Sandbox-Container aus.
@@ -71,16 +73,18 @@ class CoreBridge:
             container_name: Name des Containers (z.B. "code-sandbox")
             code: Der auszuführende Code
             task: "execute", "analyze", "test"
+            keep_alive: Container nach Ausführung behalten (für Sessions)
+            enable_ttyd: Live Terminal aktivieren
             
         Returns:
-            Dict mit stdout, stderr, exit_code
+            Dict mit stdout, stderr, exit_code, session (wenn keep_alive)
         """
         if not ENABLE_CONTAINER_MANAGER:
             log_warning("[CoreBridge-Container] Container-Manager disabled")
             return {"error": "Container-Manager ist deaktiviert"}
         
         try:
-            log_info(f"[CoreBridge-Container] Starting {container_name} for task={task}")
+            log_info(f"[CoreBridge-Container] Starting {container_name} for task={task} (keep_alive={keep_alive}, ttyd={enable_ttyd})")
             
             async with httpx.AsyncClient(timeout=120.0) as client:
                 # Container starten und Code ausführen
@@ -89,7 +93,10 @@ class CoreBridge:
                     json={
                         "container_name": container_name,
                         "code": code,
-                        "timeout": 60
+                        "timeout": 60,
+                        "keep_alive": keep_alive,
+                        "enable_ttyd": enable_ttyd,
+                        "ttl_seconds": 300  # 5 Minuten default
                     }
                 )
                 
@@ -101,20 +108,20 @@ class CoreBridge:
                 response.raise_for_status()
                 result = response.json()
                 
-                # Container stoppen (Cleanup)
+                # Container-Manager handhabt jetzt Cleanup selbst (wenn keep_alive=false)
+                # Nur Session-Info extrahieren wenn vorhanden
+                session_info = result.get("session")
                 container_id = result.get("container_id")
-                if container_id:
-                    try:
-                        await client.post(
-                            f"{self.container_manager_url}/containers/stop",
-                            json={"container_id": container_id}
-                        )
-                        log_info(f"[CoreBridge-Container] Stopped {container_id}")
-                    except Exception as e:
-                        log_warning(f"[CoreBridge-Container] Stop failed: {e}")
+                
+                if keep_alive and session_info:
+                    log_info(f"[CoreBridge-Container] Session created: {session_info.get('session_id', 'unknown')[:8]}")
                 
                 execution_result = result.get("execution_result") or {}
                 log_info(f"[CoreBridge-Container] Exit code: {execution_result.get('exit_code')}")
+                
+                # Session-Info zum Result hinzufügen
+                if session_info:
+                    execution_result["session"] = session_info
                 
                 # Falls kein Result, leeres Dict mit Hinweis
                 if not execution_result:
