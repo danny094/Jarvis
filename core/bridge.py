@@ -64,7 +64,8 @@ class CoreBridge:
         code: str,
         task: str = "execute",
         keep_alive: bool = False,
-        enable_ttyd: bool = False
+        enable_ttyd: bool = False,
+        language: str = "python"
     ) -> Dict[str, Any]:
         """
         Führt Code in einem Sandbox-Container aus.
@@ -75,6 +76,7 @@ class CoreBridge:
             task: "execute", "analyze", "test"
             keep_alive: Container nach Ausführung behalten (für Sessions)
             enable_ttyd: Live Terminal aktivieren
+            language: Programmiersprache (python, bash, javascript, etc.)
             
         Returns:
             Dict mit stdout, stderr, exit_code, session (wenn keep_alive)
@@ -84,19 +86,21 @@ class CoreBridge:
             return {"error": "Container-Manager ist deaktiviert"}
         
         try:
-            log_info(f"[CoreBridge-Container] Starting {container_name} for task={task} (keep_alive={keep_alive}, ttyd={enable_ttyd})")
+            log_info(f"[CoreBridge-Container] Starting {container_name} for task={task} (keep_alive={keep_alive}, ttyd={enable_ttyd}, lang={language})")
             
             async with httpx.AsyncClient(timeout=120.0) as client:
                 # Container starten und Code ausführen
+                # WICHTIG: /sandbox/execute prüft automatisch ob User-Sandbox aktiv ist!
                 response = await client.post(
-                    f"{self.container_manager_url}/containers/start",
+                    f"{self.container_manager_url}/sandbox/execute",
                     json={
                         "container_name": container_name,
                         "code": code,
                         "timeout": 60,
                         "keep_alive": keep_alive,
                         "enable_ttyd": enable_ttyd,
-                        "ttl_seconds": 300  # 5 Minuten default
+                        "ttl_seconds": 300,  # 5 Minuten default
+                        "language": language  # Sprache weitergeben!
                     }
                 )
                 
@@ -107,6 +111,10 @@ class CoreBridge:
                 
                 response.raise_for_status()
                 result = response.json()
+                
+                # Log ob User-Sandbox genutzt wurde
+                if result.get("using_user_sandbox"):
+                    log_info(f"[CoreBridge-Container] Using USER-SANDBOX for execution")
                 
                 # Container-Manager handhabt jetzt Cleanup selbst (wenn keep_alive=false)
                 # Nur Session-Info extrahieren wenn vorhanden
@@ -139,28 +147,196 @@ class CoreBridge:
             log_error(f"[CoreBridge-Container] Error: {e}")
             return {"error": str(e)}
     
-    def _extract_code_from_message(self, text: str) -> Optional[str]:
+    # ═══════════════════════════════════════════════════════════════
+    # CODE MODEL HELPERS: Intelligente Code-Extraktion/Formatierung
+    # ═══════════════════════════════════════════════════════════════
+    
+    async def _format_code_with_model(self, code: str) -> str:
         """
-        Extrahiert Code aus einer User-Nachricht.
-        Sucht nach Code-Blöcken (```...```) oder inline Code.
-        """
-        log_info(f"[CoreBridge-Container] Extracting code from: {text[:100]}...")
+        Nutzt das Code-Model um schlecht formatierten Code zu korrigieren.
         
-        # Code-Block mit Sprache (mit oder ohne Newline nach Sprache)
+        WICHTIG: Das Model darf den Code NUR formatieren, nicht inhaltlich ändern!
+        """
+        prompt = f"""Du bist ein Code-Formatierer. Formatiere den folgenden Python-Code korrekt.
+
+REGELN:
+- Füge korrekte Einrückungen hinzu (4 Spaces pro Level)
+- Füge Newlines zwischen Statements ein
+- Ändere den Code NICHT inhaltlich
+- Korrigiere KEINE logischen Fehler
+- Füge KEINE Kommentare hinzu
+- Gib NUR den formatierten Code zurück, keine Erklärung
+
+CODE:
+{code}
+
+FORMATIERTER CODE:"""
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{OLLAMA_BASE}/api/generate",
+                    json={
+                        "model": CODE_MODEL,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.0},  # Deterministic
+                        "keep_alive": -1,  # Model bleibt permanent im RAM!
+                    }
+                )
+                response.raise_for_status()
+                result = response.json()
+                formatted = result.get("response", "").strip()
+                
+                # Bereinigen: Manchmal gibt das Model Markdown-Blöcke zurück
+                if formatted.startswith("```"):
+                    match = re.search(r'```(?:\w+)?\n?(.*?)```', formatted, re.DOTALL)
+                    if match:
+                        formatted = match.group(1).strip()
+                
+                log_info(f"[CoreBridge-CodeModel] Formatted code: {len(code)} → {len(formatted)} chars")
+                return formatted if formatted else code
+                
+        except Exception as e:
+            log_warning(f"[CoreBridge-CodeModel] Format failed: {e}, using original")
+            return code
+    
+    async def _extract_code_with_model(self, text: str) -> Optional[str]:
+        """
+        Nutzt das Code-Model um Code aus einer Nachricht zu extrahieren.
+        
+        Wird als Fallback genutzt wenn Regex nichts findet.
+        """
+        prompt = f"""Extrahiere den Python-Code aus der folgenden Nachricht.
+
+REGELN:
+- Extrahiere NUR den Code, keine Erklärungen
+- Formatiere den Code korrekt mit Einrückungen
+- Ändere den Code NICHT inhaltlich
+- Korrigiere KEINE Fehler im Code
+- Wenn KEIN Code vorhanden ist, antworte mit: NO_CODE
+- Gib NUR den Code zurück, keine Markdown-Blöcke
+
+NACHRICHT:
+{text}
+
+EXTRAHIERTER CODE:"""
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{OLLAMA_BASE}/api/generate",
+                    json={
+                        "model": CODE_MODEL,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.0},
+                        "keep_alive": -1,  # Model bleibt permanent im RAM!
+                    }
+                )
+                response.raise_for_status()
+                result = response.json()
+                extracted = result.get("response", "").strip()
+                
+                # Prüfen ob Model keinen Code gefunden hat
+                if extracted.upper() == "NO_CODE" or not extracted:
+                    log_info("[CoreBridge-CodeModel] Model found no code")
+                    return None
+                
+                # Bereinigen: Manchmal gibt das Model Markdown-Blöcke zurück
+                if extracted.startswith("```"):
+                    match = re.search(r'```(?:\w+)?\n?(.*?)```', extracted, re.DOTALL)
+                    if match:
+                        extracted = match.group(1).strip()
+                
+                log_info(f"[CoreBridge-CodeModel] Extracted code: {len(extracted)} chars")
+                return extracted if len(extracted) > 10 else None
+                
+        except Exception as e:
+            log_warning(f"[CoreBridge-CodeModel] Extract failed: {e}")
+            return None
+    
+    async def _extract_code_from_message_async(self, text: str) -> Optional[str]:
+        """
+        Hybrid Code-Extraktion: Regex zuerst, Code-Model als Fallback.
+        
+        Flow:
+        1. Regex versucht Code zu extrahieren
+        2. Erfolg + gut formatiert? → Return
+        3. Erfolg aber einzeilig? → Code-Model formatiert
+        4. Kein Erfolg? → Code-Model extrahiert
+        """
+        log_info(f"[CoreBridge-Container] Extracting code (hybrid) from: {text[:100]}...")
+        
+        # ═══════════════════════════════════════════════════════════
+        # SCHRITT 1: Regex-Extraktion versuchen
+        # ═══════════════════════════════════════════════════════════
+        code = self._extract_code_from_message_regex(text)
+        
+        if code:
+            # Prüfen ob Code WIRKLICH gut formatiert ist:
+            # - Hat Newlines UND
+            # - Hat korrekte Einrückungen (mindestens eine Zeile mit führenden Spaces)
+            has_newlines = '\n' in code
+            has_indentation = bool(re.search(r'\n[ \t]+\S', code))  # Newline + Whitespace + Non-Whitespace
+            
+            if has_newlines and has_indentation:
+                log_info(f"[CoreBridge-Container] Regex found well-formatted code with indentation: {len(code)} chars")
+                return code
+            
+            # Code hat Newlines aber KEINE Einrückung (z.B. nach Zeilennummern-Cleanup)
+            # ODER Code ist einzeilig → Model formatieren lassen
+            log_info(f"[CoreBridge-Container] Code needs formatting (newlines={has_newlines}, indent={has_indentation}), asking model...")
+            formatted = await self._format_code_with_model(code)
+            return formatted
+        
+        # ═══════════════════════════════════════════════════════════
+        # SCHRITT 2: Code-Model als Fallback
+        # ═══════════════════════════════════════════════════════════
+        log_info(f"[CoreBridge-Container] Regex found nothing, asking model to extract...")
+        extracted = await self._extract_code_with_model(text)
+        
+        if extracted:
+            log_info(f"[CoreBridge-Container] Model extracted code: {len(extracted)} chars")
+            return extracted
+        
+        log_warning(f"[CoreBridge-Container] No code found (regex + model)")
+        return None
+    
+    def _extract_code_from_message_regex(self, text: str) -> Optional[str]:
+        """
+        Extrahiert Code aus einer User-Nachricht (NUR Regex).
+        
+        Unterstützt:
+        - Markdown Code-Blöcke (```python ... ```)
+        - Code-Blöcke ohne Sprache (``` ... ```)
+        - Inline Code (`code`)
+        - Roher Code mit Zeilennummern (def func:2  while:3  ...)
+        - Unformatierter Python-Code (def, class, import, etc.)
+        """
+        log_info(f"[CoreBridge-Container] Regex extracting code from: {text[:100]}...")
+        
+        # ═══════════════════════════════════════════════════════════
+        # METHODE 1: Markdown Code-Block mit Sprache
+        # ═══════════════════════════════════════════════════════════
         match = re.search(r'```(\w+)[\s\n](.*?)```', text, re.DOTALL)
         if match:
             code = match.group(2).strip()
             log_info(f"[CoreBridge-Container] Found code block with language '{match.group(1)}': {len(code)} chars")
             return code
         
-        # Code-Block ohne Sprache
+        # ═══════════════════════════════════════════════════════════
+        # METHODE 2: Markdown Code-Block ohne Sprache
+        # ═══════════════════════════════════════════════════════════
         match = re.search(r'```\n?(.*?)```', text, re.DOTALL)
         if match:
             code = match.group(1).strip()
             log_info(f"[CoreBridge-Container] Found code block without language: {len(code)} chars")
             return code
         
-        # Inline Code (nur wenn es wie Code aussieht)
+        # ═══════════════════════════════════════════════════════════
+        # METHODE 3: Inline Code (nur wenn es wie Code aussieht)
+        # ═══════════════════════════════════════════════════════════
         if '`' in text:
             match = re.search(r'`([^`]+)`', text)
             if match and len(match.group(1)) > 10:
@@ -168,8 +344,173 @@ class CoreBridge:
                 log_info(f"[CoreBridge-Container] Found inline code: {len(code)} chars")
                 return code
         
+        # ═══════════════════════════════════════════════════════════
+        # METHODE 4: Roher Code mit Zeilennummern (z.B. aus Copy-Paste)
+        # Pattern: "def func():2  while True:3  try:4"
+        # ═══════════════════════════════════════════════════════════
+        if re.search(r':\d+\s+\w', text):
+            log_info(f"[CoreBridge-Container] Detected line numbers in code, cleaning...")
+            # Zeilennummern durch Newlines ersetzen
+            # Pattern: Zahl gefolgt von Whitespace und dann Code
+            cleaned = re.sub(r':(\d+)\s+', r':\n', text)
+            # Auch Pattern "text:2 while" → "text:\nwhile"
+            cleaned = re.sub(r'(\S)(\d+)\s+(def|class|if|else|elif|for|while|try|except|finally|return|import|from|with|async|await|raise|pass|break|continue|print)', r'\1\n\3', cleaned)
+            
+            # Jetzt versuchen Code zu extrahieren
+            code = self._extract_raw_python_code(cleaned)
+            if code:
+                log_info(f"[CoreBridge-Container] Extracted code after line-number cleanup: {len(code)} chars")
+                return code
+        
+        # ═══════════════════════════════════════════════════════════
+        # METHODE 5: Unformatierter Python-Code erkennen
+        # ═══════════════════════════════════════════════════════════
+        code = self._extract_raw_python_code(text)
+        if code:
+            log_info(f"[CoreBridge-Container] Found raw Python code: {len(code)} chars")
+            return code
+        
         log_warning(f"[CoreBridge-Container] No code found in message")
         return None
+    
+    def _extract_raw_python_code(self, text: str) -> Optional[str]:
+        """
+        Versucht rohen Python-Code aus Text zu extrahieren.
+        
+        Erkennt Code anhand von Python-Keywords und Struktur.
+        """
+        # Python-Keywords die am Anfang einer Zeile/Funktion stehen
+        python_starters = [
+            r'\bdef\s+\w+\s*\(',      # def function(
+            r'\bclass\s+\w+',          # class Name
+            r'\bimport\s+\w+',         # import module
+            r'\bfrom\s+\w+\s+import',  # from x import
+            r'\bfor\s+\w+\s+in\b',     # for x in
+            r'\bwhile\s+',             # while
+            r'\bif\s+.*:',             # if condition:
+            r'\btry\s*:',              # try:
+            r'\bwith\s+',              # with
+            r'\basync\s+def',          # async def
+        ]
+        
+        # Prüfen ob Text Python-Code enthält
+        has_python = False
+        for pattern in python_starters:
+            if re.search(pattern, text):
+                has_python = True
+                break
+        
+        if not has_python:
+            return None
+        
+        # Versuchen den Code-Teil zu isolieren
+        # Suche nach erstem Python-Keyword und extrahiere ab dort
+        
+        # Finde Start des Codes
+        first_match = None
+        first_pos = len(text)
+        
+        for pattern in python_starters:
+            match = re.search(pattern, text)
+            if match and match.start() < first_pos:
+                first_pos = match.start()
+                first_match = match
+        
+        if first_match:
+            # Extrahiere ab dem ersten Match
+            code_start = first_pos
+            
+            # Finde das Ende: Entweder Ende des Texts oder eine klare Grenze
+            # (z.B. eine Frage, Erklärung nach dem Code)
+            code_text = text[code_start:]
+            
+            # Versuche das Ende des Codes zu finden
+            # Typische "nach dem Code" Patterns
+            end_patterns = [
+                r'\n\s*\n\s*(was|wie|kannst|könntest|bitte|danke|erklär|warum)',  # Frage nach Code
+                r'\n\s*\n\s*[A-ZÄÖÜ][a-zäöü]',  # Neuer Satz nach Leerzeile
+            ]
+            
+            code_end = len(code_text)
+            for pattern in end_patterns:
+                match = re.search(pattern, code_text, re.IGNORECASE)
+                if match:
+                    code_end = min(code_end, match.start())
+            
+            extracted = code_text[:code_end].strip()
+            
+            # Validierung: Mindestens 20 Zeichen und enthält Python-Syntax
+            if len(extracted) >= 20 and (':' in extracted or '=' in extracted or '(' in extracted):
+                # Prüfen ob Code in einer Zeile ist (keine Newlines) → Reformatieren
+                if '\n' not in extracted and len(extracted) > 50:
+                    extracted = self._reformat_single_line_code(extracted)
+                return extracted
+        
+        return None
+    
+    def _reformat_single_line_code(self, code: str) -> str:
+        """
+        Reformatiert einzeiligen Python-Code zu mehrzeiligem Code.
+        
+        Fügt Newlines und Einrückung vor Python-Keywords ein.
+        """
+        log_info(f"[CoreBridge-Container] Reformatting single-line code ({len(code)} chars)")
+        
+        # Keywords die einen neuen Block starten (brauchen Einrückung danach)
+        block_starters = ['def ', 'class ', 'if ', 'elif ', 'else:', 'for ', 'while ', 
+                          'try:', 'except ', 'except:', 'finally:', 'with ', 'async def ']
+        
+        # Keywords die auf gleicher Ebene bleiben oder dedent brauchen
+        same_level = ['elif ', 'else:', 'except ', 'except:', 'finally:']
+        dedent_keywords = ['return ', 'return\n', 'break', 'continue', 'pass', 'raise ']
+        
+        # Schritt 1: Newlines vor Keywords einfügen
+        result = code
+        
+        # Pattern für Keywords die einen Newline davor brauchen
+        keywords_need_newline = [
+            'while ', 'for ', 'if ', 'elif ', 'else:', 
+            'try:', 'except ', 'except:', 'finally:',
+            'return ', 'break', 'continue', 'pass',
+            'print(', 'raise ', 'with ', 'async '
+        ]
+        
+        for kw in keywords_need_newline:
+            # Nicht am Anfang ersetzen, und nicht wenn schon Newline davor
+            result = re.sub(r'(?<!^)(?<!\n)\s*(' + re.escape(kw) + ')', r'\n\1', result)
+        
+        # Schritt 2: Einrückung basierend auf Kontext hinzufügen
+        lines = result.split('\n')
+        formatted_lines = []
+        indent_level = 0
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Dedent vor bestimmten Keywords
+            for kw in same_level:
+                if line.startswith(kw):
+                    indent_level = max(0, indent_level - 1)
+                    break
+            
+            # Zeile mit aktueller Einrückung hinzufügen
+            formatted_lines.append('    ' * indent_level + line)
+            
+            # Indent erhöhen nach Block-Startern (Zeilen die mit : enden)
+            if line.endswith(':'):
+                indent_level += 1
+            
+            # Dedent nach return/break/continue/pass (aber nicht unter 0)
+            for kw in dedent_keywords:
+                if line.startswith(kw.strip()):
+                    indent_level = max(0, indent_level - 1)
+                    break
+        
+        formatted = '\n'.join(formatted_lines)
+        log_info(f"[CoreBridge-Container] Reformatted code:\n{formatted[:200]}...")
+        return formatted
     
     def _should_auto_execute_code(self, text: str, thinking_plan: Dict[str, Any]) -> bool:
         """
@@ -734,22 +1075,31 @@ class CoreBridge:
                     "task": container_task
                 })
                 
-                # Code aus der Nachricht extrahieren
-                code = self._extract_code_from_message(user_text)
+                # Code aus der Nachricht extrahieren (Hybrid: Regex + Code-Model)
+                code = await self._extract_code_from_message_async(user_text)
                 
                 if code:
                     log_info(f"[CoreBridge-Container] Executing {len(code)} chars of code")
                     
-                    # Code in Container ausführen
-                    container_result = await self._execute_in_container(
-                        container_name=container_name,
-                        code=code,
-                        task=container_task
-                    )
+                    # Sprache aus ThinkingLayer-Plan
+                    code_language = thinking_plan.get("code_language") or "python"
                     
-                    log_info(f"[CoreBridge-Container] Execution done, result: {container_result}")
+                    try:
+                        # Code in Container ausführen
+                        container_result = await self._execute_in_container(
+                            container_name=container_name,
+                            code=code,
+                            task=container_task,
+                            language=code_language
+                        )
+                        
+                        log_info(f"[CoreBridge-Container] Execution done, result: {container_result}")
+                        
+                    except Exception as e:
+                        log_error(f"[CoreBridge-Container] Execution error: {e}")
+                        container_result = {"error": str(e), "exit_code": -1}
                     
-                    # Signal an Client: Container fertig
+                    # Signal an Client: Container fertig (IMMER senden!)
                     yield ("", False, {
                         "type": "container_done",
                         "result": container_result
@@ -773,7 +1123,14 @@ class CoreBridge:
                         log_info(f"[CoreBridge-Container] Added execution result to context")
                 else:
                     log_warning("[CoreBridge-Container] No code found in message")
-                    container_result = {"error": "Kein Code in der Nachricht gefunden"}
+                    container_result = {"error": "Kein Code in der Nachricht gefunden", "exit_code": -1}
+                    
+                    # WICHTIG: Auch bei "no code" das Event senden, damit Terminal nicht hängt!
+                    yield ("", False, {
+                        "type": "container_done",
+                        "result": container_result
+                    })
+                    log_info(f"[CoreBridge-Container] Yielded container_done (no code) event")
 
         # ═══════════════════════════════════════════════════════════
         # MODEL SELECTION: Code-Model wenn nötig

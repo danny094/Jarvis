@@ -13,6 +13,7 @@ Endpoints:
 """
 
 import json
+import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +31,7 @@ from core.bridge import get_bridge
 from mcp.endpoint import router as mcp_router
 from maintenance.routes import router as maintenance_router
 from utils.logger import log_info, log_error, log_debug
+from utils.code_formatter import ensure_formatted
 
 
 # FastAPI App
@@ -425,6 +427,17 @@ async def execute_code(request: Request):
         
         log_info(f"[LobeChat-Adapter] /api/execute → {language} in {container}")
         
+        # ════════════════════════════════════════════════════════════
+        # CODE FORMATIERUNG: Stellt sicher dass Code korrekt formatiert ist
+        # ════════════════════════════════════════════════════════════
+        # Dies ist nötig weil die WebUI manchmal einzeiligen Code schickt
+        # (z.B. wenn die KI den Code einzeilig in ihrer Antwort ausgibt)
+        if language == "python":
+            original_len = len(code)
+            code = await ensure_formatted(code)
+            if len(code) != original_len:
+                log_info(f"[LobeChat-Adapter] Code formatted: {original_len} → {len(code)} chars")
+        
         # Container-Manager aufrufen
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
@@ -480,6 +493,108 @@ async def execute_code(request: Request):
         }, status_code=500)
 
 
+# ============================================================
+# USER-SANDBOX ENDPOINTS (Proxy zum Container-Manager)
+# ============================================================
+# Diese Endpoints erlauben der WebUI direkte Kontrolle über
+# die User-Sandbox. Die KI nutzt diese nicht direkt.
+# ============================================================
+
+@app.post("/api/sandbox/start")
+async def sandbox_start(request: Request):
+    """
+    Startet die User-Sandbox.
+    
+    Request Body (optional):
+    {
+        "container_name": "code-sandbox",  // default
+        "preferred_model": "qwen2.5-coder:3b"  // optional
+    }
+    """
+    from config import CONTAINER_MANAGER_URL
+    
+    try:
+        data = await request.json()
+    except:
+        data = {}
+    
+    log_info(f"[LobeChat-Adapter] /api/sandbox/start")
+    
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:  # 2 Minuten für Build
+            response = await client.post(
+                f"{CONTAINER_MANAGER_URL}/sandbox/user/start",
+                json={
+                    "container_name": data.get("container_name", "code-sandbox"),
+                    "preferred_model": data.get("preferred_model")
+                }
+            )
+            
+            result = response.json()
+            
+            # Wenn erfolgreich, ttyd_url für WebUI anpassen
+            # (WebUI läuft evtl. auf anderem Host)
+            if response.status_code == 200 and result.get("ttyd_port"):
+                # ttyd_url wird im Frontend zusammengebaut
+                pass
+            
+            return JSONResponse(result, status_code=response.status_code)
+            
+    except httpx.TimeoutException:
+        log_error(f"[LobeChat-Adapter] Sandbox start timeout (60s)")
+        return JSONResponse({"error": "Timeout - Container-Build dauert zu lange. Versuche es nochmal."}, status_code=504)
+    except Exception as e:
+        log_error(f"[LobeChat-Adapter] Sandbox start error: {type(e).__name__}: {e}")
+        return JSONResponse({"error": str(e) or type(e).__name__}, status_code=500)
+
+@app.post("/api/sandbox/stop")
+async def sandbox_stop(request: Request):
+    """Stoppt die User-Sandbox."""
+    from config import CONTAINER_MANAGER_URL
+    
+    try:
+        data = await request.json()
+    except:
+        data = {}
+    
+    log_info(f"[LobeChat-Adapter] /api/sandbox/stop")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{CONTAINER_MANAGER_URL}/sandbox/user/stop",
+                json={"force": data.get("force", False)}
+            )
+            
+            return JSONResponse(response.json(), status_code=response.status_code)
+    
+    except httpx.TimeoutException:
+        log_error(f"[LobeChat-Adapter] Sandbox stop timeout")
+        return JSONResponse({"error": "Timeout"}, status_code=504)
+    except Exception as e:
+        log_error(f"[LobeChat-Adapter] Sandbox stop error: {type(e).__name__}: {e}")
+        return JSONResponse({"error": str(e) or type(e).__name__}, status_code=500)
+
+@app.get("/api/sandbox/status")
+async def sandbox_status():
+    """Status der User-Sandbox."""
+    from config import CONTAINER_MANAGER_URL
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{CONTAINER_MANAGER_URL}/sandbox/user/status"
+            )
+            
+            return JSONResponse(response.json(), status_code=response.status_code)
+    
+    except httpx.TimeoutException:
+        return JSONResponse({"error": "Timeout", "active": False}, status_code=504)
+    except Exception as e:
+        log_error(f"[LobeChat-Adapter] Sandbox status error: {type(e).__name__}: {e}")
+        return JSONResponse({"error": str(e) or type(e).__name__, "active": False}, status_code=500)
+
+
 @app.get("/")
 async def root():
     """Root-Endpoint für Debugging."""
@@ -501,6 +616,9 @@ async def root():
                 "/api/system-prompt",  # System-Prompt anzeigen
                 "/api/reload-prompt",  # System-Prompt hot-reload (POST)
                 "/api/execute",        # Direct code execution (POST)
+                "/api/sandbox/start",  # User-Sandbox starten (POST)
+                "/api/sandbox/stop",   # User-Sandbox stoppen (POST)
+                "/api/sandbox/status", # User-Sandbox Status (GET)
             ],
             "mcp": [
                 "/mcp",           # Hauptendpoint für WebUIs

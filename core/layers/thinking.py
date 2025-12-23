@@ -146,6 +146,7 @@ class ThinkingLayer:
             "model": self.model,
             "prompt": prompt,
             "stream": True,  # STREAMING!
+            "keep_alive": -1,  # Model bleibt permanent im RAM!
         }
         
         full_response = ""

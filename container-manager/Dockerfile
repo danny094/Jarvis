@@ -3,6 +3,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# PYTHONPATH setzen für korrekte Imports
+ENV PYTHONPATH=/app
+
 # Docker CLI installieren (für docker commands falls nötig)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \

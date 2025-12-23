@@ -22,6 +22,37 @@ from utils.logger import log_info, log_error, log_warning
 from mcp.client import call_tool
 
 
+def unwrap_mcp_result(result: Any) -> Any:
+    """
+    Unwraps MCP Hub result from nested structure.
+    
+    MCP Hub returns: {
+        "result": {
+            "content": [...],
+            "structuredContent": { <actual data> },
+            "isError": False
+        }
+    }
+    
+    This function extracts the actual data from structuredContent.
+    """
+    if not isinstance(result, dict):
+        return result
+    
+    # Level 1: result wrapper
+    inner = result.get("result", result)
+    if not isinstance(inner, dict):
+        return inner
+    
+    # Level 2: structuredContent
+    structured = inner.get("structuredContent")
+    if structured is not None:
+        return structured
+    
+    # Fallback: return inner as-is
+    return inner
+
+
 class MaintenanceState(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
@@ -113,26 +144,25 @@ class MaintenanceWorker:
         """Holt aktuellen Memory-Status vom MCP."""
         try:
             # Alle Conversations listen
-            conv_result = call_tool("memory_list_conversations", {
+            conv_result = unwrap_mcp_result(call_tool("memory_list_conversations", {
                 "limit": 100
-            }, timeout=10)
+            }, timeout=10))
             
-            conversations = []
-            total_entries = 0
-            if isinstance(conv_result, dict):
-                conversations = conv_result.get("conversations", [])
-                total_entries = sum(c.get("entry_count", 0) for c in conversations)
+            conversations = conv_result.get("conversations", []) if isinstance(conv_result, dict) else []
+            total_entries = sum(c.get("entry_count", 0) for c in conversations)
             
-            # Graph Stats mit dediziertem Tool
-            graph_result = call_tool("memory_graph_stats", {}, timeout=10)
+            log_info(f"[Maintenance] Found {len(conversations)} conversations, {total_entries} entries")
+            
+            # Graph Stats
+            graph_data = unwrap_mcp_result(call_tool("memory_graph_stats", {}, timeout=10))
             
             return {
                 "conversations": len(conversations),
                 "stm_entries": total_entries,
                 "mtm_entries": 0,
                 "ltm_entries": 0,
-                "graph_nodes": graph_result.get("nodes", 0) if isinstance(graph_result, dict) else 0,
-                "graph_edges": graph_result.get("edges", 0) if isinstance(graph_result, dict) else 0,
+                "graph_nodes": graph_data.get("nodes", 0) if isinstance(graph_data, dict) else 0,
+                "graph_edges": graph_data.get("edges", 0) if isinstance(graph_data, dict) else 0,
             }
         except Exception as e:
             log_error(f"[Maintenance] Failed to get memory status: {e}")
@@ -246,9 +276,9 @@ class MaintenanceWorker:
         
         try:
             # Alle Einträge aus ALLEN Conversations laden
-            all_entries = call_tool("memory_all_recent", {
+            all_entries = unwrap_mcp_result(call_tool("memory_all_recent", {
                 "limit": 500
-            }, timeout=30)
+            }, timeout=30))
             
             entries = all_entries.get("entries", []) if isinstance(all_entries, dict) else []
             total = len(entries)
@@ -326,7 +356,8 @@ Wenn keine Duplikate: {{"duplicates": []}}"""
                     json={
                         "model": THINKING_MODEL,
                         "prompt": prompt,
-                        "stream": False
+                        "stream": False,
+                        "keep_alive": -1,  # Model bleibt permanent im RAM!
                     }
                 )
                 
@@ -356,9 +387,9 @@ Wenn keine Duplikate: {{"duplicates": []}}"""
         
         try:
             # Alle STM Einträge aus ALLEN Conversations
-            stm_entries = call_tool("memory_all_recent", {
+            stm_entries = unwrap_mcp_result(call_tool("memory_all_recent", {
                 "limit": 100
-            }, timeout=30)
+            }, timeout=30))
             
             entries = stm_entries.get("entries", []) if isinstance(stm_entries, dict) else []
             
@@ -433,7 +464,8 @@ Antworte NUR mit JSON:
                     json={
                         "model": THINKING_MODEL,
                         "prompt": prompt,
-                        "stream": False
+                        "stream": False,
+                        "keep_alive": -1,  # Model bleibt permanent im RAM!
                     }
                 )
                 
@@ -461,9 +493,9 @@ Antworte NUR mit JSON:
         
         try:
             # Alte Einträge aus ALLEN Conversations laden
-            old_entries = call_tool("memory_all_recent", {
+            old_entries = unwrap_mcp_result(call_tool("memory_all_recent", {
                 "limit": 100
-            }, timeout=30)
+            }, timeout=30))
             
             entries = old_entries.get("entries", []) if isinstance(old_entries, dict) else []
             
@@ -526,7 +558,8 @@ Zusammenfassung (max 500 Zeichen):"""
                     json={
                         "model": THINKING_MODEL,
                         "prompt": prompt,
-                        "stream": False
+                        "stream": False,
+                        "keep_alive": -1,  # Model bleibt permanent im RAM!
                     }
                 )
                 
@@ -547,7 +580,7 @@ Zusammenfassung (max 500 Zeichen):"""
         
         try:
             # Graph-Statistiken mit dediziertem Tool
-            graph_stats = call_tool("memory_graph_stats", {}, timeout=10)
+            graph_stats = unwrap_mcp_result(call_tool("memory_graph_stats", {}, timeout=10))
             
             nodes = graph_stats.get("nodes", 0) if isinstance(graph_stats, dict) else 0
             edges = graph_stats.get("edges", 0) if isinstance(graph_stats, dict) else 0

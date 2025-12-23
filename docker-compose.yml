@@ -148,10 +148,12 @@ services:
       - "8400:8400"
     environment:
       - N8N_WEBHOOK_URL=http://n8n:5678/webhook
-      - REGISTRY_PATH=/app/containers/registry.yaml
+      # WICHTIG: Pfad muss zum Volume passen, NICHT /app/containers (das ist Python-Modul!)
+      - REGISTRY_PATH=/app/container_defs/registry.yaml
+      - CONTAINERS_PATH=/app/container_defs
     volumes:
-      # Container-Registry (read-only)
-      - ./containers:/app/containers:ro
+      # Container-Registry - MUSS auf /app/container_defs, sonst überschreibt es Python containers/ Modul!
+      - ./containers:/app/container_defs:ro
       # Docker Socket für direkte Container-Operationen
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
