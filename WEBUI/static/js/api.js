@@ -1,8 +1,21 @@
-// api.js - API Communication mit Live Thinking Support
+// api.js - API Communication mit Live Thinking + Container Support
 
 import { log } from "./debug.js";
 
-let API_BASE = "http://192.168.0.226:8100";
+// Auto-detect API base URL
+// - In Docker: nginx proxies /api/* to lobechat-adapter → use relative URL
+// - Direct access: use full URL with port 8100
+function detectApiBase() {
+    // If we're on port 3000 (nginx/docker), use relative URLs
+    if (window.location.port === '3000' || window.location.port === '80' || window.location.port === '') {
+        return '';  // Relative - nginx will proxy
+    }
+    // Otherwise use the same host but port 8100
+    return `http://${window.location.hostname}:8100`;
+}
+
+let API_BASE = detectApiBase();
+log("debug", `Auto-detected API base: ${API_BASE || '(relative)'}`);
 
 export function setApiBase(url) {
     API_BASE = url;
@@ -48,7 +61,38 @@ export async function checkHealth() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// CHAT - STREAMING MIT LIVE THINKING
+// DIRECT CODE EXECUTION (für Run-Button im Code-Block)
+// ═══════════════════════════════════════════════════════════
+export async function executeCode(code, language = "python", container = "code-sandbox") {
+    log("info", `Executing code in ${container}`, { language, codeLength: code.length });
+    
+    try {
+        const res = await fetch(`${API_BASE}/api/execute`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                code: code,
+                language: language,
+                container: container
+            })
+        });
+        
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+        
+        const result = await res.json();
+        log("info", `Execution complete`, result);
+        return result;
+        
+    } catch (error) {
+        log("error", `Execute error: ${error.message}`);
+        return { error: error.message };
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// CHAT - STREAMING MIT LIVE THINKING + CONTAINER
 // ═══════════════════════════════════════════════════════════
 export async function* streamChat(model, messages, conversationId = "webui-default") {
     log("info", `Sending chat request`, {
@@ -122,12 +166,37 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                     continue;
                 }
                 
-                // Content-Chunk
+                // Container Start
+                if (data.container_start) {
+                    console.log("[API] container_start parsed:", data.container_start);
+                    log("info", `Container starting: ${data.container_start.container}`, data.container_start);
+                    yield {
+                        type: "container_start",
+                        container: data.container_start.container,
+                        task: data.container_start.task
+                    };
+                    continue;
+                }
+                
+                // Container Done
+                if (data.container_done) {
+                    console.log("[API] container_done parsed:", data.container_done);
+                    log("info", "Container execution complete", data.container_done);
+                    yield {
+                        type: "container_done",
+                        result: data.container_done.result
+                    };
+                    continue;
+                }
+                
+                // Content-Chunk (mit Model-Info)
                 if (data.message?.content) {
                     yield {
                         type: "content",
                         content: data.message.content,
-                        done: data.done || false
+                        done: data.done || false,
+                        model: data.model || null,
+                        code_model_used: data.code_model_used || false
                     };
                 }
                 
@@ -137,15 +206,107 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                     yield { type: "memory", used: true };
                 }
                 
-                // Done
+                // Done (mit erweiterten Infos)
                 if (data.done) {
                     log("info", `Stream complete, received ${chunkCount} chunks`);
-                    yield { type: "done" };
+                    yield { 
+                        type: "done",
+                        model: data.model || null,
+                        code_model_used: data.code_model_used || false,
+                        container_used: data.container_used || false
+                    };
                 }
                 
             } catch (e) {
                 // Nicht-JSON Zeile ignorieren
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// USER-SANDBOX CONTROL
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Startet die User-Sandbox.
+ * @param {string} containerName - Container-Name (default: "code-sandbox")
+ * @param {string} preferredModel - Bevorzugtes Code-Model (optional)
+ * @returns {Promise<object>} - Sandbox-Info mit session_id, ttyd_port etc.
+ */
+export async function startUserSandbox(containerName = "code-sandbox", preferredModel = null) {
+    log("info", `Starting User-Sandbox: ${containerName}`);
+    
+    try {
+        const res = await fetch(`${API_BASE}/api/sandbox/start`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                container_name: containerName,
+                preferred_model: preferredModel
+            })
+        });
+        
+        const result = await res.json();
+        
+        if (res.ok) {
+            log("info", "User-Sandbox started", result);
+        } else {
+            log("warn", "User-Sandbox start failed", result);
+        }
+        
+        return { ...result, ok: res.ok, status: res.status };
+        
+    } catch (error) {
+        log("error", `Sandbox start error: ${error.message}`);
+        return { error: error.message, ok: false };
+    }
+}
+
+/**
+ * Stoppt die User-Sandbox.
+ * @param {boolean} force - Force kill wenn nötig
+ * @returns {Promise<object>} - Stop-Result
+ */
+export async function stopUserSandbox(force = false) {
+    log("info", `Stopping User-Sandbox (force=${force})`);
+    
+    try {
+        const res = await fetch(`${API_BASE}/api/sandbox/stop`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ force })
+        });
+        
+        const result = await res.json();
+        
+        if (res.ok) {
+            log("info", "User-Sandbox stopped", result);
+        } else {
+            log("warn", "User-Sandbox stop failed", result);
+        }
+        
+        return { ...result, ok: res.ok, status: res.status };
+        
+    } catch (error) {
+        log("error", `Sandbox stop error: ${error.message}`);
+        return { error: error.message, ok: false };
+    }
+}
+
+/**
+ * Holt Status der User-Sandbox.
+ * @returns {Promise<object>} - Status mit active, ttyd_port, uptime etc.
+ */
+export async function getUserSandboxStatus() {
+    try {
+        const res = await fetch(`${API_BASE}/api/sandbox/status`);
+        const result = await res.json();
+        
+        return { ...result, ok: res.ok };
+        
+    } catch (error) {
+        log("error", `Sandbox status error: ${error.message}`);
+        return { error: error.message, ok: false, active: false };
     }
 }

@@ -1,7 +1,9 @@
-// chat.js - Chat Logic mit LIVE Thinking Display & History Management
+// chat.js - Chat Logic mit LIVE Thinking, Container Status & Interactive Code Blocks
 
 import { streamChat } from "./api.js";
 import { log } from "./debug.js";
+import { parseMessageForCodeBlocks, initCodeBlock } from "./code-block.js";
+import { terminal } from "./terminal.js";
 
 let currentModel = null;
 let messages = [];
@@ -52,12 +54,10 @@ function updateHistoryDisplay(count, sent) {
 // ═══════════════════════════════════════════════════════════
 function getMessagesForBackend() {
     if (historyLimit === 0) {
-        // Only send the last message
         const last = messages[messages.length - 1];
         return last ? [last] : [];
     }
     
-    // Send last N*2 messages (N turns = N user + N assistant)
     const maxMessages = historyLimit * 2;
     const toSend = messages.slice(-maxMessages);
     
@@ -67,7 +67,7 @@ function getMessagesForBackend() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// LIVE THINKING DISPLAY
+// LIVE THINKING DISPLAY MIT CONTAINER STATUS
 // ═══════════════════════════════════════════════════════════
 function createThinkingBox(messageId) {
     const container = document.getElementById("messages-list");
@@ -90,6 +90,7 @@ function createThinkingBox(messageId) {
             <div class="border-t border-dark-border">
                 <div id="${thinkingId}-stream" class="px-4 py-3 text-sm text-gray-400 font-mono text-xs leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap"></div>
                 <div id="${thinkingId}-meta" class="hidden px-4 py-3 border-t border-dark-border text-sm space-y-2"></div>
+                <div id="${thinkingId}-container" class="hidden px-4 py-3 border-t border-dark-border"></div>
             </div>
         </details>
     `;
@@ -135,7 +136,19 @@ function finalizeThinking(thinkingId, thinking) {
     
     const statusEl = document.getElementById(`${thinkingId}-status`);
     if (statusEl) {
-        statusEl.innerHTML = `<span class="${riskColor}">Risk: ${risk}</span>`;
+        let statusParts = [`<span class="${riskColor}">Risk: ${risk}</span>`];
+        
+        // Code-Model Anzeige
+        if (thinking.use_code_model) {
+            statusParts.push('<span class="text-accent-primary">🤖 Code-Model</span>');
+        }
+        
+        // Container Anzeige
+        if (thinking.needs_container) {
+            statusParts.push(`<span class="text-accent-secondary">📦 ${thinking.container_name}</span>`);
+        }
+        
+        statusEl.innerHTML = statusParts.join(' | ');
     }
     
     summary.querySelector("span").textContent = "Thinking";
@@ -161,6 +174,18 @@ function finalizeThinking(thinkingId, thinking) {
                     ${thinking.needs_chat_history ? '✅ Wird genutzt' : '❌ Nicht benötigt'}
                 </span>
             </div>
+            ${thinking.needs_container ? `
+            <div class="flex items-start gap-2">
+                <span class="text-gray-500 min-w-[100px]">Container:</span>
+                <span class="text-gray-300">📦 ${thinking.container_name} (${thinking.container_task || 'execute'})</span>
+            </div>
+            ` : ''}
+            ${thinking.use_code_model ? `
+            <div class="flex items-start gap-2">
+                <span class="text-gray-500 min-w-[100px]">Code-Model:</span>
+                <span class="text-accent-primary">✅ Aktiviert ${thinking.code_language ? `(${thinking.code_language})` : ''}</span>
+            </div>
+            ` : ''}
             <div class="flex items-start gap-2">
                 <span class="text-gray-500 min-w-[100px]">Reasoning:</span>
                 <span class="text-gray-300">${thinking.reasoning || '-'}</span>
@@ -175,9 +200,77 @@ function finalizeThinking(thinkingId, thinking) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// MESSAGE RENDERING
+// CONTAINER STATUS IN THINKING BOX
 // ═══════════════════════════════════════════════════════════
-export function renderMessage(role, content, isStreaming = false) {
+function showContainerStart(thinkingId, container, task) {
+    const containerEl = document.getElementById(`${thinkingId}-container`);
+    if (!containerEl) return;
+    
+    containerEl.classList.remove("hidden");
+    containerEl.innerHTML = `
+        <div class="flex items-center gap-3 text-sm">
+            <div class="flex items-center gap-2">
+                <i data-lucide="container" class="w-4 h-4 text-accent-secondary animate-pulse"></i>
+                <span class="text-accent-secondary font-medium">${container}</span>
+            </div>
+            <span class="text-gray-500">|</span>
+            <span class="text-gray-400">${task}</span>
+            <span class="text-gray-500">|</span>
+            <span class="text-yellow-400 flex items-center gap-1">
+                <i data-lucide="loader" class="w-3 h-3 animate-spin"></i>
+                Running...
+            </span>
+        </div>
+    `;
+    lucide.createIcons();
+    log("info", `Container started: ${container} (${task})`);
+}
+
+function showContainerDone(thinkingId, result) {
+    const containerEl = document.getElementById(`${thinkingId}-container`);
+    if (!containerEl) return;
+    
+    const exitCode = result?.exit_code ?? -1;
+    const isSuccess = exitCode === 0;
+    const hasError = result?.error;
+    
+    const statusColor = hasError ? "text-red-400" : (isSuccess ? "text-green-400" : "text-yellow-400");
+    const statusIcon = hasError ? "x-circle" : (isSuccess ? "check-circle" : "alert-circle");
+    const statusText = hasError ? result.error : (isSuccess ? "Success" : `Exit: ${exitCode}`);
+    
+    containerEl.innerHTML = `
+        <div class="space-y-2">
+            <div class="flex items-center gap-3 text-sm">
+                <div class="flex items-center gap-2">
+                    <i data-lucide="container" class="w-4 h-4 text-accent-secondary"></i>
+                    <span class="text-accent-secondary font-medium">code-sandbox</span>
+                </div>
+                <span class="text-gray-500">|</span>
+                <span class="${statusColor} flex items-center gap-1">
+                    <i data-lucide="${statusIcon}" class="w-3 h-3"></i>
+                    ${statusText}
+                </span>
+            </div>
+            ${result?.stdout ? `
+            <div class="bg-dark-bg rounded p-2 font-mono text-xs text-green-400 max-h-24 overflow-y-auto whitespace-pre-wrap">
+                ${escapeHtml(result.stdout)}
+            </div>
+            ` : ''}
+            ${result?.stderr ? `
+            <div class="bg-dark-bg rounded p-2 font-mono text-xs text-red-400 max-h-24 overflow-y-auto whitespace-pre-wrap">
+                ${escapeHtml(result.stderr)}
+            </div>
+            ` : ''}
+        </div>
+    `;
+    lucide.createIcons();
+    log("info", `Container done: exit=${exitCode}`, result);
+}
+
+// ═══════════════════════════════════════════════════════════
+// MESSAGE RENDERING MIT INTERACTIVE CODE BLOCKS
+// ═══════════════════════════════════════════════════════════
+export function renderMessage(role, content, isStreaming = false, executionResults = {}) {
     const container = document.getElementById("messages-list");
     const welcome = document.getElementById("welcome-message");
     if (welcome) welcome.classList.add("hidden");
@@ -197,11 +290,21 @@ export function renderMessage(role, content, isStreaming = false) {
                <i data-lucide="bot" class="w-4 h-4"></i>
            </div>`;
     
+    // Parse content für interaktive Code-Blöcke (nur bei Assistant)
+    let formattedContent = formatContent(content);
+    let codeBlockIds = [];
+    
+    if (!isUser && !isStreaming) {
+        const parsed = parseMessageForCodeBlocks(content, executionResults);
+        formattedContent = formatContentWithCodeBlocks(parsed.content);
+        codeBlockIds = parsed.blockIds;
+    }
+    
     const bubble = `
         <div class="max-w-[80%] ${isUser ? 'bg-accent-primary' : 'bg-dark-card border border-dark-border'} 
                     px-4 py-3 rounded-2xl ${isUser ? 'rounded-br-md' : 'rounded-bl-md'}">
             <div class="message-content text-sm leading-relaxed">
-                ${formatContent(content)}${isStreaming ? '<span class="typing-cursor">▋</span>' : ''}
+                ${formattedContent}${isStreaming ? '<span class="typing-cursor">▋</span>' : ''}
             </div>
         </div>
     `;
@@ -212,6 +315,9 @@ export function renderMessage(role, content, isStreaming = false) {
     
     container.appendChild(div);
     lucide.createIcons({ icons: lucide.icons, nameAttr: "data-lucide" });
+    
+    // Initialisiere Code-Blöcke
+    codeBlockIds.forEach(id => initCodeBlock(id));
     
     const chatContainer = document.getElementById("chat-container");
     chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -225,7 +331,18 @@ export function updateMessage(messageId, content, isStreaming = false) {
     
     const contentDiv = msg.querySelector(".message-content");
     if (contentDiv) {
-        contentDiv.innerHTML = formatContent(content) + (isStreaming ? '<span class="typing-cursor">▋</span>' : '');
+        if (isStreaming) {
+            // Während des Streamings: einfaches Format
+            contentDiv.innerHTML = formatContent(content) + '<span class="typing-cursor">▋</span>';
+        } else {
+            // Nach dem Streaming: interaktive Code-Blöcke
+            const parsed = parseMessageForCodeBlocks(content);
+            contentDiv.innerHTML = formatContentWithCodeBlocks(parsed.content);
+            
+            // Initialisiere Code-Blöcke
+            parsed.blockIds.forEach(id => initCodeBlock(id));
+            lucide.createIcons();
+        }
     }
     
     const chatContainer = document.getElementById("chat-container");
@@ -241,6 +358,25 @@ function formatContent(text) {
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
         .replace(/\*([^*]+)\*/g, '<em>$1</em>')
         .replace(/\n/g, '<br>');
+}
+
+function formatContentWithCodeBlocks(text) {
+    if (!text) return "";
+    
+    // Code-Blöcke werden bereits von parseMessageForCodeBlocks ersetzt
+    // Hier nur noch Inline-Formatierung
+    return text
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/\n/g, '<br>');
+}
+
+function escapeHtml(text) {
+    if (!text) return "";
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -272,6 +408,8 @@ export async function handleUserMessage(text) {
     let thinkingCreated = false;
     let botMsgId = null;
     let fullResponse = "";
+    let containerResult = null;
+    let usedModel = currentModel;
     
     try {
         for await (const chunk of streamChat(currentModel, messagesToSend, conversationId)) {
@@ -297,6 +435,33 @@ export async function handleUserMessage(text) {
                 continue;
             }
             
+            // Container Start
+            if (chunk.type === "container_start") {
+                console.log("[Chat] container_start received:", chunk);
+                if (thinkingId) {
+                    showContainerStart(thinkingId, chunk.container, chunk.task);
+                }
+                showContainerIndicator(true);
+                
+                // Terminal aktualisieren (mit Session-Info wenn vorhanden)
+                terminal.onContainerStart(chunk.container, chunk.task, chunk.session);
+                continue;
+            }
+            
+            // Container Done
+            if (chunk.type === "container_done") {
+                console.log("[Chat] container_done received:", chunk);
+                containerResult = chunk.result;
+                if (thinkingId) {
+                    showContainerDone(thinkingId, chunk.result);
+                }
+                showContainerIndicator(false);
+                
+                // Terminal aktualisieren
+                terminal.onContainerDone(chunk.result);
+                continue;
+            }
+            
             // Content Stream
             if (chunk.type === "content") {
                 if (!botMsgId) {
@@ -304,6 +469,9 @@ export async function handleUserMessage(text) {
                 }
                 fullResponse += chunk.content;
                 updateMessage(botMsgId, fullResponse, !chunk.done);
+                
+                // Track used model
+                if (chunk.model) usedModel = chunk.model;
             }
             
             // Memory
@@ -313,11 +481,16 @@ export async function handleUserMessage(text) {
             
             // Done
             if (chunk.type === "done") {
+                // Update with model info
+                if (chunk.model) usedModel = chunk.model;
+                if (chunk.code_model_used) {
+                    showCodeModelIndicator();
+                }
                 break;
             }
         }
         
-        // Final
+        // Final update with interactive code blocks
         if (botMsgId) {
             updateMessage(botMsgId, fullResponse, false);
         }
@@ -326,7 +499,7 @@ export async function handleUserMessage(text) {
         // Update history display
         updateHistoryDisplay(messages.length, messagesToSend.length);
         
-        log("info", `Response complete, total messages: ${messages.length}`);
+        log("info", `Response complete, total messages: ${messages.length}, model: ${usedModel}`);
         
     } catch (error) {
         log("error", `Chat error: ${error.message}`);
@@ -361,6 +534,49 @@ function showMemoryIndicator() {
         setTimeout(() => {
             memoryStatus.classList.remove("opacity-100");
             memoryStatus.classList.add("opacity-0");
+        }, 3000);
+    }
+}
+
+function showContainerIndicator(active) {
+    // Optional: Container-Status in Status-Bar anzeigen
+    const statusBar = document.getElementById("status-bar");
+    let containerIndicator = document.getElementById("container-indicator");
+    
+    if (active) {
+        if (!containerIndicator) {
+            containerIndicator = document.createElement("div");
+            containerIndicator.id = "container-indicator";
+            containerIndicator.className = "flex items-center gap-1 text-accent-secondary transition-opacity";
+            containerIndicator.innerHTML = `
+                <i data-lucide="container" class="w-3 h-3"></i>
+                <span>Container running...</span>
+            `;
+            statusBar?.querySelector(".flex")?.appendChild(containerIndicator);
+            lucide.createIcons();
+        }
+    } else {
+        containerIndicator?.remove();
+    }
+}
+
+function showCodeModelIndicator() {
+    const memoryStatus = document.getElementById("memory-status");
+    if (memoryStatus) {
+        memoryStatus.innerHTML = `
+            <i data-lucide="code" class="w-3 h-3"></i>
+            <span>Code-Model used</span>
+        `;
+        memoryStatus.classList.remove("opacity-0");
+        memoryStatus.classList.add("opacity-100");
+        lucide.createIcons();
+        setTimeout(() => {
+            memoryStatus.classList.remove("opacity-100");
+            memoryStatus.classList.add("opacity-0");
+            memoryStatus.innerHTML = `
+                <i data-lucide="database" class="w-3 h-3"></i>
+                <span>Memory used</span>
+            `;
         }, 3000);
     }
 }

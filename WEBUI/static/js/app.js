@@ -3,6 +3,8 @@
 import { getModels, checkHealth, setApiBase, getApiBase } from "./api.js";
 import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount } from "./chat.js";
 import { log, clearLogs, setVerbose } from "./debug.js";
+import { initMaintenance } from "./maintenance.js";
+import { initTerminal } from "./terminal.js";
 
 // ═══════════════════════════════════════════════════════════
 // SETTINGS
@@ -88,6 +90,12 @@ export async function initApp() {
     
     // Setup event listeners
     setupEventListeners();
+    
+    // Init Maintenance UI
+    initMaintenance();
+    
+    // Init Terminal
+    initTerminal();
     
     // Check connection & load models
     await checkConnection();
