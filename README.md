@@ -1,5 +1,6 @@
 Join: https://discord.gg/t8jAxMtk
-[ARCHITECTURE.md](https://github.com/user-attachments/files/24145427/ARCHITECTURE.md)
+
+#[ARCHITECTURE.md](https://github.com/user-attachments/files/24145427/ARCHITECTURE.md)
 # Assistant Proxy - Architecture & Documentation
 
 ## Table of Contents
