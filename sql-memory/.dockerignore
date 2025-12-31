@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+__MACOSX/
+
+# Git
+.git/
+.gitignore
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Documentation
+*.md
+Structure.txt
+
+# Logs
+*.log
+
+# Tests
+tests/
+*.test.py
+
+# Data (wird als Volume gemountet)
+data/*.db
+data/*.db-journal

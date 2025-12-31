@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, Optional
-import httpx
+import requests
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -18,7 +18,7 @@ router = APIRouter()
 # ------------------------------------------------------
 # Low-level MCP request
 # ------------------------------------------------------
-async def _call_mcp_raw(payload: Dict[str, Any], timeout: int = 5) -> Optional[Dict[str, Any]]:
+def _call_mcp_raw(payload: Dict[str, Any], timeout: int = 5) -> Optional[Dict[str, Any]]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -27,12 +27,13 @@ async def _call_mcp_raw(payload: Dict[str, Any], timeout: int = 5) -> Optional[D
     log_debug(f"[MCP] → {MCP_BASE} payload={payload}")
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.post(
-                MCP_BASE,
-                json=payload,
-                headers=headers
-            )
+        r = requests.post(
+            MCP_BASE,
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+            stream=True,
+        )
     except Exception as e:
         log_error(f"[MCP] Request-Fehler: {e}")
         return None
@@ -42,12 +43,13 @@ async def _call_mcp_raw(payload: Dict[str, Any], timeout: int = 5) -> Optional[D
     # SSE Mode
     if "text/event-stream" in ct:
         last = None
-        for line in r.text.splitlines():
+        for line in r.iter_lines():
             if not line:
                 continue
             try:
-                if line.startswith("data: "):
-                    last = json.loads(line[6:])
+                decoded = line.decode("utf-8")
+                if decoded.startswith("data: "):
+                    last = json.loads(decoded[6:])
             except Exception:
                 continue
         log_debug(f"[MCP] ← SSE last={last}")
@@ -66,9 +68,9 @@ async def _call_mcp_raw(payload: Dict[str, Any], timeout: int = 5) -> Optional[D
 # ------------------------------------------------------
 # Wrapper für alle Tools
 # ------------------------------------------------------
-async def call_tool_async(name: str, arguments: Dict[str, Any], timeout: int = 5) -> Optional[Dict[str, Any]]:
+def call_tool(name: str, arguments: Dict[str, Any], timeout: int = 5) -> Optional[Dict[str, Any]]:
     """
-    Ruft ein MCP-Tool auf (ASYNC VERSION).
+    Ruft ein MCP-Tool auf.
     
     Versucht zuerst den Hub (für alle registrierten MCPs),
     fällt zurück auf direkten MCP-Call wenn Hub nicht verfügbar.
@@ -100,60 +102,7 @@ async def call_tool_async(name: str, arguments: Dict[str, Any], timeout: int = 5
             "arguments": arguments,
         },
     }
-    return await _call_mcp_raw(payload, timeout=timeout)
-
-
-def call_tool(name: str, arguments: Dict[str, Any], timeout: int = 5) -> Optional[Dict[str, Any]]:
-    """
-    Ruft ein MCP-Tool auf (SYNC VERSION für Backward-Kompatibilität).
-    
-    Versucht zuerst den Hub (für alle registrierten MCPs),
-    fällt zurück auf direkten MCP-Call wenn Hub nicht verfügbar.
-    
-    NOTE: In async Contexts sollte call_tool_async() verwendet werden!
-    """
-    # Versuche Hub (aggregiert alle MCPs)
-    try:
-        from mcp.hub import get_hub
-        hub = get_hub()
-        result = hub.call_tool(name, arguments)
-        
-        # Wrap result in standard format
-        if result and not isinstance(result, dict):
-            result = {"result": result}
-        elif result and "error" not in result:
-            result = {"result": result}
-            
-        return result
-        
-    except Exception as e:
-        log_debug(f"[MCP] Hub not available, falling back to direct call: {e}")
-    
-    # Fallback: Direkter MCP-Call - nutzt asyncio.run()
-    import asyncio
-    payload = {
-        "jsonrpc": "2.0",
-        "id": f"call-{name}",
-        "method": "tools/call",
-        "params": {
-            "name": name,
-            "arguments": arguments,
-        },
-    }
-    
-    try:
-        # In bestehendem Event Loop
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Kann nicht direkt run() in laufendem Loop - CRITICAL BUG wenn erreicht!
-            log_error(f"[MCP] CRITICAL: call_tool('{name}') called from running event loop! Use call_tool_async() instead.")
-            return {"error": "call_tool called from async context - use call_tool_async()"}
-        else:
-            return asyncio.run(_call_mcp_raw(payload, timeout=timeout))
-    except RuntimeError as e:
-        # Kein Event Loop vorhanden - das ist OK
-        log_debug(f"[MCP] No event loop, creating one: {e}")
-        return asyncio.run(_call_mcp_raw(payload, timeout=timeout))
+    return _call_mcp_raw(payload, timeout=timeout)
 
 
 # ------------------------------------------------------
@@ -353,13 +302,13 @@ def graph_search(conversation_id: str, query: str, depth: int = 2, limit: int = 
         if "structuredContent" in result:
             inner = result.get("structuredContent", {})
             return inner.get("results", [])
-        return result.get("results", [])
+        return result.get("results",)
 
     return []
 
 
 # ------------------------------------------------------
-# MCP Proxy
+# MCP Proxy (unverändert)
 # ------------------------------------------------------
 @router.post("/mcp")
 async def mcp_proxy(request: Request):
@@ -373,20 +322,20 @@ async def mcp_proxy(request: Request):
     log_debug(f"[MCP-Proxy] → {MCP_BASE} headers={headers}")
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            upstream = await client.post(
-                MCP_BASE,
-                content=body,
-                headers=headers
-            )
+        upstream = requests.post(
+            MCP_BASE,
+            data=body,
+            headers=headers,
+            timeout=10,
+            stream=True,
+        )
     except Exception as e:
         log_error(f"[MCP-Proxy] Upstream Fehler: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
-    # Streaming Response
-    async def iter_stream():
+    def iter_stream():
         try:
-            async for chunk in upstream.aiter_bytes():
+            for chunk in upstream.iter_content(chunk_size=None):
                 if chunk:
                     yield chunk
         except Exception as e:

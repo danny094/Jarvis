@@ -1,4 +1,8 @@
 # sql-memory/graph/graph_store.py
+
+# Global singleton instance
+_graph_store = None
+
 """
 Graph Store - Speichert Nodes und Edges in SQLite.
 """
@@ -341,8 +345,61 @@ class GraphStore:
         return results[:limit]
 
 
-# Singleton
-_graph_store: Optional[GraphStore] = None
+
+    def get_edges(self, node_id: int):
+        """Get all edges connected to a node."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT src_node_id as source, dst_node_id as target, edge_type as type, weight, created_at
+                FROM graph_edges
+                WHERE src_node_id = ? OR dst_node_id = ?
+            ''', (node_id, node_id))
+            
+            edges = []
+            for row in cursor.fetchall():
+                edges.append({
+                    "source": row[0],
+                    "target": row[1],
+                    "type": row[2],
+                    "weight": row[3],
+                    "created_at": row[4]
+                })
+            return edges
+        finally:
+            conn.close()
+    
+    def delete_node(self, node_id: int):
+        """Delete a node and all its edges."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''DELETE FROM graph_edges WHERE src_node_id = ? OR dst_node_id = ?''', (node_id, node_id))
+            cursor.execute('''DELETE FROM graph_nodes WHERE id = ?''', (node_id,))
+            conn.commit()
+        except Exception as e:
+            print(f"Error deleting node: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+    
+    def delete_edge(self, source: int, target: int, edge_type: str):
+        """Delete a specific edge."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''DELETE FROM graph_edges WHERE src_node_id = ? AND dst_node_id = ? AND edge_type = ?''', (source, target, edge_type))
+            conn.commit()
+        except Exception as e:
+            print(f"Error deleting edge: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
 
 def get_graph_store(db_path: str = None) -> GraphStore:
     global _graph_store

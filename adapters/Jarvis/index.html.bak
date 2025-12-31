@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="eng" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jarvis WebUI</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        /* ═══════════════════════════════════════════════════════════════ */
+        /* CUSTOM STYLES */
+        /* ═══════════════════════════════════════════════════════════════ */
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1a1a1a; }
+        ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+        
+        /* Fade in animation */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in { animation: fadeIn 0.3s ease-out; }
+        
+        /* Typing indicator */
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+        .typing-cursor { animation: blink 1s infinite; }
+        
+        /* Pulse animation for status dots */
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+        
+        /* Message markdown */
+        .message-content p { margin-bottom: 0.5rem; }
+        .message-content code {
+            background: #1a1a1a;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .message-content pre {
+            background: #1a1a1a;
+            padding: 1rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 0.5rem 0;
+        }
+        .message-content pre code { background: none; padding: 0; }
+        
+        /* Log colors */
+        .log-info { color: #60a5fa; }
+        .log-warn { color: #fbbf24; }
+        .log-error { color: #f87171; }
+        .log-debug { color: #a78bfa; }
+        
+        /* Terminal Panel Styles */
+        .terminal-open #chat-container {
+            max-height: 50vh;
+        }
+        
+        #terminal-panel {
+            transition: all 0.3s ease;
+        }
+        
+        #terminal-output {
+            font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Consolas', monospace;
+        }
+        
+        /* Terminal scrollbar */
+        #terminal-output::-webkit-scrollbar { width: 6px; }
+        #terminal-output::-webkit-scrollbar-track { background: #0a0a0a; }
+        #terminal-output::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        
+        /* Tab styles */
+        .tab-active {
+            color: white;
+            border-bottom: 2px solid #3b82f6;
+        }
+        .tab-inactive {
+            color: #9ca3af;
+        }
+        .tab-inactive:hover {
+            color: #d1d5db;
+        }
+        
+        /* Collapsible sections */
+        details summary {
+            cursor: pointer;
+            user-select: none;
+        }
+        details summary::-webkit-details-marker {
+            display: none;
+        }
+    </style>
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            bg: '#0a0a0a',
+                            card: '#1a1a1a',
+                            border: '#2a2a2a',
+                            hover: '#333333',
+                        },
+                        accent: {
+                            primary: '#3b82f6',
+                            secondary: '#8b5cf6',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-dark-bg text-gray-100 h-screen flex flex-col">
+    
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- HEADER - Enhanced with Status Indicators & Quick Mode -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <header class="bg-dark-card border-b border-dark-border px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-4">
+            <!-- Logo & Name -->
+            <div class="w-8 h-8 bg-gradient-to-br from-accent-primary to-accent-secondary rounded-lg flex items-center justify-center">
+                <i data-lucide="bot" class="w-5 h-5"></i>
+            </div>
+            <h1 class="text-lg font-semibold">Jarvis</h1>
+            
+            <!-- Layer Status Indicators -->
+            <div class="hidden md:flex items-center gap-2 ml-4 pl-4 border-l border-dark-border">
+                <div id="status-thinking" class="group relative">
+                    <div class="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-dark-hover cursor-help transition-colors">
+                        <span class="w-2 h-2 bg-gray-500 rounded-full pulse-glow" id="status-thinking-dot"></span>
+                        <span class="text-xs text-gray-400">Think</span>
+                    </div>
+                    <!-- Tooltip -->
+                    <div class="hidden group-hover:block absolute top-full left-0 mt-1 bg-dark-card border border-dark-border rounded-lg shadow-xl p-2 text-xs whitespace-nowrap z-50">
+                        <div class="text-gray-400">Thinking Layer</div>
+                        <div id="status-thinking-text" class="text-gray-300">Idle</div>
+                    </div>
+                </div>
+                
+                <div id="status-control" class="group relative">
+                    <div class="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-dark-hover cursor-help transition-colors">
+                        <span class="w-2 h-2 bg-gray-500 rounded-full pulse-glow" id="status-control-dot"></span>
+                        <span class="text-xs text-gray-400">Ctrl</span>
+                    </div>
+                    <div class="hidden group-hover:block absolute top-full left-0 mt-1 bg-dark-card border border-dark-border rounded-lg shadow-xl p-2 text-xs whitespace-nowrap z-50">
+                        <div class="text-gray-400">Control Layer</div>
+                        <div id="status-control-text" class="text-gray-300">Idle</div>
+                    </div>
+                </div>
+                
+                <div id="status-output" class="group relative">
+                    <div class="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-dark-hover cursor-help transition-colors">
+                        <span class="w-2 h-2 bg-gray-500 rounded-full pulse-glow" id="status-output-dot"></span>
+                        <span class="text-xs text-gray-400">Out</span>
+                    </div>
+                    <div class="hidden group-hover:block absolute top-full left-0 mt-1 bg-dark-card border border-dark-border rounded-lg shadow-xl p-2 text-xs whitespace-nowrap z-50">
+                        <div class="text-gray-400">Output Layer</div>
+                        <div id="status-output-text" class="text-gray-300">Idle</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="flex items-center gap-2">
+            <!-- Quick Mode Switcher -->
+            <div class="relative">
+                <button id="quick-mode-btn" 
+                        class="flex items-center gap-2 px-3 py-1.5 bg-dark-hover hover:bg-dark-border rounded-lg transition-colors text-sm">
+                    <i data-lucide="zap" class="w-4 h-4"></i>
+                    <span id="quick-mode-name">Balanced</span>
+                    <i data-lucide="chevron-down" class="w-3 h-3"></i>
+                </button>
+                
+                <div id="quick-mode-dropdown" 
+                     class="hidden absolute right-0 top-full mt-2 w-56 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50 overflow-hidden">
+                    <div class="p-2 space-y-1">
+                        <button class="quick-mode-option w-full text-left px-3 py-2 rounded-lg hover:bg-dark-hover transition-colors" data-mode="fast">
+                            <div class="flex items-center gap-2">
+                                <i data-lucide="rocket" class="w-4 h-4 text-orange-400"></i>
+                                <div>
+                                    <div class="font-medium text-sm">Fast</div>
+                                    <div class="text-xs text-gray-500">Skip Control, light models</div>
+                                </div>
+                            </div>
+                        </button>
+                        <button class="quick-mode-option w-full text-left px-3 py-2 rounded-lg hover:bg-dark-hover transition-colors bg-dark-hover" data-mode="balanced">
+                            <div class="flex items-center gap-2">
+                                <i data-lucide="scale" class="w-4 h-4 text-accent-primary"></i>
+                                <div>
+                                    <div class="font-medium text-sm">Balanced</div>
+                                    <div class="text-xs text-gray-500">Current settings</div>
+                                </div>
+                            </div>
+                        </button>
+                        <button class="quick-mode-option w-full text-left px-3 py-2 rounded-lg hover:bg-dark-hover transition-colors" data-mode="accurate">
+                            <div class="flex items-center gap-2">
+                                <i data-lucide="target" class="w-4 h-4 text-green-400"></i>
+                                <div>
+                                    <div class="font-medium text-sm">Accurate</div>
+                                    <div class="text-xs text-gray-500">All layers, heavy models</div>
+                                </div>
+                            </div>
+                        </button>
+                        <div class="border-t border-dark-border my-1"></div>
+                        <button class="w-full text-left px-3 py-2 rounded-lg hover:bg-dark-hover transition-colors text-sm" onclick="document.getElementById('settings-btn').click(); document.getElementById('quick-mode-dropdown').classList.add('hidden');">
+                            <div class="flex items-center gap-2">
+                                <i data-lucide="settings" class="w-4 h-4 text-gray-400"></i>
+                                <span>Custom Settings...</span>
+                            </div>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Maintenance Button -->
+            <button id="maintenance-btn" 
+                    class="p-2 text-gray-400 hover:text-white hover:bg-dark-hover rounded-lg transition-colors"
+                    title="Memory Maintenance">
+                <i data-lucide="brush" class="w-5 h-5"></i>
+            </button>
+            
+            <!-- Tools Button -->
+            <button id="tools-btn" 
+                    class="p-2 text-gray-400 hover:text-white hover:bg-dark-hover rounded-lg transition-colors"
+                    title="MCP Tools">
+                <i data-lucide="wrench" class="w-5 h-5"></i>
+            </button>
+            
+            <!-- Debug Toggle -->
+            <button id="debug-toggle-btn" 
+                    class="p-2 text-gray-400 hover:text-white hover:bg-dark-hover rounded-lg transition-colors"
+                    title="Debug-Panel">
+                <i data-lucide="terminal" class="w-5 h-5"></i>
+            </button>
+            
+            <!-- Settings Button -->
+            <button id="settings-btn" 
+                    class="p-2 text-gray-400 hover:text-white hover:bg-dark-hover rounded-lg transition-colors"
+                    title="Settings">
+                <i data-lucide="settings" class="w-5 h-5"></i>
+            </button>
+            
+            <!-- Model Selector -->
+            <div class="relative hidden sm:block">
+                <button id="model-selector-btn" 
+                        class="flex items-center gap-2 px-4 py-2 bg-dark-hover rounded-lg hover:bg-dark-border transition-colors">
+                    <span id="model-name">Loading models...</span>
+                    <i data-lucide="chevron-down" class="w-4 h-4"></i>
+                </button>
+                
+                <div id="model-dropdown" 
+                     class="hidden absolute right-0 top-full mt-2 w-64 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50 max-h-64 overflow-y-auto">
+                </div>
+            </div>
+        </div>
+    </header>
+    
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- MAIN CONTENT AREA -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="main-content" class="flex-1 flex overflow-hidden">
+        
+        <!-- Chat + Terminal Wrapper -->
+        <div class="flex-1 flex flex-col overflow-hidden">
+            
+            <!-- Chat Container -->
+            <main id="chat-container" class="flex-1 overflow-y-auto p-4 space-y-4 transition-all duration-300">
+                
+                <!-- Welcome Message -->
+                <div id="welcome-message" class="flex flex-col items-center justify-center h-full text-center text-gray-500">
+                    <div class="w-16 h-16 bg-gradient-to-br from-accent-primary to-accent-secondary rounded-2xl flex items-center justify-center mb-4">
+                        <i data-lucide="sparkles" class="w-8 h-8 text-white"></i>
+                    </div>
+                    <h2 class="text-xl font-medium text-gray-300 mb-2">Welcome to Jarvis</h2>
+                    <p class="text-sm max-w-md">Your local AI assistant with memory, MCP tools and multi-layer processing.</p>
+                </div>
+                
+                <!-- Messages Container -->
+                <div id="messages-list" class="space-y-4"></div>
+            </main>
+            
+            <!-- Terminal Panel (kept as original) -->
+            <div id="terminal-panel" class="hidden border-t border-dark-border bg-dark-bg flex flex-col" style="height: 45vh;">
+                <div class="flex items-center justify-between px-4 py-2 bg-dark-card border-b border-dark-border">
+                    <div class="flex items-center gap-3">
+                        <div class="flex items-center gap-2">
+                            <i data-lucide="terminal" class="w-4 h-4 text-accent-secondary"></i>
+                            <span class="font-medium text-sm">Terminal</span>
+                        </div>
+                        <span id="terminal-container-name" class="hidden text-xs px-2 py-0.5 bg-accent-secondary/20 text-accent-secondary rounded">
+                            code-sandbox
+                        </span>
+                        
+                        <div class="flex items-center gap-2 ml-4 border-l border-dark-border pl-4">
+                            <span class="text-xs text-gray-500">Sandbox:</span>
+                            <span id="sandbox-status" class="text-xs">
+                                <span class="text-gray-500">● Inaktiv</span>
+                            </span>
+                            <button id="sandbox-start-btn" 
+                                    class="text-xs bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded flex items-center gap-1 transition-colors"
+                                    title="User-Sandbox starten">
+                                <i data-lucide="play" class="w-3 h-3"></i>
+                                <span class="hidden sm:inline">Start</span>
+                            </button>
+                            <button id="sandbox-stop-btn" 
+                                    class="hidden text-xs bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded flex items-center gap-1 transition-colors"
+                                    title="User-Sandbox stoppen">
+                                <i data-lucide="square" class="w-3 h-3"></i>
+                                <span class="hidden sm:inline">Stop</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <span id="terminal-runtime" class="hidden text-xs text-gray-500"></span>
+                        <span id="terminal-status" class="text-xs">
+                            <span class="text-gray-500">● Idle</span>
+                        </span>
+                        <button id="terminal-clear-btn" class="text-xs text-gray-400 hover:text-white px-2 py-1 hover:bg-dark-hover rounded transition-colors">
+                            Clear
+                        </button>
+                        <button id="terminal-close-btn" class="text-gray-400 hover:text-white p-1 hover:bg-dark-hover rounded transition-colors">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                </div>
+                
+                <div id="terminal-session-bar" class="hidden"></div>
+                
+                <div id="terminal-output" class="flex-1 overflow-y-auto p-4 bg-[#0a0a0a] text-sm space-y-1">
+                    <div class="text-gray-500 text-xs">Terminal bereit. Warte auf Code-Ausführung...</div>
+                </div>
+            </div>
+            
+        </div><!-- End Chat + Terminal Wrapper -->
+        
+        <!-- Debug Panel (kept as original) -->
+        <aside id="debug-panel" class="hidden w-96 bg-dark-card border-l border-dark-border flex flex-col">
+            <div class="p-3 border-b border-dark-border flex items-center justify-between">
+                <h3 class="font-medium flex items-center gap-2">
+                    <i data-lucide="terminal" class="w-4 h-4"></i>
+                    Debug Logs
+                </h3>
+                <button id="clear-logs-btn" class="text-xs text-gray-400 hover:text-white">Clear</button>
+            </div>
+            
+            <div id="history-info" class="p-3 border-b border-dark-border text-xs space-y-1">
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Messages in History:</span>
+                    <span id="history-count" class="text-accent-primary font-mono">0</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">History Limit:</span>
+                    <span id="history-limit-display" class="text-accent-secondary font-mono">10</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Sent to Backend:</span>
+                    <span id="history-sent" class="text-green-400 font-mono">0</span>
+                </div>
+            </div>
+            
+            <div id="debug-logs" class="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-1">
+                <!-- Logs will be inserted here -->
+            </div>
+        </aside>
+    </div><!-- End Main Content -->
+    
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- SETTINGS MODAL - New Tab-Based Design -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="settings-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div class="bg-dark-card border border-dark-border rounded-xl w-full max-w-2xl shadow-2xl max-h-[85vh] flex flex-col">
+            <!-- Modal Header -->
+            <div class="p-4 border-b border-dark-border flex items-center justify-between">
+                <h2 class="font-semibold flex items-center gap-2">
+                    <i data-lucide="settings" class="w-5 h-5"></i>
+                    Settings
+                </h2>
+                <button id="close-settings-btn" class="text-gray-400 hover:text-white">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <!-- Tab Navigation -->
+            <div class="flex border-b border-dark-border px-4">
+                <button class="settings-tab tab-active px-4 py-3 text-sm font-medium transition-colors" data-tab="basic">
+                    Basic
+                </button>
+                <button class="settings-tab tab-inactive px-4 py-3 text-sm font-medium transition-colors" data-tab="layers">
+                    Layers
+                </button>
+                <button class="settings-tab tab-inactive px-4 py-3 text-sm font-medium transition-colors" data-tab="memory">
+                    Memory
+                </button>
+                <button class="settings-tab tab-inactive px-4 py-3 text-sm font-medium transition-colors" data-tab="advanced">
+                    Advanced
+                </button>
+            </div>
+            
+            <!-- Tab Content Container -->
+            <div class="flex-1 overflow-y-auto">
+                
+                <!-- ─────────────────────────────────────────────────────── -->
+                <!-- TAB 1: BASIC SETTINGS -->
+                <!-- ─────────────────────────────────────────────────────── -->
+                <div id="tab-basic" class="settings-tab-content p-6 space-y-5">
+                    
+                    <!-- Chat History Length -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">
+                            Chat History Length
+                        </label>
+                        <div class="flex items-center gap-3">
+                            <input type="range" id="history-length" min="0" max="20" value="10" 
+                                   class="flex-1 accent-accent-primary">
+                            <span id="history-length-value" class="w-10 text-center font-mono text-accent-primary text-sm">10</span>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1.5">
+                            Messages included in context. 0 = no history, 20 = maximum context
+                        </p>
+                    </div>
+                    
+                    <!-- API Endpoint -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">
+                            API Endpoint
+                        </label>
+                        <input type="text" id="api-base-input" value="http://192.168.0.226:8100"
+                               class="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent-primary transition-colors">
+                        <p class="text-xs text-gray-500 mt-1.5">
+                            URL of the Jarvis backend service
+                        </p>
+                    </div>
+                    
+                    <!-- Auto-Save Memory -->
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <label class="text-sm font-medium text-gray-300">Auto-Save Memory</label>
+                            <p class="text-xs text-gray-500 mt-0.5">Automatically save important facts</p>
+                        </div>
+                        <button id="autosave-toggle" class="w-12 h-6 bg-accent-primary rounded-full relative transition-colors">
+                            <span class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform translate-x-6"></span>
+                        </button>
+                    </div>
+                    
+                    <!-- Verbose Logging -->
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <label class="text-sm font-medium text-gray-300">Verbose Logging</label>
+                            <p class="text-xs text-gray-500 mt-0.5">Show detailed debug information</p>
+                        </div>
+                        <button id="verbose-toggle" class="w-12 h-6 bg-dark-border rounded-full relative transition-colors">
+                            <span class="absolute left-1 top-1 w-4 h-4 bg-gray-400 rounded-full transition-transform"></span>
+                        </button>
+                    </div>
+                    
+                </div><!-- End Basic Tab -->
+                
+                <!-- ─────────────────────────────────────────────────────── -->
+                <!-- TAB 2: LAYER SETTINGS -->
+                <!-- ─────────────────────────────────────────────────────── -->
+                <div id="tab-layers" class="settings-tab-content hidden p-6 space-y-5">
+                    
+                    <div class="text-sm text-gray-400 mb-4">
+                        Configure each processing layer independently. Changes apply to next message.
+                    </div>
+                    
+                    <!-- Thinking Layer -->
+                    <div class="border border-dark-border rounded-lg p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                                <i data-lucide="brain" class="w-4 h-4 text-accent-primary"></i>
+                                Thinking Layer
+                            </h3>
+                            <button id="thinking-layer-toggle" class="w-12 h-6 bg-accent-primary rounded-full relative transition-colors">
+                                <span class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform translate-x-6"></span>
+                            </button>
+                        </div>
+                        <p class="text-xs text-gray-500">Intent analysis & planning</p>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">Model</label>
+                            <select id="thinking-model" class="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent-primary">
+                                <option value="deepseek-r1:8b">DeepSeek-R1:8b</option>
+                                <option value="deepseek-r1:14b">DeepSeek-R1:14b</option>
+                                <option value="qwen-qwq">Qwen-QwQ</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">
+                                Temperature: <span id="thinking-temp-value" class="font-mono text-accent-primary">0.7</span>
+                            </label>
+                            <input type="range" id="thinking-temp" min="0" max="1" step="0.1" value="0.7" 
+                                   class="w-full accent-accent-primary">
+                        </div>
+                        
+                        <label class="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+                            <input type="checkbox" id="show-reasoning" class="accent-accent-primary">
+                            <span>Show reasoning process</span>
+                        </label>
+                    </div>
+                    
+                    <!-- Control Layer -->
+                    <div class="border border-dark-border rounded-lg p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                                <i data-lucide="shield-check" class="w-4 h-4 text-green-400"></i>
+                                Control Layer
+                            </h3>
+                            <button id="control-layer-toggle" class="w-12 h-6 bg-accent-primary rounded-full relative transition-colors">
+                                <span class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform translate-x-6"></span>
+                            </button>
+                        </div>
+                        <p class="text-xs text-gray-500">Fact-checking & verification</p>
+                        
+                        <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                            <input type="checkbox" id="skip-on-low-risk" checked class="accent-accent-primary">
+                            <span>Skip on low risk</span>
+                            <span class="ml-auto text-xs bg-green-600/20 text-green-400 px-2 py-0.5 rounded">SPEED BOOST</span>
+                        </label>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">Model</label>
+                            <select id="control-model" class="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent-primary">
+                                <option value="qwen3:4b">Qwen3:4b</option>
+                                <option value="qwen2.5:0.5b">Qwen2.5:0.5b</option>
+                                <option value="llama3.1:8b">Llama3.1:8b</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">
+                                Temperature: <span id="control-temp-value" class="font-mono text-accent-primary">0.1</span>
+                            </label>
+                            <input type="range" id="control-temp" min="0" max="0.5" step="0.05" value="0.1" 
+                                   class="w-full accent-accent-primary">
+                        </div>
+                    </div>
+                    
+                    <!-- Output Layer -->
+                    <div class="border border-dark-border rounded-lg p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                                <i data-lucide="message-square" class="w-4 h-4 text-accent-secondary"></i>
+                                Output Layer
+                            </h3>
+                            <button id="output-layer-toggle" class="w-12 h-6 bg-accent-primary rounded-full relative transition-colors">
+                                <span class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform translate-x-6"></span>
+                            </button>
+                        </div>
+                        <p class="text-xs text-gray-500">Response generation</p>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">Model</label>
+                            <select id="output-model" class="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent-primary">
+                                <option value="llama3.1:8b">Llama3.1:8b</option>
+                                <option value="qwen2.5:7b">Qwen2.5:7b</option>
+                                <option value="deepseek-v3">DeepSeek-V3</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">
+                                Temperature: <span id="output-temp-value" class="font-mono text-accent-primary">0.8</span>
+                            </label>
+                            <input type="range" id="output-temp" min="0" max="1" step="0.1" value="0.8" 
+                                   class="w-full accent-accent-primary">
+                        </div>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">Persona</label>
+                            <select id="persona-select" class="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent-primary">
+                                <option value="professional">Professional Assistant</option>
+                                <option value="technical">Technical Expert</option>
+                                <option value="creative">Creative Helper</option>
+                                <option value="custom">Custom (YAML)</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                </div><!-- End Layers Tab -->
+                
+                <!-- ─────────────────────────────────────────────────────── -->
+                <!-- TAB 3: MEMORY SETTINGS -->
+                <!-- ─────────────────────────────────────────────────────── -->
+                <div id="tab-memory" class="settings-tab-content hidden p-6 space-y-5">
+                    
+                    <div class="text-sm text-gray-400 mb-4">
+                        Configure how Jarvis retrieves and stores memory.
+                    </div>
+                    
+                    <!-- Retrieval Settings -->
+                    <div class="border border-dark-border rounded-lg p-4 space-y-4">
+                        <h3 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                            <i data-lucide="search" class="w-4 h-4 text-accent-primary"></i>
+                            Retrieval Settings
+                        </h3>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">
+                                Semantic Search Top-K: <span id="topk-value" class="font-mono text-accent-primary">5</span>
+                            </label>
+                            <input type="range" id="topk-slider" min="1" max="10" value="5" 
+                                   class="w-full accent-accent-primary">
+                            <p class="text-xs text-gray-500 mt-1">Number of similar memories to retrieve</p>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">
+                                Min Similarity: <span id="similarity-value" class="font-mono text-accent-primary">0.5</span>
+                            </label>
+                            <input type="range" id="similarity-slider" min="0" max="1" step="0.05" value="0.5" 
+                                   class="w-full accent-accent-primary">
+                            <p class="text-xs text-gray-500 mt-1">Minimum similarity score (0.0 - 1.0)</p>
+                        </div>
+                        
+                        <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                            <input type="checkbox" id="include-graph-walk" checked class="accent-accent-primary">
+                            <span>Include graph walk in search</span>
+                        </label>
+                    </div>
+                    
+                    <!-- Auto-Save Settings -->
+                    <div class="border border-dark-border rounded-lg p-4 space-y-3">
+                        <h3 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                            <i data-lucide="save" class="w-4 h-4 text-green-400"></i>
+                            Auto-Save
+                        </h3>
+                        
+                        <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                            <input type="checkbox" id="autosave-facts" checked class="accent-accent-primary">
+                            <span>Save facts automatically</span>
+                        </label>
+                        
+                        <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                            <input type="checkbox" id="autosave-embeddings" checked class="accent-accent-primary">
+                            <span>Generate embeddings</span>
+                        </label>
+                        
+                        <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                            <input type="checkbox" id="autosave-graph" checked class="accent-accent-primary">
+                            <span>Update knowledge graph</span>
+                        </label>
+                    </div>
+                    
+                    <!-- Cleanup Settings -->
+                    <div class="border border-dark-border rounded-lg p-4 space-y-3">
+                        <h3 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                            <i data-lucide="trash-2" class="w-4 h-4 text-red-400"></i>
+                            Cleanup
+                        </h3>
+                        
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1.5">
+                                STM → MTM after: <span id="stm-days-value" class="font-mono text-accent-primary">7</span> days
+                            </label>
+                            <input type="range" id="stm-days-slider" min="1" max="30" value="7" 
+                                   class="w-full accent-accent-primary">
+                        </div>
+                        
+                        <button id="run-maintenance-btn" class="w-full px-4 py-2 bg-accent-primary hover:bg-blue-600 rounded-lg transition-colors text-sm flex items-center justify-center gap-2">
+                            <i data-lucide="play" class="w-4 h-4"></i>
+                            Run Maintenance Now
+                        </button>
+                    </div>
+                    
+                </div><!-- End Memory Tab -->
+                
+                <!-- ─────────────────────────────────────────────────────── -->
+                <!-- TAB 4: ADVANCED SETTINGS -->
+                <!-- ─────────────────────────────────────────────────────── -->
+                <div id="tab-advanced" class="settings-tab-content hidden p-6 space-y-4">
+                    
+                    <!-- Validation Settings -->
+                    <details class="border border-dark-border rounded-lg" open>
+                        <summary class="px-4 py-3 font-medium text-sm flex items-center gap-2 cursor-pointer hover:bg-dark-hover transition-colors">
+                            <i data-lucide="check-circle" class="w-4 h-4 text-accent-primary"></i>
+                            <span>Validation</span>
+                        </summary>
+                        <div class="px-4 py-3 border-t border-dark-border space-y-3">
+                            <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="enable-validation" checked class="accent-accent-primary">
+                                <span>Enable validation</span>
+                            </label>
+                            
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1.5">
+                                    Threshold: <span id="validation-threshold-value" class="font-mono text-accent-primary">0.70</span>
+                                </label>
+                                <input type="range" id="validation-threshold" min="0" max="1" step="0.05" value="0.70" 
+                                       class="w-full accent-accent-primary">
+                            </div>
+                            
+                            <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="hard-fail-mode" checked class="accent-accent-primary">
+                                <span>Hard fail mode</span>
+                            </label>
+                        </div>
+                    </details>
+                    
+                    <!-- Performance Settings -->
+                    <details class="border border-dark-border rounded-lg">
+                        <summary class="px-4 py-3 font-medium text-sm flex items-center gap-2 cursor-pointer hover:bg-dark-hover transition-colors">
+                            <i data-lucide="zap" class="w-4 h-4 text-yellow-400"></i>
+                            <span>Performance</span>
+                        </summary>
+                        <div class="px-4 py-3 border-t border-dark-border space-y-3">
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1.5">Max Tokens</label>
+                                <input type="number" id="max-tokens" value="2000" min="100" max="8000" 
+                                       class="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent-primary">
+                            </div>
+                            
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1.5">Timeout (seconds)</label>
+                                <input type="number" id="timeout" value="60" min="10" max="300" 
+                                       class="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent-primary">
+                            </div>
+                            
+                            <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="verbose-timing" class="accent-accent-primary">
+                                <span>Verbose timing logs</span>
+                            </label>
+                        </div>
+                    </details>
+                    
+                    <!-- Network Settings -->
+                    <details class="border border-dark-border rounded-lg">
+                        <summary class="px-4 py-3 font-medium text-sm flex items-center gap-2 cursor-pointer hover:bg-dark-hover transition-colors">
+                            <i data-lucide="wifi" class="w-4 h-4 text-blue-400"></i>
+                            <span>Network</span>
+                        </summary>
+                        <div class="px-4 py-3 border-t border-dark-border space-y-3">
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1.5">Retry Count</label>
+                                <input type="number" id="retry-count" value="3" min="0" max="10" 
+                                       class="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent-primary">
+                            </div>
+                            
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1.5">Connection Pool Size</label>
+                                <input type="number" id="connection-pool" value="10" min="1" max="50" 
+                                       class="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent-primary">
+                            </div>
+                            
+                            <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="enable-http2" class="accent-accent-primary">
+                                <span>Enable HTTP/2</span>
+                            </label>
+                        </div>
+                    </details>
+                    
+                    <!-- Experimental Features -->
+                    <details class="border border-dark-border rounded-lg">
+                        <summary class="px-4 py-3 font-medium text-sm flex items-center gap-2 cursor-pointer hover:bg-dark-hover transition-colors">
+                            <i data-lucide="flask" class="w-4 h-4 text-purple-400"></i>
+                            <span>Experimental</span>
+                        </summary>
+                        <div class="px-4 py-3 border-t border-dark-border space-y-3">
+                            <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="multi-hop-reasoning" class="accent-accent-primary">
+                                <span>Multi-hop graph reasoning</span>
+                            </label>
+                            
+                            <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="adaptive-layer-skip" class="accent-accent-primary">
+                                <span>Adaptive layer skipping</span>
+                            </label>
+                            
+                            <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="response-caching" class="accent-accent-primary">
+                                <span>Response caching</span>
+                            </label>
+                        </div>
+                    </details>
+                    
+                </div><!-- End Advanced Tab -->
+                
+            </div><!-- End Tab Content Container -->
+            
+            <!-- Modal Footer -->
+            <div class="p-4 border-t border-dark-border flex justify-between items-center">
+                <div class="flex gap-2">
+                    <button id="import-settings-btn" class="px-3 py-2 text-gray-400 hover:text-white transition-colors text-sm flex items-center gap-2">
+                        <i data-lucide="upload" class="w-4 h-4"></i>
+                        Import
+                    </button>
+                    <button id="export-settings-btn" class="px-3 py-2 text-gray-400 hover:text-white transition-colors text-sm flex items-center gap-2">
+                        <i data-lucide="download" class="w-4 h-4"></i>
+                        Export
+                    </button>
+                </div>
+                <div class="flex gap-2">
+                    <button id="reset-settings-btn" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
+                        Reset
+                    </button>
+                    <button id="save-settings-btn" class="px-6 py-2 bg-accent-primary hover:bg-blue-600 rounded-lg transition-colors">
+                        Save
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div><!-- End Settings Modal -->
+    
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- TOOLS MODAL (kept as original) -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="tools-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div class="bg-dark-card border border-dark-border rounded-xl w-full max-w-2xl shadow-2xl max-h-[80vh] flex flex-col">
+            <div class="p-4 border-b border-dark-border flex items-center justify-between">
+                <h2 class="font-semibold flex items-center gap-2">
+                    <i data-lucide="wrench" class="w-5 h-5"></i>
+                    MCP Tools
+                </h2>
+                <button id="close-tools-btn" class="text-gray-400 hover:text-white">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            <div id="tools-content" class="p-4 overflow-y-auto flex-1">
+                <div class="text-gray-400 text-center py-8">
+                    <i data-lucide="loader" class="w-8 h-8 mx-auto mb-2 animate-spin"></i>
+                    Lade Tools...
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- MAINTENANCE MODAL (kept as original) -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="maintenance-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div class="bg-dark-card border border-dark-border rounded-xl w-full max-w-2xl shadow-2xl max-h-[85vh] flex flex-col">
+            <div class="p-4 border-b border-dark-border flex items-center justify-between">
+                <h2 class="font-semibold flex items-center gap-2">
+                    <i data-lucide="brush" class="w-5 h-5"></i>
+                    Memory Maintenance
+                </h2>
+                <button id="close-maintenance-btn" class="text-gray-400 hover:text-white">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <div class="p-4 overflow-y-auto flex-1 space-y-4">
+                <!-- Status Cards -->
+                <div class="grid grid-cols-5 gap-2">
+                    <div class="bg-dark-bg rounded-lg p-3 text-center">
+                        <div id="stat-stm" class="text-2xl font-bold text-accent-primary">-</div>
+                        <div class="text-xs text-gray-500">STM</div>
+                    </div>
+                    <div class="bg-dark-bg rounded-lg p-3 text-center">
+                        <div id="stat-mtm" class="text-2xl font-bold text-accent-secondary">-</div>
+                        <div class="text-xs text-gray-500">MTM</div>
+                    </div>
+                    <div class="bg-dark-bg rounded-lg p-3 text-center">
+                        <div id="stat-ltm" class="text-2xl font-bold text-green-400">-</div>
+                        <div class="text-xs text-gray-500">LTM</div>
+                    </div>
+                    <div class="bg-dark-bg rounded-lg p-3 text-center">
+                        <div id="stat-nodes" class="text-2xl font-bold text-yellow-400">-</div>
+                        <div class="text-xs text-gray-500">Nodes</div>
+                    </div>
+                    <div class="bg-dark-bg rounded-lg p-3 text-center">
+                        <div id="stat-edges" class="text-2xl font-bold text-pink-400">-</div>
+                        <div class="text-xs text-gray-500">Edges</div>
+                    </div>
+                </div>
+                
+                <!-- Task Checkboxes -->
+                <div class="bg-dark-bg rounded-lg p-4">
+                    <h3 class="text-sm font-medium mb-3 text-gray-300">Tasks auswählen</h3>
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-3 cursor-pointer">
+                            <input type="checkbox" id="task-duplicates" checked class="accent-accent-primary w-4 h-4">
+                            <span class="text-sm">Duplikate finden & mergen</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" id="task-promote" checked class="accent-accent-primary w-4 h-4">
+                            <span class="text-sm">Wichtige Einträge zu LTM promoten</span>
+                        </label>
+                        <label class="flex items-center gap-3 cursor-pointer">
+                            <input type="checkbox" id="task-summarize" checked class="accent-accent-primary w-4 h-4">
+                            <span class="text-sm">Zusammenfassungen erstellen</span>
+                        </label>
+                        <label class="flex items-center gap-3 cursor-pointer">
+                            <input type="checkbox" id="task-graph" checked class="accent-accent-primary w-4 h-4">
+                            <span class="text-sm">Graph optimieren</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- Progress Bar -->
+                <div id="maintenance-progress-container" class="hidden">
+                    <div class="flex justify-between text-sm mb-1">
+                        <span id="maintenance-task" class="text-gray-400">Bereit...</span>
+                        <span id="maintenance-percent" class="text-accent-primary font-mono">0%</span>
+                    </div>
+                    <div class="h-3 bg-dark-bg rounded-full overflow-hidden">
+                        <div id="maintenance-progress-bar" class="h-full bg-gradient-to-r from-accent-primary to-accent-secondary transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                </div>
+                
+                <!-- Results -->
+                <div id="maintenance-results" class="hidden bg-dark-bg rounded-lg p-4">
+                    <h3 class="text-sm font-medium mb-3 text-gray-300">Ergebnisse</h3>
+                    <div class="grid grid-cols-2 gap-2 text-sm">
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Duplikate gefunden:</span>
+                            <span id="result-duplicates-found" class="text-yellow-400 font-mono">0</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Duplikate gemerged:</span>
+                            <span id="result-duplicates-merged" class="text-green-400 font-mono">0</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Zu LTM promotet:</span>
+                            <span id="result-promoted" class="text-accent-primary font-mono">0</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Zusammenfassungen:</span>
+                            <span id="result-summaries" class="text-accent-secondary font-mono">0</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Einträge gelöscht:</span>
+                            <span id="result-deleted" class="text-red-400 font-mono">0</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Edges bereinigt:</span>
+                            <span id="result-edges" class="text-pink-400 font-mono">0</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Log -->
+                <div class="bg-dark-bg rounded-lg p-4">
+                    <h3 class="text-sm font-medium mb-2 text-gray-300">Log</h3>
+                    <div id="maintenance-log" class="h-32 overflow-y-auto font-mono text-xs space-y-1 text-gray-400">
+                        <div class="text-gray-500">Bereit für Maintenance...</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="p-4 border-t border-dark-border flex justify-end gap-2">
+                <button id="maintenance-cancel-btn" class="hidden px-4 py-2 text-red-400 hover:text-red-300 transition-colors">
+                    Abbrechen
+                </button>
+                <button id="maintenance-start-btn" class="px-6 py-2 bg-accent-primary hover:bg-blue-600 rounded-lg transition-colors flex items-center gap-2">
+                    <i data-lucide="play" class="w-4 h-4"></i>
+                    Maintenance starten
+                </button>
+            </div>
+        </div>
+    </div><!-- End Maintenance Modal -->
+    
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- INPUT AREA with Quick Actions Toolbar -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <footer class="bg-dark-card border-t border-dark-border p-4">
+        <div class="max-w-4xl mx-auto">
+            
+            <!-- Quick Actions Toolbar -->
+            <div id="quick-actions" class="flex items-center gap-1 mb-2 pb-2 border-b border-dark-border/50">
+                <button id="action-clear-memory" class="p-1.5 text-gray-400 hover:text-white hover:bg-dark-hover rounded transition-colors" title="Clear Memory">
+                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                </button>
+                <button id="action-regenerate" class="p-1.5 text-gray-400 hover:text-white hover:bg-dark-hover rounded transition-colors" title="Regenerate">
+                    <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                </button>
+                <button id="action-copy" class="p-1.5 text-gray-400 hover:text-white hover:bg-dark-hover rounded transition-colors" title="Copy Response">
+                    <i data-lucide="copy" class="w-4 h-4"></i>
+                </button>
+                <button id="action-export" class="p-1.5 text-gray-400 hover:text-white hover:bg-dark-hover rounded transition-colors" title="Export Chat">
+                    <i data-lucide="download" class="w-4 h-4"></i>
+                </button>
+                
+                <div class="flex-1"></div>
+                
+                <!-- More Actions Dropdown -->
+                <div class="relative">
+                    <button id="more-actions-btn" class="p-1.5 text-gray-400 hover:text-white hover:bg-dark-hover rounded transition-colors" title="More Actions">
+                        <i data-lucide="more-horizontal" class="w-4 h-4"></i>
+                    </button>
+                    <div id="more-actions-dropdown" class="hidden absolute bottom-full right-0 mb-2 w-48 bg-dark-card border border-dark-border rounded-lg shadow-xl overflow-hidden">
+                        <button class="w-full text-left px-3 py-2 text-sm hover:bg-dark-hover transition-colors flex items-center gap-2">
+                            <i data-lucide="upload" class="w-4 h-4"></i>
+                            <span>Import Chat</span>
+                        </button>
+                        <button class="w-full text-left px-3 py-2 text-sm hover:bg-dark-hover transition-colors flex items-center gap-2">
+                            <i data-lucide="search" class="w-4 h-4"></i>
+                            <span>Search History</span>
+                        </button>
+                        <button class="w-full text-left px-3 py-2 text-sm hover:bg-dark-hover transition-colors flex items-center gap-2">
+                            <i data-lucide="bar-chart" class="w-4 h-4"></i>
+                            <span>View Stats</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Input Field -->
+            <div class="flex items-end gap-3 bg-dark-bg border border-dark-border rounded-2xl p-3">
+                <textarea 
+                    id="user-input" 
+                    placeholder="Nachricht eingeben..."
+                    rows="1"
+                    class="flex-1 bg-transparent resize-none outline-none text-gray-100 placeholder-gray-500 max-h-32"
+                    onInput="this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 128) + 'px';"
+                ></textarea>
+                
+                <!-- Terminal Toggle Button -->
+                <button id="terminal-toggle-btn" 
+                        class="p-2 text-gray-400 hover:text-white hover:bg-dark-hover rounded-xl transition-colors"
+                        title="Terminal ein/aus">
+                    <i data-lucide="square-terminal" class="w-5 h-5"></i>
+                </button>
+                
+                <button id="send-btn" 
+                        class="p-2 bg-accent-primary hover:bg-blue-600 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                    <i data-lucide="send" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <!-- Status Bar -->
+            <div id="status-bar" class="flex items-center justify-between mt-2 text-xs text-gray-500">
+                <div class="flex items-center gap-4">
+                    <span id="connection-status" class="flex items-center gap-1">
+                        <span class="w-2 h-2 bg-yellow-500 rounded-full"></span>
+                        Connecting...
+                    </span>
+                    <span id="history-status" class="text-gray-600">
+                        History: <span id="history-status-count">0</span>/<span id="history-status-limit">10</span>
+                    </span>
+                </div>
+                <div id="memory-status" class="flex items-center gap-1 opacity-0 transition-opacity">
+                    <i data-lucide="database" class="w-3 h-3"></i>
+                    <span>Memory used</span>
+                </div>
+            </div>
+        </div>
+    </footer>
+    
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- JAVASCRIPT -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <script type="module">
+        import { initApp } from './static/js/app.js';
+        
+        // Initialize Lucide icons
+        lucide.createIcons();
+        
+        // Tab switching for settings modal
+        document.querySelectorAll('.settings-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                
+                // Update tab styling
+                document.querySelectorAll('.settings-tab').forEach(t => {
+                    t.classList.remove('tab-active');
+                    t.classList.add('tab-inactive');
+                });
+                tab.classList.remove('tab-inactive');
+                tab.classList.add('tab-active');
+                
+                // Show/hide tab content
+                document.querySelectorAll('.settings-tab-content').forEach(content => {
+                    content.classList.add('hidden');
+                });
+                document.getElementById(`tab-${tabName}`).classList.remove('hidden');
+            });
+        });
+        
+        // Quick Mode switcher
+        document.getElementById('quick-mode-btn').addEventListener('click', () => {
+            document.getElementById('quick-mode-dropdown').classList.toggle('hidden');
+        });
+        
+        document.querySelectorAll('.quick-mode-option').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const mode = btn.dataset.mode;
+                const modeName = btn.querySelector('.font-medium').textContent;
+                document.getElementById('quick-mode-name').textContent = modeName;
+                document.getElementById('quick-mode-dropdown').classList.add('hidden');
+                
+                // Remove active state from all
+                document.querySelectorAll('.quick-mode-option').forEach(b => {
+                    b.classList.remove('bg-dark-hover');
+                });
+                // Add to clicked
+                btn.classList.add('bg-dark-hover');
+                
+                // Apply mode settings (implement in app.js)
+                console.log('Quick mode changed to:', mode);
+            });
+        });
+        
+        // Slider value updates
+        document.getElementById('thinking-temp').addEventListener('input', (e) => {
+            document.getElementById('thinking-temp-value').textContent = e.target.value;
+        });
+        document.getElementById('control-temp').addEventListener('input', (e) => {
+            document.getElementById('control-temp-value').textContent = e.target.value;
+        });
+        document.getElementById('output-temp').addEventListener('input', (e) => {
+            document.getElementById('output-temp-value').textContent = e.target.value;
+        });
+        document.getElementById('topk-slider').addEventListener('input', (e) => {
+            document.getElementById('topk-value').textContent = e.target.value;
+        });
+        document.getElementById('similarity-slider').addEventListener('input', (e) => {
+            document.getElementById('similarity-value').textContent = e.target.value;
+        });
+        document.getElementById('stm-days-slider').addEventListener('input', (e) => {
+            document.getElementById('stm-days-value').textContent = e.target.value;
+        });
+        document.getElementById('validation-threshold').addEventListener('input', (e) => {
+            document.getElementById('validation-threshold-value').textContent = e.target.value;
+        });
+        
+        // Auto-save toggle
+        document.getElementById('autosave-toggle').addEventListener('click', function() {
+            this.classList.toggle('bg-accent-primary');
+            this.classList.toggle('bg-dark-border');
+            const knob = this.querySelector('span');
+            knob.classList.toggle('translate-x-6');
+            knob.classList.toggle('bg-white');
+            knob.classList.toggle('bg-gray-400');
+        });
+        
+        // Layer toggles
+        ['thinking', 'control', 'output'].forEach(layer => {
+            document.getElementById(`${layer}-layer-toggle`).addEventListener('click', function() {
+                this.classList.toggle('bg-accent-primary');
+                this.classList.toggle('bg-gray-600');
+                const knob = this.querySelector('span');
+                knob.classList.toggle('translate-x-6');
+                knob.classList.toggle('bg-white');
+                knob.classList.toggle('bg-gray-400');
+            });
+        });
+        
+        // Close dropdowns on outside click
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('#quick-mode-btn') && !e.target.closest('#quick-mode-dropdown')) {
+                document.getElementById('quick-mode-dropdown').classList.add('hidden');
+            }
+            if (!e.target.closest('#more-actions-btn') && !e.target.closest('#more-actions-dropdown')) {
+                document.getElementById('more-actions-dropdown').classList.add('hidden');
+            }
+        });
+        
+        // More actions toggle
+        document.getElementById('more-actions-btn').addEventListener('click', () => {
+            document.getElementById('more-actions-dropdown').classList.toggle('hidden');
+        });
+        
+        // Quick action buttons
+        document.getElementById('action-clear-memory').addEventListener('click', () => {
+            if (confirm('Clear all memory for this conversation?')) {
+                console.log('Clear memory clicked');
+                // Implement in app.js
+            }
+        });
+        
+        document.getElementById('action-regenerate').addEventListener('click', () => {
+            console.log('Regenerate clicked');
+            // Implement in app.js
+        });
+        
+        document.getElementById('action-copy').addEventListener('click', () => {
+            console.log('Copy clicked');
+            // Implement in app.js
+        });
+        
+        document.getElementById('action-export').addEventListener('click', () => {
+            console.log('Export clicked');
+            // Implement in app.js
+        });
+        
+        // Run maintenance from memory tab
+        document.getElementById('run-maintenance-btn').addEventListener('click', () => {
+            document.getElementById('settings-modal').classList.add('hidden');
+            document.getElementById('maintenance-btn').click();
+        });
+        
+        // Initialize main app
+        initApp();
+    </script>
+</body>
+</html>

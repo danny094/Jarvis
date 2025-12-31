@@ -305,12 +305,36 @@ class MaintenanceWorker:
                     "sub_progress": 50
                 }
                 
-                # Duplikate mergen
+                log_info(f"[Maintenance] About to merge {len(duplicates)} duplicate groups")
+                log_info(f"[Maintenance] Duplicates data: {duplicates}")
+                
+                # Duplikate TATSÄCHLICH mergen
                 for dup in duplicates:
                     if self._cancel_requested:
                         return
-                    # TODO: Tatsächliches Merging implementieren
-                    self.stats.duplicates_merged += 1
+                    
+                    try:
+                        indices = dup.get("indices", [])
+                        log_info(f"[Maintenance] Processing dup with indices: {indices}")
+                        if len(indices) >= 2:
+                            # Get IDs of duplicate entries
+                            entry_ids = [entries[idx]["id"] for idx in indices if idx < len(entries)]
+                            
+                            # Keep first, delete rest
+                            ids_to_delete = entry_ids[1:]
+                            
+                            # Delete duplicates
+                            result = unwrap_mcp_result(call_tool("memory_delete_bulk", {
+                                "ids": ids_to_delete
+                            }, timeout=10))
+                            
+                            if isinstance(result, dict):
+                                deleted = result.get("deleted", 0)
+                                self.stats.duplicates_merged += deleted
+                    
+                    except Exception as e:
+                        log_error(f"Failed to merge duplicate: {e}")
+                        self.stats.errors.append(f"Merge failed: {e}")
                 
                 yield {
                     "type": "task_progress",
@@ -320,9 +344,29 @@ class MaintenanceWorker:
             else:
                 yield {"type": "task_progress", "message": "Zu wenig Einträge für Duplikat-Check", "sub_progress": 100}
             
+            # BONUS: Graph duplicate merging
+            try:
+                graph_dups = unwrap_mcp_result(call_tool("graph_find_duplicate_nodes", {}, timeout=10))
+                
+                if isinstance(graph_dups, dict):
+                    dup_groups = graph_dups.get("duplicate_groups", [])
+                    
+                    for group in dup_groups:
+                        if self._cancel_requested:
+                            return
+                        
+                        node_ids = group.get("node_ids", [])
+                        if len(node_ids) >= 2:
+                            # Merge graph nodes
+                            unwrap_mcp_result(call_tool("graph_merge_nodes", {
+                                "node_ids": node_ids
+                            }, timeout=10))
+            except Exception as e:
+                log_error(f"Graph duplicate merge failed: {e}")
+            
         except Exception as e:
             yield {"type": "task_error", "task": "duplicates", "message": str(e)}
-    
+
     async def _ai_find_duplicates(self, entries: List[Dict]) -> List[Dict]:
         """Lässt KI Duplikate identifizieren."""
         if not entries:
@@ -356,8 +400,7 @@ Wenn keine Duplikate: {{"duplicates": []}}"""
                     json={
                         "model": THINKING_MODEL,
                         "prompt": prompt,
-                        "stream": False,
-                        "keep_alive": -1,  # Model bleibt permanent im RAM!
+                        "stream": False
                     }
                 )
                 
@@ -407,6 +450,7 @@ Wenn keine Duplikate: {{"duplicates": []}}"""
                 promotions = {"to_ltm": [], "to_delete": []}
                 self.stats.errors.append(f"Categorize: {e}")
             
+            # Promote to LTM
             for promo in promotions.get("to_ltm", []):
                 if self._cancel_requested:
                     return
@@ -421,15 +465,35 @@ Wenn keine Duplikate: {{"duplicates": []}}"""
                     }, timeout=10)
                     self.stats.promoted_to_ltm += 1
             
+            # DELETE unwanted entries
+            to_delete_indices = promotions.get("to_delete", [])
+            if to_delete_indices:
+                try:
+                    # Get IDs of entries to delete
+                    ids_to_delete = [entries[idx]["id"] for idx in to_delete_indices if idx < len(entries)]
+                    
+                    # Delete them
+                    result = unwrap_mcp_result(call_tool("memory_delete_bulk", {
+                        "ids": ids_to_delete
+                    }, timeout=10))
+                    
+                    if isinstance(result, dict):
+                        deleted = result.get("deleted", 0)
+                        self.stats.entries_deleted += deleted
+                
+                except Exception as e:
+                    log_error(f"Failed to delete entries: {e}")
+                    self.stats.errors.append(f"Delete failed: {e}")
+            
             yield {
                 "type": "task_progress",
-                "message": f"{self.stats.promoted_to_ltm} Einträge zu LTM promotet",
+                "message": f"{self.stats.promoted_to_ltm} zu LTM promotet, {self.stats.entries_deleted} gelöscht",
                 "sub_progress": 100
             }
             
         except Exception as e:
             yield {"type": "task_error", "task": "promote", "message": str(e)}
-    
+
     async def _ai_categorize_entries(self, entries: List[Dict]) -> Dict:
         """Lässt KI Einträge kategorisieren."""
         if not entries:
@@ -464,8 +528,7 @@ Antworte NUR mit JSON:
                     json={
                         "model": THINKING_MODEL,
                         "prompt": prompt,
-                        "stream": False,
-                        "keep_alive": -1,  # Model bleibt permanent im RAM!
+                        "stream": False
                     }
                 )
                 
@@ -558,8 +621,7 @@ Zusammenfassung (max 500 Zeichen):"""
                     json={
                         "model": THINKING_MODEL,
                         "prompt": prompt,
-                        "stream": False,
-                        "keep_alive": -1,  # Model bleibt permanent im RAM!
+                        "stream": False
                     }
                 )
                 
@@ -588,17 +650,82 @@ Zusammenfassung (max 500 Zeichen):"""
             yield {
                 "type": "task_progress",
                 "message": f"Graph: {nodes} Nodes, {edges} Edges",
-                "sub_progress": 50
+                "sub_progress": 20
             }
             
-            # TODO: Tatsächliche Graph-Optimierung
-            # - Verwaiste Nodes finden
-            # - Schwache Edges entfernen
-            # - Zyklen erkennen
+            # 1. Find and merge duplicate nodes
+            try:
+                duplicates = unwrap_mcp_result(call_tool("graph_find_duplicate_nodes", {}, timeout=10))
+                
+                if isinstance(duplicates, dict):
+                    dup_groups = duplicates.get("duplicate_groups", [])
+                    
+                    yield {
+                        "type": "task_progress",
+                        "message": f"Fand {len(dup_groups)} Duplikat-Gruppen",
+                        "sub_progress": 40
+                    }
+                    
+                    for group in dup_groups:
+                        if self._cancel_requested:
+                            return
+                        
+                        node_ids = group.get("node_ids", [])
+                        if len(node_ids) >= 2:
+                            # Merge nodes
+                            unwrap_mcp_result(call_tool("graph_merge_nodes", {
+                                "node_ids": node_ids
+                            }, timeout=10))
+            
+            except Exception as e:
+                log_error(f"Graph duplicate merge failed: {e}")
+                self.stats.errors.append(f"Graph merge: {e}")
+            
+            # 2. Delete orphaned nodes
+            try:
+                orphans = unwrap_mcp_result(call_tool("graph_delete_orphan_nodes", {}, timeout=10))
+                
+                if isinstance(orphans, dict):
+                    deleted = orphans.get("deleted", 0)
+                    
+                    yield {
+                        "type": "task_progress",
+                        "message": f"{deleted} verwaiste Nodes entfernt",
+                        "sub_progress": 70
+                    }
+            
+            except Exception as e:
+                log_error(f"Orphan deletion failed: {e}")
+                self.stats.errors.append(f"Orphan delete: {e}")
+            
+            # 3. Prune weak edges
+            try:
+                pruned = unwrap_mcp_result(call_tool("graph_prune_weak_edges", {
+                    "threshold": 0.3
+                }, timeout=10))
+                
+                if isinstance(pruned, dict):
+                    count = pruned.get("pruned", 0)
+                    self.stats.edges_pruned = count
+                    
+                    yield {
+                        "type": "task_progress",
+                        "message": f"{count} schwache Edges entfernt",
+                        "sub_progress": 90
+                    }
+            
+            except Exception as e:
+                log_error(f"Edge pruning failed: {e}")
+                self.stats.errors.append(f"Edge prune: {e}")
+            
+            # Final stats
+            final_stats = unwrap_mcp_result(call_tool("memory_graph_stats", {}, timeout=10))
+            final_nodes = final_stats.get("nodes", 0) if isinstance(final_stats, dict) else 0
+            final_edges = final_stats.get("edges", 0) if isinstance(final_stats, dict) else 0
             
             yield {
                 "type": "task_progress",
-                "message": "Graph-Optimierung abgeschlossen",
+                "message": f"Optimiert: {nodes}→{final_nodes} Nodes, {edges}→{final_edges} Edges",
                 "sub_progress": 100
             }
             

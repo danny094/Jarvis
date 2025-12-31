@@ -1,0 +1,29 @@
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+__MACOSX/
+
+# Git
+.git/
+.gitignore
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Documentation
+*.md
+UPGRADE_NOTES.md
+
+# Backups
+index-backup.html
+*-backup.*
+*-old.*
+
+# Logs
+*.log

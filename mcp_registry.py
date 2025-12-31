@@ -56,16 +56,6 @@ MCPS: Dict[str, Dict[str, Any]] = {
     },
     
     # ─────────────────────────────────────────────────────────────
-    # Container Manager - REST API (KEIN MCP!)
-    # Wird direkt von CoreBridge aufgerufen, nicht über MCP Hub
-    # ─────────────────────────────────────────────────────────────
-    "container-manager": {
-        "url": os.getenv("CONTAINER_MANAGER_URL", "http://container-manager:8400"),
-        "enabled": False,  # NICHT als MCP registrieren - ist REST API!
-        "description": "Verwaltet Sandbox-Container für sichere Code-Ausführung",
-    },
-    
-    # ─────────────────────────────────────────────────────────────
     # OPTIONAL: STDIO-basierter MCP (lokaler Prozess)
     # ─────────────────────────────────────────────────────────────
     "local-tools": {

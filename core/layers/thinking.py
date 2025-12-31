@@ -5,8 +5,8 @@ LAYER 1: ThinkingLayer (DeepSeek-R1)
 Analysiert die User-Anfrage und erstellt einen Plan:
 - Was will der User?
 - Brauche ich Memory?
-- Braucht es einen Sandbox-Container?
-- Soll das Code-Model genutzt werden?
+- Welche Fakten sind relevant?
+- Wie sollte die Antwort strukturiert sein?
 - Halluzinations-Risiko?
 
 STREAMING: Zeigt das "Nachdenken" live an!
@@ -18,101 +18,92 @@ from config import OLLAMA_BASE, THINKING_MODEL
 from utils.logger import log_info, log_error, log_debug
 from utils.json_parser import safe_parse_json
 
-# KOMPAKTER Prompt für schnellere Verarbeitung
-THINKING_PROMPT = """Analysiere die User-Anfrage. Antworte NUR mit JSON.
+THINKING_PROMPT = """Du bist der THINKING-Layer eines AI-Systems.
+Deine Aufgabe: Analysiere die User-Anfrage und erstelle einen Plan.
 
-REGELN:
-- Persönliche Fakten (Alter, Name, Geburtstag) → needs_memory: true, hallucination_risk: high
-- Chat-Fragen ("Was haben wir besprochen?") → needs_chat_history: true
-- Allgemeinwissen → needs_memory: false, hallucination_risk: low
-- Tool-Fragen ("Welche Tools hast du?") → needs_memory: true, memory_keys: ["available_mcp_tools"]
-- Neue Fakten ("Ich bin 25") → is_new_fact: true, new_fact_key + new_fact_value setzen
+WICHTIG: Denke Schritt für Schritt nach, dann gib am Ende JSON aus.
 
-AUTO-EXECUTE REGELN (WICHTIG!):
-Wenn die Nachricht einen Code-Block (```) enthält UND einer dieser Fälle zutrifft → needs_container: true:
+Analysiere:
+1. Was will der User wirklich?
+2. Braucht die Antwort gespeicherte Fakten? (Memory)
+3. Welcher Memory-Key ist relevant? (z.B. "age", "name", "birthday")
+4. Ist dies eine Fakten-Abfrage oder neue Information?
+5. Bezieht sich die Frage auf die AKTUELLE KONVERSATION? (Chat-History)
+6. Wie hoch ist das Halluzinations-Risiko?
 
-1. EXPLIZITE AUSFÜHRUNG:
-   - "teste", "ausführen", "run", "execute", "probier", "starte"
-   
-2. IMPLIZITE AUSFÜHRUNG (Code-Block vorhanden + diese Phrasen):
-   - "was gibt das aus?" / "was ist das Ergebnis?" / "was kommt raus?"
-   - "funktioniert das?" / "läuft das?" / "geht das?"
-   - "ist das korrekt?" / "stimmt das?" / "richtig so?"
-   - "hier ist mein Code" + Frage
-   - "schau dir das an" + Code
-   - "kannst du das checken?"
-   - Nur Code-Block ohne weitere Erklärung (User will Output sehen)
-   
-3. KEINE AUSFÜHRUNG (auch wenn Code-Block da):
-   - "erkläre" / "erklär mir" / "was macht dieser Code?"
-   - "wie funktioniert" / "warum" 
-   - "verbessere" / "optimiere" / "refactor" (erst analysieren!)
-   - "schreib mir" / "erstelle" (Code generieren, nicht ausführen)
-   - "was ist falsch?" (erst analysieren, dann ggf. fixen+testen)
+Am Ende deiner Überlegungen, gib NUR dieses JSON aus:
 
-CONTAINER-REGELN:
-- Code ausführen/testen → needs_container: true, container_name: "code-sandbox"
-- Code nur analysieren/erklären → needs_container: false, use_code_model: true
-- Normales Gespräch → needs_container: false, use_code_model: false
-
-JSON-FORMAT:
 ```json
 {
-    "intent": "kurze Beschreibung",
+    "intent": "Was der User will (kurz)",
     "needs_memory": true/false,
     "memory_keys": ["key1", "key2"],
     "needs_chat_history": true/false,
     "is_fact_query": true/false,
-    "is_new_fact": true/false,
+    "is_new_fact": false,
     "new_fact_key": "key oder null",
     "new_fact_value": "value oder null",
     "hallucination_risk": "low/medium/high",
-    "suggested_response_style": "kurz/ausführlich",
-    "needs_container": true/false,
-    "container_name": "code-sandbox/web-research/file-processor/null",
-    "container_task": "execute/analyze/test/convert/null",
-    "use_code_model": true/false,
-    "code_language": "python/javascript/bash/null",
-    "reasoning": "Begründung"
+    "suggested_response_style": "kurz/ausführlich/freundlich",
+    "reasoning": "Kurze Begründung"
 }
 ```
 
 BEISPIELE:
 
-"```python
-print('hello')
+User: "Wie alt bin ich?"
+Überlegung: Der User fragt nach seinem Alter. Das ist ein persönlicher Fakt, den ich nicht wissen kann. Ich muss im Memory nachschauen. Wenn ich rate, ist das Halluzination.
+```json
+{
+    "intent": "User fragt nach seinem Alter",
+    "needs_memory": true,
+    "memory_keys": ["age", "alter", "birthday"],
+    "needs_chat_history": false,
+    "is_fact_query": true,
+    "is_new_fact": false,
+    "new_fact_key": null,
+    "new_fact_value": null,
+    "hallucination_risk": "high",
+    "suggested_response_style": "kurz",
+    "reasoning": "Alter ist persönlicher Fakt, muss aus Memory kommen"
+}
 ```
-Was gibt das aus?" 
-→ {"intent":"Code-Output-Frage","needs_container":true,"container_name":"code-sandbox","container_task":"execute","use_code_model":true,"code_language":"python","reasoning":"User fragt nach Output - muss ausgeführt werden"}
 
-"Hier mein Code:
-```python
-x = [1,2,3]
-print(sum(x))
-```"
-→ {"intent":"Code-Präsentation","needs_container":true,"container_name":"code-sandbox","container_task":"execute","use_code_model":true,"code_language":"python","reasoning":"User zeigt Code ohne weitere Frage - will vermutlich Output sehen"}
+User: "Was haben wir heute besprochen?" / "Worüber haben wir geredet?" / "Was war meine letzte Frage?"
+Überlegung: Der User fragt nach dem Inhalt unserer AKTUELLEN Konversation. Das steht in der Chat-History, nicht im Memory. Ich muss die bisherigen Nachrichten nutzen.
+```json
+{
+    "intent": "User fragt nach Gesprächsinhalt",
+    "needs_memory": false,
+    "memory_keys": [],
+    "needs_chat_history": true,
+    "is_fact_query": false,
+    "is_new_fact": false,
+    "new_fact_key": null,
+    "new_fact_value": null,
+    "hallucination_risk": "low",
+    "suggested_response_style": "ausführlich",
+    "reasoning": "Gesprächsinhalt steht in der Chat-History, nicht im Memory"
+}
+```
 
-"Funktioniert das?
-```python
-def fib(n): return n if n<2 else fib(n-1)+fib(n-2)
-print(fib(10))
-```"
-→ {"intent":"Code-Validierung","needs_container":true,"container_name":"code-sandbox","container_task":"execute","use_code_model":true,"code_language":"python","reasoning":"User fragt ob es funktioniert - Ausführung zeigt es"}
-
-"Erkläre mir diesen Code:
-```python
-lambda x: x*2
-```"
-→ {"intent":"Code-Erklärung","needs_container":false,"use_code_model":true,"code_language":"python","reasoning":"User will Erklärung, keine Ausführung"}
-
-"Schreib mir eine Funktion die Primzahlen findet"
-→ {"intent":"Code-Generierung","needs_container":false,"use_code_model":true,"reasoning":"Code schreiben - keine Ausführung nötig"}
-
-"Was ist 2+2?"
-→ {"intent":"Mathe","needs_container":false,"use_code_model":false,"reasoning":"Triviale Frage"}
-
-"Hallo, wie geht's?"
-→ {"intent":"Smalltalk","needs_container":false,"use_code_model":false,"reasoning":"Normales Gespräch"}
+User: "Was ist die Hauptstadt von Frankreich?"
+Überlegung: Das ist Allgemeinwissen. Paris ist die Hauptstadt. Kein Memory nötig, kein Halluzinationsrisiko.
+```json
+{
+    "intent": "Allgemeine Wissensfrage",
+    "needs_memory": false,
+    "memory_keys": [],
+    "needs_chat_history": false,
+    "is_fact_query": false,
+    "is_new_fact": false,
+    "new_fact_key": null,
+    "new_fact_value": null,
+    "hallucination_risk": "low",
+    "suggested_response_style": "kurz",
+    "reasoning": "Allgemeinwissen, kein persönlicher Fakt"
+}
+```
 """
 
 
@@ -146,7 +137,6 @@ class ThinkingLayer:
             "model": self.model,
             "prompt": prompt,
             "stream": True,  # STREAMING!
-            "keep_alive": -1,  # Model bleibt permanent im RAM!
         }
         
         full_response = ""
@@ -185,7 +175,7 @@ class ThinkingLayer:
             # Jetzt JSON aus der Response extrahieren
             plan = self._extract_plan(full_response)
             
-            log_info(f"[ThinkingLayer] Plan: intent={plan.get('intent')}, needs_memory={plan.get('needs_memory')}, needs_container={plan.get('needs_container')}, use_code_model={plan.get('use_code_model')}")
+            log_info(f"[ThinkingLayer] Plan: intent={plan.get('intent')}, needs_memory={plan.get('needs_memory')}")
             
             # Final yield mit Plan
             yield ("", True, plan)
@@ -211,12 +201,6 @@ class ThinkingLayer:
         )
         
         if plan and "intent" in plan:
-            # Stelle sicher dass neue Felder existieren
-            plan.setdefault("needs_container", False)
-            plan.setdefault("container_name", None)
-            plan.setdefault("container_task", None)
-            plan.setdefault("use_code_model", False)
-            plan.setdefault("code_language", None)
             return plan
         
         # Fallback
@@ -249,11 +233,5 @@ class ThinkingLayer:
             "new_fact_value": None,
             "hallucination_risk": "medium",
             "suggested_response_style": "freundlich",
-            "reasoning": "Fallback - Analyse fehlgeschlagen",
-            # Neue Felder
-            "needs_container": False,
-            "container_name": None,
-            "container_task": None,
-            "use_code_model": False,
-            "code_language": None
+            "reasoning": "Fallback - Analyse fehlgeschlagen"
         }

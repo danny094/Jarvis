@@ -115,7 +115,6 @@ Deine Bewertung (nur JSON):"""
             "prompt": prompt,
             "stream": False,
             "format": "json",
-            "keep_alive": -1,  # Model bleibt permanent im RAM!
         }
         
         try:

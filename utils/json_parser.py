@@ -169,16 +169,16 @@ def extract_json_array(raw: str, default: list = None) -> list:
         result = json.loads(raw)
         if isinstance(result, list):
             return result
-    except (json.JSONDecodeError, ValueError, KeyError) as e:
-        pass  # Strategie 1 fehlgeschlagen, versuche nächste
+    except:
+        pass
     
     # Strategie 2: Array aus Text extrahieren
     try:
         start = raw.index("[")
         end = raw.rindex("]") + 1
         return json.loads(raw[start:end])
-    except (json.JSONDecodeError, ValueError) as e:
-        pass  # Strategie 2 fehlgeschlagen, versuche nächste
+    except:
+        pass
     
     # Strategie 3: Comma-separated values
     # "key1, key2, key3" → ["key1", "key2", "key3"]

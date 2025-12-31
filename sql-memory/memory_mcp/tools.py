@@ -299,71 +299,6 @@ def register_tools(mcp):
             conn.close()
 
     # --------------------------------------------------
-    # memory_list_conversations
-    # --------------------------------------------------
-    @mcp.tool
-    def memory_list_conversations(limit: int = 100) -> Dict:
-        """Listet alle Conversation-IDs mit Statistiken."""
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT conversation_id, 
-                       COUNT(*) as entry_count,
-                       MAX(id) as latest_id
-                FROM memory
-                GROUP BY conversation_id
-                ORDER BY latest_id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            )
-            
-            conversations = []
-            for row in cur.fetchall():
-                conversations.append({
-                    "conversation_id": row[0],
-                    "entry_count": row[1],
-                    "latest_id": row[2]
-                })
-            
-            return {
-                "conversations": conversations,
-                "total": len(conversations)
-            }
-        finally:
-            conn.close()
-
-    # --------------------------------------------------
-    # memory_all_recent (für Maintenance)
-    # --------------------------------------------------
-    @mcp.tool
-    def memory_all_recent(limit: int = 500) -> Dict:
-        """Holt die neuesten Einträge aus ALLEN Conversations."""
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT *
-                FROM memory
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            )
-            
-            entries = [row_to_memory_dict(r) for r in cur.fetchall()]
-            
-            return {
-                "entries": entries,
-                "total": len(entries)
-            }
-        finally:
-            conn.close()
-
-    # --------------------------------------------------
     # autosave hook
     # --------------------------------------------------
     @mcp.tool
@@ -553,4 +488,290 @@ def register_tools(mcp):
             "edge_types": edge_types,
             "node_types": node_types
         }
+    # --------------------------------------------------
+    # --------------------------------------------------
+    # maintenance_run (AI-POWERED)
+    # --------------------------------------------------
+    @mcp.tool
+    def maintenance_run(
+        model: str = "qwen3:4b",
+        validator_model = None,
+        ollama_url: str = "http://ollama:11434"
+    ) -> Dict:
+        """
+        AI-gestütztes Memory Maintenance.
+        
+        Args:
+            model: Primary Ollama Model (z.B. 'qwen3:4b', 'deepseek-r1:8b')
+            validator_model: Optional Validator für Slow Mode (z.B. 'llama3.1:8b')
+            ollama_url: Ollama Endpoint URL (default: http://ollama:11434)
+            
+        Returns:
+            Maintenance Results mit AI Decisions und optional Conflict Log
+        """
+        from .maintenance_ai import maintenance_run_ai
+        from .config import DB_PATH
+        
+        # Call AI Maintenance
+        return maintenance_run_ai(
+            db_path=DB_PATH,
+            model=model,
+            validator_model=validator_model,
+            ollama_url=ollama_url,
+
+            stream_callback=None
+        )
+    # memory_all_recent (NEW - FOR MAINTENANCE)
+    @mcp.tool
+    def memory_all_recent(limit: int = 500) -> Dict:
+        """
+        Get all recent memory entries across ALL conversations.
+        Used by maintenance to analyze all memories.
+        """
+        import sqlite3
+        from .config import DB_PATH
+        
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Get all entries, ordered by created_at DESC
+            c.execute('''
+                SELECT id, conversation_id, content, created_at
+                FROM memory
+                ORDER BY created_at DESC
+                LIMIT ?
+            ''', (limit,))
+            
+            rows = c.fetchall()
+            
+            entries = []
+            for row in rows:
+                entries.append({
+                    "id": row[0],
+                    "conversation_id": row[1],
+                    "content": row[2],
+                    "created_at": row[3]
+                })
+            
+            return {
+                "entries": entries,
+                "count": len(entries),
+                "limit": limit
+            }
+            
+        except Exception as e:
+            return {"error": str(e), "entries": []}
     
+    
+    # memory_list_conversations (NEW - FOR MAINTENANCE)
+    @mcp.tool
+    def memory_list_conversations(limit: int = 100) -> Dict:
+        """Lists all conversations with their entry counts."""
+        import sqlite3
+        from .config import DB_PATH
+        
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cursor = conn.cursor()
+            
+            # Get unique conversations with entry counts
+            cursor.execute("""
+                SELECT 
+                    conversation_id,
+                    COUNT(*) as entry_count,
+                    MAX(created_at) as last_updated
+                FROM memory
+                GROUP BY conversation_id
+                ORDER BY last_updated DESC
+                LIMIT ?
+            """, (limit,))
+            
+            conversations = []
+            for row in cursor.fetchall():
+                conversations.append({
+                    "conversation_id": row[0],
+                    "entry_count": row[1],
+                    "last_updated": row[2]
+                })
+            
+            return {
+                "conversations": conversations,
+                "total": len(conversations)
+            }
+        finally:
+            conn.close()
+
+    # memory_delete_bulk (NEW - FOR MAINTENANCE)
+    @mcp.tool
+    def memory_delete_bulk(ids: List[int]) -> Dict:
+        """
+        Delete multiple memory entries at once.
+        Used by maintenance to clean up duplicates and unwanted entries.
+        """
+        import sqlite3
+        from .config import DB_PATH
+        
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            deleted_count = 0
+            for entry_id in ids:
+                c.execute('DELETE FROM memory WHERE id = ?', (entry_id,))
+                if c.rowcount > 0:
+                    deleted_count += 1
+            
+            conn.commit()
+            
+            return {
+                "deleted": deleted_count,
+                "total_requested": len(ids)
+            }
+            
+        except Exception as e:
+            return {"error": str(e), "deleted": 0}
+    
+    # graph_find_duplicate_nodes (NEW - FOR MAINTENANCE)
+    @mcp.tool
+    def graph_find_duplicate_nodes() -> Dict:
+        """
+        Find duplicate nodes in the graph (same content).
+        Returns groups of node IDs that are duplicates.
+        """
+        try:
+            gs = get_graph_store()
+            all_nodes = gs.get_nodes_by_type("fact", limit=1000)
+            
+            # Group by content
+            from collections import defaultdict
+            content_map = defaultdict(list)
+            
+            for node in all_nodes:
+                content = node.get("content", "").strip().lower()
+                if content:
+                    content_map[content].append(node["id"])
+            
+            # Find duplicates (groups with more than 1 node)
+            duplicates = []
+            for content, node_ids in content_map.items():
+                if len(node_ids) > 1:
+                    duplicates.append({
+                        "content_preview": content[:100],
+                        "node_ids": node_ids,
+                        "count": len(node_ids)
+                    })
+            
+            return {
+                "duplicate_groups": duplicates,
+                "total_duplicates": sum(d["count"] - 1 for d in duplicates)
+            }
+            
+        except Exception as e:
+            return {"error": str(e), "duplicate_groups": []}
+    
+    # graph_merge_nodes (NEW - FOR MAINTENANCE)
+    @mcp.tool
+    def graph_merge_nodes(node_ids: List[int]) -> Dict:
+        """
+        Merge multiple duplicate nodes into one.
+        Keeps the first node, redirects all edges to it, deletes others.
+        """
+        try:
+            if len(node_ids) < 2:
+                return {"error": "Need at least 2 nodes to merge"}
+            
+            gs = get_graph_store()
+            
+            # Keep first node
+            primary_id = node_ids[0]
+            to_delete = node_ids[1:]
+            
+            # For each node to delete
+            for node_id in to_delete:
+                # Get its edges
+                edges = gs.get_edges(node_id)
+                
+                # Redirect edges to primary node
+                for edge in edges:
+                    # Update edge to point to primary
+                    if edge["source"] == node_id:
+                        gs.add_edge(
+                            src_node_id=primary_id,
+                            dst_node_id=edge["target"],
+                            edge_type=edge["type"],
+                            weight=edge.get("weight", 1.0)
+                        )
+                    elif edge["target"] == node_id:
+                        gs.add_edge(
+                            src_node_id=edge["source"],
+                            dst_node_id=primary_id,
+                            edge_type=edge["type"],
+                            weight=edge.get("weight", 1.0)
+                        )
+                
+                # Delete the node
+                gs.delete_node(node_id)
+            
+            return {
+                "merged": len(to_delete),
+                "primary_node": primary_id,
+                "deleted_nodes": to_delete
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    # graph_delete_orphan_nodes (NEW - FOR MAINTENANCE)
+    @mcp.tool
+    def graph_delete_orphan_nodes() -> Dict:
+        """
+        Find and delete nodes with no edges (orphaned).
+        """
+        try:
+            gs = get_graph_store()
+            all_nodes = gs.get_nodes_by_type("fact", limit=1000)
+            
+            orphans = []
+            for node in all_nodes:
+                edges = gs.get_edges(node["id"])
+                if not edges or len(edges) == 0:
+                    orphans.append(node["id"])
+                    gs.delete_node(node["id"])
+            
+            return {
+                "deleted": len(orphans),
+                "orphan_ids": orphans
+            }
+            
+        except Exception as e:
+            return {"error": str(e), "deleted": 0}
+    
+    # graph_prune_weak_edges (NEW - FOR MAINTENANCE)
+    @mcp.tool
+    def graph_prune_weak_edges(threshold: float = 0.3) -> Dict:
+        """
+        Remove edges with weight below threshold.
+        """
+        try:
+            gs = get_graph_store()
+            
+            # Get all edges (this might need optimization for large graphs)
+            all_nodes = gs.get_nodes_by_type("fact", limit=1000)
+            
+            pruned_count = 0
+            for node in all_nodes:
+                edges = gs.get_edges(node["id"])
+                for edge in edges:
+                    if edge.get("weight", 1.0) < threshold:
+                        # Delete weak edge
+                        gs.delete_edge(edge["source"], edge["target"], edge["type"])
+                        pruned_count += 1
+            
+            return {
+                "pruned": pruned_count,
+                "threshold": threshold
+            }
+            
+        except Exception as e:
+            return {"error": str(e), "pruned": 0}

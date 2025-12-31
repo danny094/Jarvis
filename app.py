@@ -57,39 +57,3 @@ async def debug_memory(conversation_id: str):
         )
 
     return JSONResponse(resp)
-
-
-# ---------------------------------------------------------
-# MCP Tools Endpoint
-# ---------------------------------------------------------
-@app.get("/api/tools")
-async def list_tools():
-    """Listet alle verfügbaren MCP-Tools."""
-    try:
-        from mcp.hub import get_hub
-        hub = get_hub()
-        
-        tools = hub.list_tools()
-        mcps = hub.list_mcps()
-        
-        return JSONResponse({
-            "mcps": mcps,
-            "tools": tools,
-            "total_tools": len(tools),
-            "total_mcps": len([m for m in mcps if m.get("online")])
-        })
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/mcps")
-async def list_mcps():
-    """Listet alle MCPs mit Status."""
-    try:
-        from mcp.hub import get_hub
-        hub = get_hub()
-        
-        mcps = hub.list_mcps()
-        return JSONResponse({"mcps": mcps})
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)

@@ -157,7 +157,6 @@ class OutputLayer:
             "model": model,
             "prompt": full_prompt,
             "stream": True,  # STREAMING!
-            "keep_alive": -1,  # Model bleibt permanent im RAM!
         }
         
         try:
@@ -230,7 +229,6 @@ class OutputLayer:
             "model": model,
             "prompt": full_prompt,
             "stream": True,
-            "keep_alive": -1,  # Model bleibt permanent im RAM!
         }
         
         try:
@@ -298,7 +296,6 @@ class OutputLayer:
             "model": model,
             "prompt": full_prompt,
             "stream": False,
-            "keep_alive": -1,  # Model bleibt permanent im RAM!
         }
         
         try:

@@ -1,6 +1,6 @@
 # utils/ollama.py
 
-import httpx
+import requests
 import json
 from config import OLLAMA_BASE
 
@@ -29,9 +29,8 @@ async def query_model(model: str, messages: list, stream: bool = False):
     url = f"{OLLAMA_BASE}/api/generate"
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(url, json=payload)
-            r.raise_for_status()
+        r = requests.post(url, json=payload, timeout=60)
+        r.raise_for_status()
     except Exception as e:
         return json.dumps({"error": f"Ollama error: {e}"})
 

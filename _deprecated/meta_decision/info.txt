@@ -1,6 +1,0 @@
-assistant-proxy/
-  modules/
-    meta_decision/
-      __init__.py
-      decision.py         <– deine run_decision_layer Funktion
-      decision_prompt.txt <– HIER rein den großen Prompt
