@@ -1,3 +1,5 @@
+Discord for news: https://discord.gg/t8jAxMtk
+
 # Jarvis 
 It's still the AI ​​Proxy Bridge. I've now renamed it "Javi's AI Assistant" so it's easier to remember. That way, it's easier to remember.
 <img width="820" height="820" alt="ChatGPT Image 30  Dez  2025, 10_33_55" src="https://github.com/user-attachments/assets/4958af72-a31b-45f7-951c-281b0d897739" />
