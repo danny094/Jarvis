@@ -108,7 +108,7 @@ class VectorStore:
         if conversation_id:
             cursor.execute("""
                 SELECT id, content, content_type, metadata, embedding
-                FROM embeddings WHERE conversation_id = ?
+                FROM embeddings WHERE (conversation_id = ? OR conversation_id = 'global')
             """, (conversation_id,))
         else:
             cursor.execute("""
