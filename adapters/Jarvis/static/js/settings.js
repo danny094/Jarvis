@@ -7,7 +7,7 @@ const SETTINGS_KEY = 'jarvis_settings';
 // Default settings
 const DEFAULT_SETTINGS = {
     historyLength: 10,
-    apiBase: 'http://192.168.0.226:8100',
+    apiBase: 'http://192.168.0.226:8200',  // Updated: admin-api port
     verboseLogging: false,
     models: {
         thinking: 'deepseek-r1:8b',
@@ -18,6 +18,10 @@ const DEFAULT_SETTINGS = {
 
 // Current settings (loaded from localStorage)
 let currentSettings = { ...DEFAULT_SETTINGS };
+
+// Persona state
+let personas = [];
+let activePersona = 'default';
 
 // ═══════════════════════════════════════════════════════════════
 // INITIALIZATION
@@ -35,6 +39,7 @@ export function initSettings() {
     // Setup controls
     setupBasicSettings();
     setupModelSettings();
+    setupPersonaTab();  // ⭐ NEW: Persona management
     
     // Setup modal buttons
     setupModalButtons();
@@ -73,6 +78,11 @@ function switchTab(tabName) {
     document.querySelectorAll('.settings-tab-content').forEach(content => {
         if (content.id === `tab-${tabName}`) {
             content.classList.remove('hidden');
+            
+            // ⭐ Load personas when persona tab is shown
+            if (tabName === 'personas') {
+                loadPersonas();
+            }
         } else {
             content.classList.add('hidden');
         }
@@ -262,10 +272,363 @@ async function testOllamaConnection() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// PERSONA MANAGEMENT (⭐ NEW)
+// ═══════════════════════════════════════════════════════════════
+
+function setupPersonaTab() {
+    console.log('[Personas] Setting up persona tab...');
+    
+    // Switch persona button
+    const switchBtn = document.getElementById('switch-persona-btn');
+    if (switchBtn) {
+        switchBtn.addEventListener('click', handleSwitchPersona);
+    }
+    
+    // Upload persona button
+    const uploadBtn = document.getElementById('upload-persona-btn');
+    if (uploadBtn) {
+        uploadBtn.addEventListener('click', handleUploadPersona);
+    }
+    
+    // File input change
+    const fileInput = document.getElementById('persona-file-input');
+    if (fileInput) {
+        fileInput.addEventListener('change', handleFileInputChange);
+    }
+    
+    console.log('[Personas] Persona tab setup complete');
+}
+
+async function loadPersonas() {
+    console.log('[Personas] Loading personas...');
+    
+    const selector = document.getElementById('persona-selector');
+    const listContainer = document.getElementById('persona-list');
+    
+    if (!selector || !listContainer) {
+        console.error('[Personas] Required elements not found');
+        return;
+    }
+    
+    // Show loading state
+    selector.innerHTML = '<option>Loading...</option>';
+    listContainer.innerHTML = '<div class="text-gray-400 text-center py-4">Loading personas...</div>';
+    
+    try {
+        const response = await fetch(`${currentSettings.apiBase}/api/personas/`);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        personas = data.personas || [];
+        activePersona = data.active || 'default';
+        
+        console.log('[Personas] Loaded:', personas.length, 'personas, active:', activePersona);
+        
+        // Update selector dropdown
+        updatePersonaSelector();
+        
+        // Update persona list
+        updatePersonaList();
+        
+    } catch (error) {
+        console.error('[Personas] Failed to load:', error);
+        selector.innerHTML = '<option>Failed to load</option>';
+        listContainer.innerHTML = `
+            <div class="text-red-400 text-center py-4">
+                <p>❌ Failed to load personas</p>
+                <p class="text-sm text-gray-500 mt-2">${error.message}</p>
+            </div>
+        `;
+    }
+}
+
+function updatePersonaSelector() {
+    const selector = document.getElementById('persona-selector');
+    if (!selector) return;
+    
+    selector.innerHTML = '';
+    
+    personas.forEach(name => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        option.selected = (name === activePersona);
+        selector.appendChild(option);
+    });
+}
+
+function updatePersonaList() {
+    const listContainer = document.getElementById('persona-list');
+    if (!listContainer) return;
+    
+    if (personas.length === 0) {
+        listContainer.innerHTML = '<div class="text-gray-400 text-center py-4">No personas found</div>';
+        return;
+    }
+    
+    listContainer.innerHTML = '';
+    
+    personas.forEach(name => {
+        const isActive = (name === activePersona);
+        const isDefault = (name === 'default');
+        
+        const card = document.createElement('div');
+        card.className = `p-4 rounded-lg border ${
+            isActive 
+                ? 'border-accent-primary bg-accent-primary/10' 
+                : 'border-dark-border bg-dark-bg'
+        } flex items-center justify-between`;
+        
+        card.innerHTML = `
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-full ${
+                    isActive ? 'bg-accent-primary' : 'bg-dark-border'
+                } flex items-center justify-center">
+                    <i data-lucide="user" class="w-5 h-5 ${isActive ? 'text-white' : 'text-gray-400'}"></i>
+                </div>
+                <div>
+                    <div class="font-medium ${isActive ? 'text-accent-primary' : 'text-white'}">
+                        ${name}
+                        ${isActive ? '<span class="text-xs text-accent-primary ml-2">(Active)</span>' : ''}
+                        ${isDefault ? '<span class="text-xs text-gray-500 ml-2">(Protected)</span>' : ''}
+                    </div>
+                </div>
+            </div>
+            <div class="flex gap-2">
+                ${!isDefault ? `
+                    <button onclick="deletePersona('${name}')" 
+                            class="px-3 py-1 text-sm rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 transition-colors"
+                            ${isActive ? 'disabled' : ''}>
+                        Delete
+                    </button>
+                ` : ''}
+            </div>
+        `;
+        
+        listContainer.appendChild(card);
+    });
+    
+    // Re-initialize lucide icons
+    if (window.lucide) {
+        window.lucide.createIcons();
+    }
+}
+
+async function handleSwitchPersona() {
+    const selector = document.getElementById('persona-selector');
+    const btn = document.getElementById('switch-persona-btn');
+    
+    if (!selector || !btn) return;
+    
+    const selectedPersona = selector.value;
+    
+    if (selectedPersona === activePersona) {
+        console.log('[Personas] Already active:', selectedPersona);
+        return;
+    }
+    
+    const originalText = btn.textContent;
+    btn.textContent = 'Switching...';
+    btn.disabled = true;
+    
+    try {
+        const response = await fetch(`${currentSettings.apiBase}/api/personas/${selectedPersona}/switch`, {
+            method: 'PUT'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('[Personas] Switched to:', data.persona);
+        
+        activePersona = data.persona;
+        
+        // Update UI
+        updatePersonaList();
+        
+        btn.textContent = '✅ Switched!';
+        btn.classList.add('bg-green-600');
+        btn.classList.remove('bg-accent-primary');
+        
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.classList.remove('bg-green-600');
+            btn.classList.add('bg-accent-primary');
+            btn.disabled = false;
+        }, 2000);
+        
+    } catch (error) {
+        console.error('[Personas] Switch failed:', error);
+        
+        btn.textContent = '❌ Failed';
+        btn.classList.add('bg-red-600');
+        btn.classList.remove('bg-accent-primary');
+        
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.classList.remove('bg-red-600');
+            btn.classList.add('bg-accent-primary');
+            btn.disabled = false;
+        }, 2000);
+    }
+}
+
+function handleFileInputChange(e) {
+    const file = e.target.files[0];
+    const validationDiv = document.getElementById('upload-validation');
+    
+    if (!validationDiv) return;
+    
+    if (!file) {
+        validationDiv.innerHTML = '';
+        return;
+    }
+    
+    // Validate file
+    const errors = [];
+    
+    if (!file.name.endsWith('.txt')) {
+        errors.push('File must be .txt');
+    }
+    
+    if (file.size > 10 * 1024) {  // 10KB limit
+        errors.push('File too large (max 10KB)');
+    }
+    
+    if (errors.length > 0) {
+        validationDiv.innerHTML = `
+            <div class="text-red-400 text-sm">
+                ${errors.map(err => `<div>❌ ${err}</div>`).join('')}
+            </div>
+        `;
+    } else {
+        validationDiv.innerHTML = `
+            <div class="text-green-400 text-sm">
+                ✅ File valid: ${file.name} (${(file.size / 1024).toFixed(2)}KB)
+            </div>
+        `;
+    }
+}
+
+async function handleUploadPersona() {
+    const fileInput = document.getElementById('persona-file-input');
+    const btn = document.getElementById('upload-persona-btn');
+    const validationDiv = document.getElementById('upload-validation');
+    
+    if (!fileInput || !btn || !validationDiv) return;
+    
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        validationDiv.innerHTML = '<div class="text-red-400 text-sm">❌ No file selected</div>';
+        return;
+    }
+    
+    const originalText = btn.textContent;
+    btn.textContent = 'Uploading...';
+    btn.disabled = true;
+    
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const personaName = file.name.replace('.txt', '');
+        
+        const response = await fetch(`${currentSettings.apiBase}/api/personas/${personaName}`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('[Personas] Uploaded:', data);
+        
+        // Reload personas
+        await loadPersonas();
+        
+        // Clear file input
+        fileInput.value = '';
+        validationDiv.innerHTML = '<div class="text-green-400 text-sm">✅ Upload successful!</div>';
+        
+        btn.textContent = '✅ Uploaded!';
+        btn.classList.add('bg-green-600');
+        btn.classList.remove('bg-accent-primary');
+        
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.classList.remove('bg-green-600');
+            btn.classList.add('bg-accent-primary');
+            btn.disabled = false;
+            validationDiv.innerHTML = '';
+        }, 3000);
+        
+    } catch (error) {
+        console.error('[Personas] Upload failed:', error);
+        
+        validationDiv.innerHTML = `<div class="text-red-400 text-sm">❌ ${error.message}</div>`;
+        
+        btn.textContent = '❌ Failed';
+        btn.classList.add('bg-red-600');
+        btn.classList.remove('bg-accent-primary');
+        
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.classList.remove('bg-red-600');
+            btn.classList.add('bg-accent-primary');
+            btn.disabled = false;
+        }, 2000);
+    }
+}
+
+// Global function for delete (called from HTML onclick)
+window.deletePersona = async function(name) {
+    if (name === activePersona) {
+        alert('Cannot delete active persona. Switch to another persona first.');
+        return;
+    }
+    
+    if (!confirm(`Delete persona "${name}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${currentSettings.apiBase}/api/personas/${name}`, {
+            method: 'DELETE'
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+        
+        console.log('[Personas] Deleted:', name);
+        
+        // Reload personas
+        await loadPersonas();
+        
+    } catch (error) {
+        console.error('[Personas] Delete failed:', error);
+        alert(`Failed to delete: ${error.message}`);
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════
 // MODAL BUTTONS
 // ═══════════════════════════════════════════════════════════════
 
 function setupModalButtons() {
+    // Open button
+    document.getElementById('settings-btn').addEventListener('click', openSettings);
+    
     // Close buttons
     document.getElementById('close-settings-btn').addEventListener('click', closeSettings);
     document.getElementById('close-settings-btn-footer').addEventListener('click', closeSettings);
@@ -278,6 +641,10 @@ function setupModalButtons() {
             location.reload(); // Reload to apply defaults
         }
     });
+}
+
+function openSettings() {
+    document.getElementById('settings-modal').classList.remove('hidden');
 }
 
 function closeSettings() {

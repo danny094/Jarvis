@@ -11,7 +11,7 @@ import { initMaintenance } from "./maintenance.js";
 // ═══════════════════════════════════════════════════════════
 const DEFAULT_SETTINGS = {
     historyLength: 10,
-    apiBase: "http://192.168.0.226:8100",
+    apiBase: "http://192.168.0.226:8200",  // Updated: admin-api port
     verbose: false
 };
 

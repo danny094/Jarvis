@@ -2,6 +2,22 @@
 
 This module analyzes incoming user messages to determine their intent and how they should be handled by the memory system. It uses a specialized LLM prompt to extract structured metadata from natural language.
 
+---
+
+## ⚠️ IMPORTANT NOTE (Updated 2026-01-05)
+
+**System prompt files have been archived:**
+- Location: `/classifier/system-prompts/` (NOT IN USE)
+- Reason: Classifier must be STATIC for security
+- See: `system-prompts/README.md` for detailed explanation
+
+**Current implementation:**
+- Hardcoded prompts in `classifier.py` (STATIC)
+- No dynamic loading (BY DESIGN)
+- No persona influence (INTENTIONAL)
+
+---
+
 ## Purpose
 
 To automatically categorize user inputs into different memory layers and types. This allows the system to:
@@ -38,11 +54,30 @@ The model returns a JSON object with:
 - `CLASSIFIER_MODEL`: The Ollama model to use (default: `qwen3:4b`).
 - `OLLAMA_BASE`: URL of the Ollama API (imported from global config).
 
-## System Prompts
+## Architecture Decision: Static vs. Dynamic
 
-The module contains several text files defining system prompts for different aspects of the assistant:
-- `prompt_system.txt`: The main system prompt.
-- `system_core.txt`, `system_memory.txt`, etc.: Modular prompt components for safety, style, and persona.
+**Why classifier prompts are hardcoded:**
+
+The classifier makes **critical infrastructure decisions**:
+```
+User Input → [CLASSIFIER] → Memory Layer (STM/MTM/LTM)
+                   ↓
+            System integrity depends on this
+```
+
+**Security concerns with dynamic prompts:**
+- ❌ Could manipulate memory storage
+- ❌ Could corrupt long-term memory
+- ❌ Hard to debug memory issues
+- ❌ Unpredictable system behavior
+
+**Contrast with Persona System:**
+- ✅ Personas affect OUTPUT (user-facing)
+- ✅ Classifier affects INFRASTRUCTURE (system-critical)
+- ✅ Personas can be dynamic safely
+- ❌ Classifier must remain static
+
+See `system-prompts/README.md` for full explanation.
 
 ## Usage
 
@@ -61,3 +96,41 @@ print(result)
 #   ...
 # }
 ```
+
+## Modifying Classifier Behavior
+
+**To change classification logic:**
+
+1. Edit `classifier.py` directly (SYSTEM_PROMPT)
+2. Test thoroughly with `pytest tests/test_classifier.py`
+3. Verify memory behavior over several days
+4. Document changes in git commit
+
+**Do NOT:**
+- Load prompts from external files
+- Make classifier persona-dependent
+- Implement hot-reload
+
+## Files
+
+```
+classifier/
+├── README.md                 ← You are here
+├── classifier.py             ← Main classification logic (STATIC)
+├── prompts.py               ← Prompt definitions
+├── 02_CLASSIFER.md          ← Technical documentation
+└── system-prompts/          ← ARCHIVED (not in use)
+    ├── README.md            ← Why these are archived
+    └── *.txt                ← Old prompt files (reference only)
+```
+
+## Related Systems
+
+- **Persona System:** `/personas/` (Dynamic, user-facing)
+- **Memory System:** `/sql-memory/` (Receives classifier output)
+- **Output Layer:** `/core/layers/output.py` (Uses persona, not classifier)
+
+---
+
+**Last Updated:** 2026-01-05  
+**Status:** Production, Static by Design

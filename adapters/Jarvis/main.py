@@ -9,6 +9,7 @@ Endpoints:
 - POST /query         → Alias für /chat
 - GET  /health        → Health-Check
 - GET  /conversation  → Conversation-History abrufen
+- /api/personas/*     → Persona Management (NEW)
 """
 
 import json
@@ -33,9 +34,9 @@ from utils.logger import log_info, log_error, log_debug
 
 # FastAPI App
 app = FastAPI(
-    title="Jarvis Adapter + MCP Hub",
-    description="Native Jarvis API → Core-Bridge + MCP Hub",
-    version="1.0.0"
+    title="Jarvis Adapter + MCP Hub + Persona Management",
+    description="Native Jarvis API → Core-Bridge + MCP Hub + Multi-Persona System",
+    version="2.0.0"
 )
 
 # CORS
@@ -54,11 +55,15 @@ app.include_router(mcp_router)
 from adapters.jarvis.maintenance_endpoints import router as maintenance_router
 app.include_router(maintenance_router)
 
+# Persona Management Endpoints (NEW - Phase 2)
+from adapters.jarvis.persona_endpoints import router as persona_router
+app.include_router(persona_router)
+
 
 @app.get("/health")
 async def health():
     """Health-Check Endpoint."""
-    return {"status": "ok", "adapter": "jarvis"}
+    return {"status": "ok", "adapter": "jarvis", "version": "2.0.0"}
 
 
 @app.post("/chat")
