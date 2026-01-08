@@ -52,6 +52,7 @@ app.add_middleware(
 # Maintenance Endpoints
 from maintenance.routes import router as maintenance_router
 app.include_router(maintenance_router, prefix="/api/maintenance")
+# NOTE: Persona Management moved to jarvis-admin-api (port 8200)
 
 
 @app.get("/health")

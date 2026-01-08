@@ -3,15 +3,15 @@
 import { log } from "./debug.js";
 
 // Auto-detect API base URL
-// - In Docker: nginx proxies /api/* to lobechat-adapter → use relative URL
-// - Direct access: use full URL with port 8100
+// - In Docker: nginx proxies /api/* to admin-api → use relative URL
+// - Direct access: use full URL with port 8200 (admin-api)
 function detectApiBase() {
     // If we're on port 3000 (nginx/docker), use relative URLs
     if (window.location.port === '3000' || window.location.port === '80' || window.location.port === '') {
         return '';  // Relative - nginx will proxy
     }
-    // Otherwise use the same host but port 8100
-    return `http://${window.location.hostname}:8100`;
+    // Otherwise use the same host but port 8200 (admin-api)
+    return `http://${window.location.hostname}:8200`;
 }
 
 let API_BASE = detectApiBase();

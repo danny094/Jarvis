@@ -41,6 +41,7 @@ services:
       - LOG_LEVEL=INFO
     volumes:
       - ./config:/app/config:ro  # Persona Config (read-only)
+      - ./personas:/app/personas  # Persona files (Phase 2)
     networks:
       - big-bear-lobe-chat_default
     restart: unless-stopped
@@ -64,7 +65,29 @@ services:
       - lobechat-adapter
 
   # ============================================================
+  # JARVIS ADMIN API (Management API for WebUI)
+  # ============================================================
+  jarvis-admin-api:
+    build:
+      context: .
+      dockerfile: adapters/admin-api/Dockerfile
+    container_name: jarvis-admin-api
+    ports:
+      - "8200:8200"
+    environment:
+      - MCP_BASE=http://mcp-sql-memory:8081/mcp
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./personas:/app/personas
+    networks:
+      - big-bear-lobe-chat_default
+    restart: unless-stopped
+    depends_on:
+      - mcp-sql-memory
+
+  # ============================================================
   # OPEN WEBUI ADAPTER (optional - auskommentieren wenn nicht gebraucht)
+  # NOTE: Changed port to 8250 (8200 now used by jarvis-admin-api)
   # ============================================================
   # openwebui-adapter:
   #   build:
@@ -72,7 +95,7 @@ services:
   #     dockerfile: adapters/openwebui/Dockerfile
   #   container_name: openwebui-adapter
   #   ports:
-  #     - "8200:8200"
+  #     - "8250:8200"
   #   environment:
   #     - OLLAMA_BASE=http://ollama:11434
   #     - MCP_BASE=http://mcp-sql-memory:8081/mcp
