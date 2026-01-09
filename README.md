@@ -1,4 +1,4 @@
-Discord for news: https://discord.gg/t8jAxMtk
+Discord for news: [https://discord.gg/t8jAxMtk](https://discord.gg/jmspP2gu)
 
 # Jarvis 
 It's still the AI ​​Proxy Bridge. I've now renamed it "Javi's AI Assistant" so it's easier to remember. That way, it's easier to remember.
