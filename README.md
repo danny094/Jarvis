@@ -21,7 +21,7 @@ features:
 - Optimize graphs
 
 This means the AI ​​cleans up your graph and creates stronger connections at the edges, shifting memories between STM, MTM, and LTM.
-You can find more detailed information in /Jarvis/maintenance README.md
+You can find more detailed information in /maintenance/README.md
 
 <img width="671" height="615" alt="Bildschirmfoto 2026-01-04 um 18 53 22" src="https://github.com/user-attachments/assets/59d64fa4-da57-4452-b619-b00bc310b42e" />
 
