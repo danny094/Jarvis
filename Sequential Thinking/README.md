@@ -27,6 +27,6 @@ A `Dockerfile` and `docker-compose.yaml` are provided to run this service in a c
 
 ### Running Manually
 ```bash
-python Sequential-thinking.py
+python mcp-sequential/Sequential-thinking.py
 ```
 **Note**: Runs on port 8085 by default.
