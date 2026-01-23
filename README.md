@@ -153,7 +153,7 @@ OUTPUT_MODEL: llama3.1:8b
 ## 🤝 Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
+Special thanks go to frankbrsrkagentarium For the provision of the CIM module 
 ---
 
 ## 📜 License
