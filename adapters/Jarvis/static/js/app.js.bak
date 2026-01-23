@@ -1,9 +1,6 @@
 // app.js - Main Application mit Settings & Debug
 
 import { getModels, checkHealth, setApiBase, getApiBase } from "./api.js";
-
-// Expose getApiBase to window for non-module scripts
-window.getApiBase = getApiBase;
 import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount } from "./chat.js";
 import { log, clearLogs, setVerbose } from "./debug.js";
 import { initSettings } from "./settings.js";
@@ -14,7 +11,7 @@ import { initMaintenance } from "./maintenance.js";
 // ═══════════════════════════════════════════════════════════
 const DEFAULT_SETTINGS = {
     historyLength: 10,
-    apiBase: "http://" + window.location.hostname + ":8200",  // Updated: admin-api port
+    apiBase: "http://192.168.0.226:8100",
     verbose: false
 };
 
@@ -85,47 +82,27 @@ function updateVerboseToggle() {
 export async function initApp() {
     log("info", "Jarvis WebUI starting...");
     
-    // Init Lucide icons first (no dependencies)
-    lucide.createIcons();
-    
-    // Load settings from localStorage ONLY (no API calls yet)
+    // Load settings first
+    initSettings();
     loadSettings();
     
-    // Check connection FIRST (before anything needs API)
-    await checkConnection();
-    
-    // NOW initialize settings UI (can safely call API for models)
-    initSettings();
-    
-    // Load models (now connection is verified)
-    await loadModels();
+    // Init Lucide icons
+    lucide.createIcons();
     
     // Setup event listeners
     setupEventListeners();
+    
     // Init Maintenance UI
     initMaintenance();
-
-    // Init Sequential Thinking Mode
-    if (typeof SequentialThinking !== "undefined") {
-        if (!window.sequentialThinking) {
-            window.sequentialThinking = new SequentialThinking();
-            window.sequentialThinking.initUI();
-            log("info", "Sequential Thinking Mode initialized from app.js");
-        } else {
-            log("info", "Sequential Thinking Mode already initialized");
-        }
-    } else {
-        log("warn", "Sequential Thinking not available");
-    }
     
-    // Initialize Sequential Sidebar
-    if (typeof SequentialSidebar !== 'undefined') {
-        window.sequentialSidebar = new SequentialSidebar();
-        log("info", "Sequential Sidebar initialized");
-    }
-
+    
+    // Check connection & load models
+    await checkConnection();
+    await loadModels();
+    
     log("info", "Jarvis WebUI ready!");
 }
+
 async function checkConnection() {
     const statusEl = document.getElementById("connection-status");
     const dot = statusEl.querySelector("span");
@@ -185,61 +162,98 @@ async function loadModels() {
 // EVENT LISTENERS
 // ═══════════════════════════════════════════════════════════
 function setupEventListeners() {
+    // Model dropdown
+    document.getElementById("model-selector-btn").addEventListener("click", () => {
+        document.getElementById("model-dropdown").classList.toggle("hidden");
+    });
+    
+    // Close dropdown on outside click
+    document.addEventListener("click", (e) => {
+        if (!e.target.closest("#model-selector-btn") && !e.target.closest("#model-dropdown")) {
+            document.getElementById("model-dropdown").classList.add("hidden");
+        }
+    });
+    
     // Send message
-    const sendBtn = document.getElementById("send-btn");
-    const userInput = document.getElementById("user-input");
-    
-    if (sendBtn) {
-        sendBtn.addEventListener("click", sendMessage);
-    }
-    
-    if (userInput) {
-        userInput.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-    }
+    document.getElementById("send-btn").addEventListener("click", sendMessage);
+    document.getElementById("user-input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
     
     // Debug panel toggle
-    const debugToggleBtn = document.getElementById("debug-toggle-btn");
-    if (debugToggleBtn) {
-        debugToggleBtn.addEventListener("click", () => {
-            const panel = document.getElementById("debug-panel");
-            if (panel) {
-                panel.classList.toggle("hidden");
-                log("debug", "Debug panel toggled");
-            }
-        });
-    }
+    document.getElementById("debug-toggle-btn").addEventListener("click", () => {
+        const panel = document.getElementById("debug-panel");
+        panel.classList.toggle("hidden");
+        log("debug", "Debug panel toggled");
+    });
     
     // Clear logs
-    const clearLogsBtn = document.getElementById("clear-logs-btn");
-    if (clearLogsBtn) {
-        clearLogsBtn.addEventListener("click", clearLogs);
-    }
+    document.getElementById("clear-logs-btn").addEventListener("click", clearLogs);
     
-    // Model dropdown
-    const modelSelectorBtn = document.getElementById("model-selector-btn");
-    const modelDropdown = document.getElementById("model-dropdown");
+    // Settings modal
+    document.getElementById("settings-btn").addEventListener("click", () => {
+        document.getElementById("settings-modal").classList.remove("hidden");
+    });
     
-    if (modelSelectorBtn && modelDropdown) {
-        modelSelectorBtn.addEventListener("click", () => {
-            modelDropdown.classList.toggle("hidden");
-        });
+    document.getElementById("close-settings-btn").addEventListener("click", () => {
+        document.getElementById("settings-modal").classList.add("hidden");
+    });
+    
+    // Click outside modal to close
+    document.getElementById("settings-modal").addEventListener("click", (e) => {
+        if (e.target.id === "settings-modal") {
+            document.getElementById("settings-modal").classList.add("hidden");
+        }
+    });
+    
+    // Tools modal
+    document.getElementById("tools-btn").addEventListener("click", async () => {
+        document.getElementById("tools-modal").classList.remove("hidden");
+        await loadTools();
+    });
+    
+    document.getElementById("close-tools-btn").addEventListener("click", () => {
+        document.getElementById("tools-modal").classList.add("hidden");
+    });
+    
+    document.getElementById("tools-modal").addEventListener("click", (e) => {
+        if (e.target.id === "tools-modal") {
+            document.getElementById("tools-modal").classList.add("hidden");
+        }
+    });
+    
+    // History length slider
+    document.getElementById("history-length").addEventListener("input", (e) => {
+        document.getElementById("history-length-value").textContent = e.target.value;
+    });
+    
+    // Verbose toggle
+    document.getElementById("verbose-toggle").addEventListener("click", () => {
+        settings.verbose = !settings.verbose;
+        updateVerboseToggle();
+    });
+    
+    // Save settings
+    document.getElementById("save-settings-btn").addEventListener("click", () => {
+        settings.historyLength = parseInt(document.getElementById("history-length").value);
+        settings.apiBase = document.getElementById("api-base-input").value;
+        saveSettings();
+        document.getElementById("settings-modal").classList.add("hidden");
+        log("info", "Settings saved");
         
-        // Close dropdown on outside click
-        document.addEventListener("click", (e) => {
-            if (!e.target.closest("#model-selector-btn") && !e.target.closest("#model-dropdown")) {
-                modelDropdown.classList.add("hidden");
-            }
-        });
-    }
+        // Reconnect with new API base
+        checkConnection();
+    });
     
-    // NOTE: Settings and Maintenance buttons are handled by their respective modules
-    // settings.js handles: settings-btn, close-settings-btn, etc.
-    // maintenance.js handles: maintenance-btn, maintenance-start-btn, etc.
+    // Reset settings
+    document.getElementById("reset-settings-btn").addEventListener("click", () => {
+        settings = { ...DEFAULT_SETTINGS };
+        applySettings();
+        log("info", "Settings reset to defaults");
+    });
 }
 
 function sendMessage() {

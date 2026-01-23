@@ -5,8 +5,7 @@
 
 ```bash
 # Dependencies installieren
-pip install -r requirements.txt
-pip install pytest pytest-cov
+pip install -r requirements-dev.txt
 
 # Alle Tests ausführen
 pytest
