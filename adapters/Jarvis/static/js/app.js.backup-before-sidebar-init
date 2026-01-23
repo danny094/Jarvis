@@ -14,7 +14,7 @@ import { initMaintenance } from "./maintenance.js";
 // ═══════════════════════════════════════════════════════════
 const DEFAULT_SETTINGS = {
     historyLength: 10,
-    apiBase: "http://" + window.location.hostname + ":8200",  // Updated: admin-api port
+    apiBase: "http://192.168.0.226:8200",  // Updated: admin-api port
     verbose: false
 };
 
@@ -118,12 +118,6 @@ export async function initApp() {
         log("warn", "Sequential Thinking not available");
     }
     
-    // Initialize Sequential Sidebar
-    if (typeof SequentialSidebar !== 'undefined') {
-        window.sequentialSidebar = new SequentialSidebar();
-        log("info", "Sequential Sidebar initialized");
-    }
-
     log("info", "Jarvis WebUI ready!");
 }
 async function checkConnection() {

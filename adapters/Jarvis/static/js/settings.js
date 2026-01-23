@@ -7,7 +7,7 @@ const SETTINGS_KEY = 'jarvis_settings';
 // Default settings
 const DEFAULT_SETTINGS = {
     historyLength: 10,
-    apiBase: 'http://192.168.0.226:8200',  // Updated: admin-api port
+    apiBase: 'http://' + window.location.hostname + ':8200',  // Updated: admin-api port
     verboseLogging: false,
     models: {
         thinking: 'deepseek-r1:8b',
