@@ -1,12 +1,17 @@
-# docker-compose.yml (Neue modulare Version)
+# docker-compose.yml (Mit Sequential Thinking + CIM MCP Services)
 #
 # Services:
-# - lobechat-adapter:  Port 8100 → LobeChat trägt diese URL ein
-# - openwebui-adapter: Port 8200 → Open WebUI trägt diese URL ein (optional)
-# - mcp-sql-memory:    Port 8082 → Memory-Server (intern 8081)
-# - validator-service: Port 8300 → Validator (intern 8000)
+# - lobechat-adapter:     Port 8100 → LobeChat trägt diese URL ein
+# - jarvis-admin-api:     Port 8200 → Admin API + Chat für JarvisWebUI
+# - jarvis-webui:         Port 8400 → Frontend
+# - mcp-sql-memory:       Port 8082 → Memory MCP Server
+# - cim-server:           Port 8086 → Frank's CIM MCP Server (NEU!)
+# - sequential-thinking:  Port 8085 → Sequential Thinking MCP Server
+# - validator-service:    Port 8300 → Validator
 #
 # Netzwerk: big-bear-lobe-chat_default (extern, muss existieren)
+#
+# SHARED VOLUMES: Core-Code wird live gemountet (kein Rebuild nötig!)
 
 services:
   # ============================================================
@@ -28,25 +33,32 @@ services:
       # Model Konfiguration (änderbar!)
       - THINKING_MODEL=deepseek-r1:8b
       - CONTROL_MODEL=qwen3:4b
-      - OUTPUT_MODEL=llama3.1:8b
       - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
       
       # Layer Toggles (Speed-Optimierung!)
       - ENABLE_CONTROL_LAYER=true
-      - SKIP_CONTROL_ON_LOW_RISK=true   # ← SPEED BOOST!
+      - SKIP_CONTROL_ON_LOW_RISK=true
       
       # Validation
       - ENABLE_VALIDATION=true
       - VALIDATION_HARD_FAIL=true
       - LOG_LEVEL=INFO
     volumes:
-      - ./config:/app/config:ro  # Persona Config (read-only)
-      - ./personas:/app/personas  # Persona files (Phase 2)
+      - ./config:/app/config:ro
+      - ./personas:/app/personas
+      # SHARED VOLUMES - Core Code live gemountet!
+      - ./core:/app/core:ro
+      - ./intelligence_modules:/app/intelligence_modules:ro
+      - ./mcp_registry.py:/app/mcp_registry.py:ro
+      - ./config.py:/app/config.py:ro
+      - ./mcp:/app/mcp:ro
     networks:
       - big-bear-lobe-chat_default
     restart: unless-stopped
     depends_on:
       - mcp-sql-memory
+      - cim-server
+      - sequential-thinking
 
   # ============================================================
   # JARVIS WEB UI (Debug/Chat Interface)
@@ -62,7 +74,7 @@ services:
       - big-bear-lobe-chat_default
     restart: unless-stopped
     depends_on:
-      - lobechat-adapter
+      - jarvis-admin-api
 
   # ============================================================
   # JARVIS ADMIN API (Management API for WebUI)
@@ -76,35 +88,24 @@ services:
       - "8200:8200"
     environment:
       - MCP_BASE=http://mcp-sql-memory:8081/mcp
+      - CIM_URL=http://cim-server:8086
+      - SEQUENTIAL_THINKING_URL=http://sequential-thinking:8085
       - LOG_LEVEL=INFO
     volumes:
       - ./personas:/app/personas
+      # SHARED VOLUMES - Core Code live gemountet!
+      - ./core:/app/core:ro
+      - ./intelligence_modules:/app/intelligence_modules:ro
+      - ./mcp_registry.py:/app/mcp_registry.py:ro
+      - ./config.py:/app/config.py:ro
+      - ./mcp:/app/mcp:ro
     networks:
       - big-bear-lobe-chat_default
     restart: unless-stopped
     depends_on:
       - mcp-sql-memory
-
-  # ============================================================
-  # OPEN WEBUI ADAPTER (optional - auskommentieren wenn nicht gebraucht)
-  # NOTE: Changed port to 8250 (8200 now used by jarvis-admin-api)
-  # ============================================================
-  # openwebui-adapter:
-  #   build:
-  #     context: .
-  #     dockerfile: adapters/openwebui/Dockerfile
-  #   container_name: openwebui-adapter
-  #   ports:
-  #     - "8250:8200"
-  #   environment:
-  #     - OLLAMA_BASE=http://ollama:11434
-  #     - MCP_BASE=http://mcp-sql-memory:8081/mcp
-  #     - VALIDATOR_URL=http://validator-service:8000
-  #     - ENABLE_VALIDATION=true
-  #     - LOG_LEVEL=INFO
-  #   networks:
-  #     - big-bear-lobe-chat_default
-  #   restart: unless-stopped
+      - cim-server
+      - sequential-thinking
 
   # ============================================================
   # MCP SQL MEMORY SERVER
@@ -124,6 +125,46 @@ services:
     networks:
       - big-bear-lobe-chat_default
     restart: unless-stopped
+
+  # ============================================================
+  # CIM SERVER - Frank's Causal Intelligence Module (NEU!)
+  # ============================================================
+  cim-server:
+    build:
+      context: ./mcp-servers/cim-server
+    container_name: cim-server
+    environment:
+      - CIM_ROOT=/app/intelligence_modules
+      - OLLAMA_BASE=http://ollama:11434
+      - LOG_LEVEL=INFO
+    volumes:
+      # CIM hat exklusiven Zugriff auf intelligence_modules
+      - ./intelligence_modules:/app/intelligence_modules
+    ports:
+      - "8086:8086"
+    networks:
+      - big-bear-lobe-chat_default
+    restart: unless-stopped
+
+  # ============================================================
+  # SEQUENTIAL THINKING MCP SERVER
+  # ============================================================
+  sequential-thinking:
+    build:
+      context: ./mcp-servers/sequential-thinking
+    container_name: sequential-thinking
+    environment:
+      - MCP_SERVER_MODE=true
+      - CIM_URL=http://cim-server:8086
+      - OLLAMA_BASE=http://ollama:11434
+      - LOG_LEVEL=INFO
+    ports:
+      - "8085:8085"
+    networks:
+      - big-bear-lobe-chat_default
+    restart: unless-stopped
+    depends_on:
+      - cim-server
 
   # ============================================================
   # VALIDATOR SERVICE

@@ -637,6 +637,7 @@ function setupModalButtons() {
     document.getElementById('reset-settings-btn').addEventListener('click', () => {
         if (confirm('Reset all settings to defaults?')) {
             currentSettings = { ...DEFAULT_SETTINGS };
+            localStorage.removeItem("sequential_sensitivity"); // Clear sequential slider
             saveSettings();
             location.reload(); // Reload to apply defaults
         }
@@ -687,4 +688,92 @@ export function getSettings() {
 
 export function getSetting(key) {
     return currentSettings[key];
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SEQUENTIAL THINKING SENSITIVITY SLIDER
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Initialize Sequential Thinking sensitivity slider
+ */
+function initSequentialSensitivitySlider() {
+    const slider = document.getElementById('sequential-sensitivity-slider');
+    const valueDisplay = document.getElementById('sensitivity-value');
+    const feedbackDisplay = document.getElementById('sensitivity-feedback');
+    
+    if (!slider || !window.sequentialThinking) {
+        console.log('[Settings] Sequential slider not found or Sequential not initialized');
+        return;
+    }
+    
+    // Load saved value
+    const saved = localStorage.getItem('sequential_sensitivity');
+    if (saved !== null) {
+        slider.value = saved;
+        updateSensitivityUI(parseInt(saved));
+    }
+    
+    // Update on change
+    slider.addEventListener('input', (e) => {
+        const value = parseInt(e.target.value);
+        window.sequentialThinking.setSensitivity(value);
+        updateSensitivityUI(value);
+    });
+    
+    console.log('[Settings] Sequential sensitivity slider initialized');
+}
+
+/**
+ * Update sensitivity UI elements
+ * @param {number} value - Sensitivity value (-10 to +10)
+ */
+function updateSensitivityUI(value) {
+    const valueDisplay = document.getElementById('sensitivity-value');
+    const feedbackDisplay = document.getElementById('sensitivity-feedback');
+    
+    if (!valueDisplay || !feedbackDisplay) return;
+    
+    // Update label
+    const labels = {
+        '-10': 'Minimal',
+        '-5': 'Sehr selten',
+        '0': 'Balanced',
+        '5': 'Häufig',
+        '10': 'Sehr häufig'
+    };
+    
+    let label = labels[value] || 'Custom';
+    if (value === 0) {
+        label += ' ✓';
+    }
+    
+    valueDisplay.textContent = label;
+    
+    // Update feedback text
+    const feedbacks = {
+        '-10': 'Sequential triggert nur bei sehr komplexen, detaillierten Anfragen',
+        '-5': 'Sequential triggert bei komplexen Anfragen',
+        '0': 'Sequential triggert bei komplexen Fragen',
+        '5': 'Sequential triggert bei mittleren bis komplexen Fragen',
+        '10': 'Sequential triggert bei fast allen Fragen'
+    };
+    
+    const nearest = Math.round(value / 5) * 5;
+    const feedbackText = feedbacks[nearest] || feedbacks['0'];
+    
+    feedbackDisplay.innerHTML = `<i data-lucide="info" class="w-3 h-3 mt-0.5 flex-shrink-0"></i><span>${feedbackText}</span>`;
+    
+    // Refresh lucide icons
+    if (window.lucide) {
+        window.lucide.createIcons();
+    }
+}
+
+// Initialize slider when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSequentialSensitivitySlider);
+} else {
+    // DOM already loaded, wait a bit for Sequential to initialize
+    setTimeout(initSequentialSensitivitySlider, 500);
 }

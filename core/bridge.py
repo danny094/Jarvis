@@ -25,6 +25,8 @@ from mcp.client import (
     graph_search,
     call_tool,
 )
+from mcp.hub import get_hub
+from core.sequential_registry import get_registry
 
 # System conversation_id für Tool-Wissen
 SYSTEM_CONV_ID = "system"
@@ -38,7 +40,12 @@ class CoreBridge:
     def __init__(self):
         self.thinking = ThinkingLayer()
         self.control = ControlLayer()
+        self.registry = get_registry()  # Sequential Registry
         self.output = OutputLayer()
+        
+        # 🆕 Inject MCP Hub for Sequential Thinking
+        hub = get_hub()
+        self.control.set_mcp_hub(hub)
         self.ollama_base = OLLAMA_BASE
     
     # ═══════════════════════════════════════════════════════════════
@@ -206,6 +213,30 @@ class CoreBridge:
         
         if not ENABLE_CONTROL_LAYER:
             skip_control = True
+
+        # ═══════════════════════════════════════════════════════════
+        # 🆕 SEQUENTIAL THINKING CHECK (BEFORE Control!)
+        # ═══════════════════════════════════════════════════════════
+        # Execute Sequential Thinking if needed - BEFORE Control-Skip!
+        # This ensures Sequential runs even when Control is skipped.
+        
+        if thinking_plan.get("needs_sequential_thinking", False):
+            log_info("[CoreBridge] 🆕 Sequential Thinking detected - executing BEFORE Control...")
+            
+            # Call Sequential Thinking via ControlLayer
+            sequential_result = await self.control._check_sequential_thinking(
+                user_text=user_text,
+                thinking_plan=thinking_plan
+            )
+            
+            if sequential_result:
+                # Store result in thinking plan
+                thinking_plan["_sequential_result"] = sequential_result
+                log_info(f"[CoreBridge] ✅ Sequential completed: {len(sequential_result.get('steps', []))} steps")
+            else:
+                log_info("[CoreBridge] ⚠️ Sequential Thinking returned no result")
+        
+
             log_info("[CoreBridge] === LAYER 2: CONTROL === DISABLED (config)")
         elif SKIP_CONTROL_ON_LOW_RISK and hallucination_risk == "low":
             skip_control = True
@@ -417,6 +448,23 @@ class CoreBridge:
                 if found:
                     retrieved_memory += content
                     memory_used = True
+
+        # ═══════════════════════════════════════════════════════════
+        # 🆕 SEQUENTIAL THINKING CHECK (BEFORE Control!)
+        # ═══════════════════════════════════════════════════════════
+        # 🆕 SEQUENTIAL THINKING CHECK (BEFORE Control!)
+        # ═══════════════════════════════════════════════════════════
+        if thinking_plan.get("needs_sequential_thinking", False):
+            log_info("[CoreBridge-Stream] 🆕 Sequential Thinking detected - streaming events...")
+            
+            # Call Sequential Thinking Stream (emittiert Events)
+            async for event in self.control._check_sequential_thinking_stream(
+                user_text=user_text,
+                thinking_plan=thinking_plan
+            ):
+                # Einfach durchreichen - KEINE Panel-Logik hier!
+                yield ("", False, event)
+
 
         # ═══════════════════════════════════════════════════════════
         # LAYER 2: CONTROL - Non-Streaming (optional skip)

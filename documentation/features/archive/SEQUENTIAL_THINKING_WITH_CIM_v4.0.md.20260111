@@ -1,0 +1,1981 @@
+# SEQUENTIAL THINKING WITH CAUSAL INTELLIGENCE MODULE (CIM)
+**Version:** 4.0  
+**Date:** 2026-01-10  
+**Status:** 🚀 Ready for Implementation  
+**Integration:** Frank's Causal Intelligence Module (CIM)
+
+---
+
+## 📋 TABLE OF CONTENTS
+
+1. [Executive Summary](#executive-summary)
+2. [Architecture Overview](#architecture-overview)
+3. [Phase 0: Complete](#phase-0-complete)
+4. [Phase 1: Integration Foundation](#phase-1-integration-foundation)
+5. [Phase 2: Core Components](#phase-2-core-components)
+6. [Phase 3: Advanced Features](#phase-3-advanced-features)
+7. [Phase 4: Production Ready](#phase-4-production-ready)
+8. [Integration Patterns](#integration-patterns)
+9. [Testing Strategy](#testing-strategy)
+10. [Performance Targets](#performance-targets)
+
+---
+
+## 🎯 EXECUTIVE SUMMARY
+
+### What Changed
+
+**Previous Plan (v3.0):**
+- Sequential Thinking = 15-component standalone system
+- Waiting for Frank's "Intelligence Modules" (vague)
+- Phase 1B/1C blocked on Frank's delivery
+
+**New Reality (v4.0):**
+- Frank delivered **complete Causal Intelligence Module (CIM)**
+- CIM = Production-ready 3-tier RAG system (160KB code + data)
+- Sequential Thinking = Workflow engine that **orchestrates CIM**
+- No blockers - can implement immediately
+
+### Key Innovation
+
+**Sequential Thinking Engine + Causal Intelligence Module = TRION's Brain**
+
+```
+┌─────────────────────────────────────────────────────┐
+│ SEQUENTIAL THINKING ENGINE                          │
+│ (Workflow Management)                               │
+│                                                      │
+│ ✅ Step execution with state tracking               │
+│ ✅ Gate/Switch/Mitigation node routing              │
+│ ✅ Memory persistence across steps                  │
+│ ✅ Error recovery and rollback                      │
+│ ✅ Dependency resolution                            │
+└─────────────────────────────────────────────────────┘
+                      ↕️
+                  CALLS
+                      ↕️
+┌─────────────────────────────────────────────────────┐
+│ CAUSAL INTELLIGENCE MODULE (CIM)                    │
+│ (What & How to Think)                               │
+│                                                      │
+│ ✅ Knowledge RAG: 40 cognitive priors + DAGs        │
+│ ✅ Procedural RAG: reasoning templates + patterns   │
+│ ✅ Executable RAG: deterministic math validation    │
+│ ✅ Code Tools: graph builder + causal controller    │
+└─────────────────────────────────────────────────────┘
+```
+
+### Timeline
+
+**Total: 4 weeks** (reduced from 6-8 weeks!)
+
+- **Week 1:** Integration Foundation (Phase 1)
+- **Week 2:** Core Components (Phase 2)
+- **Week 3:** Advanced Features (Phase 3)
+- **Week 4:** Production Ready (Phase 4)
+
+**Why faster?** Frank delivered 2-3 weeks of work pre-built!
+
+---
+
+## 🏗️ ARCHITECTURE OVERVIEW
+
+### The Two Systems
+
+#### Sequential Thinking Engine (NEW)
+**Purpose:** Workflow orchestration and execution management
+
+**Responsibilities:**
+- Execute steps in correct order
+- Track state and memory
+- Handle dependencies
+- Implement gate/switch/mitigation nodes
+- Recover from errors
+- Manage checkpoints
+
+**Location:** `/modules/sequential_thinking/`
+
+#### Causal Intelligence Module (FRANK)
+**Purpose:** Cognitive reasoning and validation
+
+**Responsibilities:**
+- Detect cognitive biases (19 anti-patterns)
+- Provide reasoning templates (procedures)
+- Build causal graphs (DAGs)
+- Validate with deterministic math
+- Guide counterfactual reasoning
+
+**Location:** `/intelligence_modules/`
+
+### Integration Points
+
+```python
+# Sequential Thinking calls CIM at these points:
+
+# 1. GATE NODE: Cognitive bias check
+if step.type == StepType.GATE:
+    biases = intelligence_loader.check_cognitive_bias(context)
+    if biases:
+        → route to mitigation_node
+
+# 2. SWITCH NODE: Select reasoning procedure
+if step.type == StepType.SWITCH:
+    procedure = intelligence_loader.get_reasoning_procedure(task_type)
+    → route to procedure_specific_steps
+
+# 3. NORMAL STEP: Build context graph
+if step.requires_dag:
+    graph = intelligence_loader.build_context_graph(variables)
+    context['causal_graph'] = graph
+
+# 4. VALIDATION: Deterministic math
+if step.validation_function:
+    result = intelligence_loader.validate_with_math(
+        function=step.validation_function,
+        data=step.data
+    )
+```
+
+### Directory Structure
+
+```
+/DATA/AppData/MCP/Jarvis/Jarvis/
+
+├── intelligence_modules/          ⭐ FRANK'S CIM
+│   ├── knowledge_rag/
+│   │   ├── cognitive_priors_v2.csv       (40 priors)
+│   │   └── domain_graphs.csv             (DAG templates)
+│   ├── procedural_rag/
+│   │   ├── anti_patterns.csv             (19 bias detectors)
+│   │   ├── causal_reasoning_procedures.csv
+│   │   └── discovery_procedures.csv
+│   ├── executable_rag/
+│   │   ├── ability_injectors_v2.csv      (behavioral control)
+│   │   └── causal_math_registry.csv      (tool mappings)
+│   ├── code_tools/
+│   │   ├── causal_controller.py          (orchestration)
+│   │   ├── causal_math_tools.py          (deterministic math)
+│   │   ├── context_builder.py            (graph engine)
+│   │   └── complex_scenarios.py
+│   ├── examples/
+│   ├── tests/
+│   ├── docs/
+│   ├── README.md
+│   └── LICENSE
+
+└── modules/
+    └── sequential_thinking/         ⭐ OUR ENGINE
+        ├── types.py                 (Step, Task, enums)
+        ├── intelligence_loader.py   (CIM interface)
+        ├── workflow_engine.py       (step executor)
+        ├── memory_manager.py        (state tracking)
+        ├── gate_handler.py          (gate nodes)
+        ├── switch_handler.py        (switch nodes)
+        ├── mitigation_handler.py    (mitigation nodes)
+        ├── dependency_manager.py
+        ├── error_handler.py
+        └── checkpoint_manager.py
+```
+
+---
+
+## ✅ PHASE 0: COMPLETE
+
+**Status:** All infrastructure ready
+
+### Completed Work
+
+**Frank's Delivery:**
+- ✅ Causal Intelligence Module (complete)
+- ✅ 7 CSV datasets (~90KB)
+- ✅ 5 Python modules (~69KB)
+- ✅ Complete documentation (5 files)
+- ✅ Test suite included
+
+**TRION Infrastructure:**
+- ✅ 3-layer architecture (DeepSeek, Qwen, Llama)
+- ✅ Memory system (PostgreSQL + NetworkX)
+- ✅ Persona system (basic)
+- ✅ MCP integration
+- ✅ GitHub repository structure
+
+**Documentation:**
+- ✅ Collaboration README
+- ✅ Contributing guidelines
+- ✅ FAQ system
+- ✅ Bug report templates
+
+### What This Enables
+
+With Phase 0 complete, we can:
+1. Start implementing Sequential Thinking immediately
+2. Integrate CIM without blockers
+3. Test end-to-end workflows
+4. Iterate with Frank's feedback
+
+---
+
+## 🚀 PHASE 1: INTEGRATION FOUNDATION
+
+**Duration:** Week 1 (5 tasks, ~16 hours)  
+**Goal:** Connect Sequential Thinking Engine to CIM  
+**Blockers:** None
+
+### Task 1: Structure Setup & File Organization
+**Time:** 30 minutes  
+**Priority:** ⭐⭐⭐ CRITICAL
+
+**Goal:** Organize Frank's CIM and create Sequential Thinking structure
+
+**Checklist:**
+```bash
+# 1. Move Frank's system to proper location
+cd /DATA/AppData/MCP/Jarvis/Jarvis/
+sudo mv ../colab/frank_brsrk ./intelligence_modules
+
+# 2. Verify all files present
+ls -la intelligence_modules/knowledge_rag/
+ls -la intelligence_modules/procedural_rag/
+ls -la intelligence_modules/executable_rag/
+ls -la intelligence_modules/code_tools/
+
+# 3. Create Sequential Thinking structure
+sudo mkdir -p modules/sequential_thinking
+sudo mkdir -p tests/sequential_thinking
+
+# 4. Create __init__.py files
+sudo touch modules/sequential_thinking/__init__.py
+sudo touch intelligence_modules/__init__.py
+sudo touch intelligence_modules/code_tools/__init__.py
+
+# 5. Update imports if needed
+# Check for any hardcoded paths in Frank's code
+```
+
+**Files Created:**
+- `/intelligence_modules/` (moved directory)
+- `/modules/sequential_thinking/` (new)
+- `/tests/sequential_thinking/` (new)
+
+**Success Criteria:**
+- [ ] All Frank's files accessible at new location
+- [ ] Clean directory structure
+- [ ] No broken imports in Frank's code
+- [ ] Python can import from both modules
+
+**Tests:**
+```python
+# Test imports work
+from intelligence_modules.code_tools import causal_controller
+from intelligence_modules.code_tools import context_builder
+import pandas as pd
+
+# Test CSV loading
+df = pd.read_csv('intelligence_modules/knowledge_rag/cognitive_priors_v2.csv')
+assert len(df) > 0
+```
+
+---
+
+### Task 2: Intelligence Loader Interface
+**Time:** 2 hours  
+**Priority:** ⭐⭐⭐ CRITICAL
+
+**Goal:** Create clean API to query Frank's CIM
+
+**Implementation:**
+
+```python
+# modules/sequential_thinking/intelligence_loader.py
+
+import pandas as pd
+from typing import Dict, List, Optional
+from intelligence_modules.code_tools.causal_controller import CausalController
+from intelligence_modules.code_tools.context_builder import ContextGraphBuilder
+from intelligence_modules.code_tools.causal_math_tools import CausalMathTools
+
+class IntelligenceLoader:
+    """
+    Interface to Frank's Causal Intelligence Module (CIM).
+    Provides clean API for Sequential Thinking Engine to query CIM.
+    """
+    
+    def __init__(self, base_path: str = "intelligence_modules"):
+        self.base_path = base_path
+        
+        # Load RAG layers
+        self.cognitive_priors = self._load_csv("knowledge_rag/cognitive_priors_v2.csv")
+        self.domain_graphs = self._load_csv("knowledge_rag/domain_graphs.csv")
+        self.anti_patterns = self._load_csv("procedural_rag/anti_patterns.csv")
+        self.reasoning_procedures = self._load_csv("procedural_rag/causal_reasoning_procedures.csv")
+        self.discovery_procedures = self._load_csv("procedural_rag/discovery_procedures.csv")
+        self.ability_injectors = self._load_csv("executable_rag/ability_injectors_v2.csv")
+        self.math_registry = self._load_csv("executable_rag/causal_math_registry.csv")
+        
+        # Initialize code tools
+        self.causal_controller = CausalController()
+        self.context_builder = ContextGraphBuilder()
+        self.math_tools = CausalMathTools()
+    
+    def _load_csv(self, relative_path: str) -> pd.DataFrame:
+        """Load CSV dataset"""
+        path = f"{self.base_path}/{relative_path}"
+        return pd.read_csv(path)
+    
+    # ========== GATE NODE: Cognitive Bias Detection ==========
+    
+    def check_cognitive_bias(self, context: Dict) -> List[Dict]:
+        """
+        Check for cognitive biases in current reasoning.
+        Used by GATE nodes to detect problematic patterns.
+        
+        Args:
+            context: Current step context with text, variables, claims
+            
+        Returns:
+            List of detected biases with severity and corrections
+        """
+        detected_biases = []
+        
+        for _, pattern in self.anti_patterns.iterrows():
+            if self._matches_trigger(context, pattern['trigger_keywords']):
+                detected_biases.append({
+                    'pattern_id': pattern['pattern_id'],
+                    'name': pattern['pattern_name'],
+                    'severity': pattern['severity'],
+                    'erroneous_thought': pattern['erroneous_thought'],
+                    'correction_rule': pattern['correction_rule']
+                })
+        
+        return detected_biases
+    
+    def _matches_trigger(self, context: Dict, trigger_keywords: str) -> bool:
+        """Check if context text matches trigger keywords"""
+        text = context.get('text', '').lower()
+        keywords = trigger_keywords.split('|')
+        return any(kw.strip() in text for kw in keywords)
+    
+    # ========== SWITCH NODE: Reasoning Procedure Selection ==========
+    
+    def get_reasoning_procedure(self, task_type: str) -> Optional[Dict]:
+        """
+        Select appropriate reasoning procedure for task.
+        Used by SWITCH nodes to route to correct template.
+        
+        Args:
+            task_type: Type of task (e.g., "causal_claim", "intervention")
+            
+        Returns:
+            Reasoning procedure with steps and validation criteria
+        """
+        matches = self.reasoning_procedures[
+            self.reasoning_procedures['task_type'] == task_type
+        ]
+        
+        if len(matches) == 0:
+            return None
+            
+        return matches.iloc[0].to_dict()
+    
+    def list_available_procedures(self) -> List[str]:
+        """List all available reasoning procedures"""
+        return self.reasoning_procedures['task_type'].unique().tolist()
+    
+    # ========== CONTEXT GRAPH: DAG Construction ==========
+    
+    def build_context_graph(self, variables: List[str], domain: str = None) -> Dict:
+        """
+        Build causal context graph for variables.
+        Uses Frank's context_builder.py
+        
+        Args:
+            variables: List of variable names
+            domain: Optional domain for domain-specific templates
+            
+        Returns:
+            Context graph with nodes, edges, and metadata
+        """
+        # Use Frank's context builder
+        graph = self.context_builder.build_graph(
+            variables=variables,
+            domain=domain
+        )
+        
+        return {
+            'graph': graph,
+            'nodes': list(graph.nodes()),
+            'edges': list(graph.edges()),
+            'metadata': graph.graph.get('metadata', {})
+        }
+    
+    def get_domain_template(self, domain: str) -> Optional[Dict]:
+        """Get domain-specific DAG template"""
+        matches = self.domain_graphs[
+            self.domain_graphs['domain'] == domain
+        ]
+        
+        if len(matches) == 0:
+            return None
+            
+        return matches.iloc[0].to_dict()
+    
+    # ========== VALIDATION: Deterministic Math ==========
+    
+    def validate_with_math(self, function_name: str, **kwargs) -> Dict:
+        """
+        Execute deterministic mathematical validation.
+        Uses Frank's causal_math_tools.py
+        
+        Args:
+            function_name: Name of math function (e.g., "cohens_d")
+            **kwargs: Arguments for the function
+            
+        Returns:
+            Validation result with value, confidence, interpretation
+        """
+        # Look up function in registry
+        registry_entry = self.math_registry[
+            self.math_registry['function_name'] == function_name
+        ].iloc[0]
+        
+        # Execute via Frank's math tools
+        result = self.math_tools.execute(
+            function_name=function_name,
+            **kwargs
+        )
+        
+        return {
+            'function': function_name,
+            'result': result,
+            'interpretation': registry_entry.get('interpretation', ''),
+            'confidence': registry_entry.get('confidence_level', 1.0)
+        }
+    
+    # ========== COGNITIVE PRIORS: First Principles ==========
+    
+    def get_relevant_priors(self, context: Dict) -> List[Dict]:
+        """
+        Get cognitive priors relevant to current context.
+        Returns first-principles reasoning guidelines.
+        
+        Args:
+            context: Current reasoning context
+            
+        Returns:
+            List of relevant cognitive priors
+        """
+        relevant = []
+        
+        for _, prior in self.cognitive_priors.iterrows():
+            if prior.get('active_trigger') and \
+               self._matches_trigger(context, prior.get('active_trigger', '')):
+                relevant.append({
+                    'prior_id': prior['prior_id'],
+                    'prior_type': prior['prior_type'],
+                    'statement': prior['statement'],
+                    'negative_example': prior['negative_example']
+                })
+        
+        return relevant
+    
+    # ========== ABILITY INJECTION: Behavioral Control ==========
+    
+    def get_ability_injector(self, ability_type: str) -> Optional[Dict]:
+        """
+        Get behavioral control prompt for specific ability.
+        Used to modify LLM behavior for specific reasoning modes.
+        
+        Args:
+            ability_type: Type of ability (e.g., "strict_causal")
+            
+        Returns:
+            Prompt injection data
+        """
+        matches = self.ability_injectors[
+            self.ability_injectors['ability_type'] == ability_type
+        ]
+        
+        if len(matches) == 0:
+            return None
+            
+        return matches.iloc[0].to_dict()
+```
+
+**Tests:**
+
+```python
+# tests/sequential_thinking/test_intelligence_loader.py
+
+import pytest
+from modules.sequential_thinking.intelligence_loader import IntelligenceLoader
+
+def test_loader_initialization():
+    """Test that loader initializes and loads all datasets"""
+    loader = IntelligenceLoader()
+    
+    assert len(loader.cognitive_priors) > 0
+    assert len(loader.anti_patterns) > 0
+    assert len(loader.reasoning_procedures) > 0
+    assert loader.context_builder is not None
+    assert loader.math_tools is not None
+
+def test_check_cognitive_bias():
+    """Test bias detection with trigger keywords"""
+    loader = IntelligenceLoader()
+    
+    # Context with correlation-causation trigger
+    context = {
+        'text': "X and Y are correlated, so X causes Y"
+    }
+    
+    biases = loader.check_cognitive_bias(context)
+    
+    assert len(biases) > 0
+    assert any(b['pattern_id'] == 'AP002' for b in biases)  # Correlation-Causation
+
+def test_get_reasoning_procedure():
+    """Test procedure selection"""
+    loader = IntelligenceLoader()
+    
+    procedure = loader.get_reasoning_procedure("causal_claim")
+    
+    assert procedure is not None
+    assert 'task_type' in procedure
+    assert procedure['task_type'] == "causal_claim"
+
+def test_build_context_graph():
+    """Test graph construction"""
+    loader = IntelligenceLoader()
+    
+    graph_data = loader.build_context_graph(
+        variables=['X', 'Y', 'Z'],
+        domain='general'
+    )
+    
+    assert 'graph' in graph_data
+    assert 'nodes' in graph_data
+    assert 'edges' in graph_data
+
+def test_validate_with_math():
+    """Test math validation"""
+    loader = IntelligenceLoader()
+    
+    result = loader.validate_with_math(
+        function_name='cohens_d',
+        mean1=10.0,
+        mean2=12.0,
+        sd1=2.0,
+        sd2=2.0
+    )
+    
+    assert 'result' in result
+    assert 'interpretation' in result
+
+def test_get_relevant_priors():
+    """Test cognitive prior retrieval"""
+    loader = IntelligenceLoader()
+    
+    context = {
+        'text': "I observed correlation between X and Y"
+    }
+    
+    priors = loader.get_relevant_priors(context)
+    
+    assert len(priors) > 0
+    # Should include correlation-causation prior
+```
+
+**Success Criteria:**
+- [ ] All CSV datasets load without errors
+- [ ] Can query anti_patterns for bias detection
+- [ ] Can query reasoning_procedures
+- [ ] Can access context_builder methods
+- [ ] Can call causal_math_tools functions
+- [ ] All tests pass
+- [ ] Code is well-documented
+
+---
+
+### Task 3: Step Types with CIM Integration
+**Time:** 1.5 hours  
+**Priority:** ⭐⭐⭐ CRITICAL
+
+**Goal:** Define Step class that integrates with CIM
+
+**Implementation:**
+
+```python
+# modules/sequential_thinking/types.py
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import List, Optional, Dict, Callable, Any
+
+class StepType(Enum):
+    """Types of steps in sequential workflow"""
+    NORMAL = "normal"          # Regular processing step
+    GATE = "gate"              # Decision gate (bias check, mitigation)
+    SWITCH = "switch"          # Routing switch (procedure selection)
+    MITIGATION = "mitigation"  # Safety/correction step
+    VALIDATION = "validation"  # Math validation step
+
+class StepStatus(Enum):
+    """Execution status of a step"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    BLOCKED = "blocked"
+
+class GateOutcome(Enum):
+    """Possible outcomes of a gate node"""
+    PASS = "pass"              # No issues detected, continue
+    FAIL = "fail"              # Issues detected, block execution
+    MITIGATE = "mitigate"      # Issues detected, route to mitigation
+    WARN = "warn"              # Minor issues, continue with warning
+
+@dataclass
+class Step:
+    """
+    A single step in sequential thinking workflow.
+    Can be normal execution, gate, switch, mitigation, or validation.
+    Integrates with Frank's Causal Intelligence Module (CIM).
+    """
+    
+    # Core identification
+    id: str
+    description: str
+    type: StepType = StepType.NORMAL
+    
+    # Dependencies
+    depends_on: List[str] = field(default_factory=list)
+    blocks: List[str] = field(default_factory=list)
+    
+    # ========== CIM INTEGRATION FIELDS ==========
+    
+    # GATE NODE: Cognitive bias checking
+    cognitive_check: bool = False
+    gate_condition: Optional[Callable] = None
+    gate_branches: Dict[GateOutcome, str] = field(default_factory=dict)
+    
+    # SWITCH NODE: Reasoning procedure selection
+    reasoning_template: Optional[str] = None  # e.g., "causal_claim"
+    switch_logic: Optional[Callable] = None
+    switch_routes: Dict[str, List[str]] = field(default_factory=dict)
+    
+    # CONTEXT GRAPH: DAG construction
+    requires_dag: bool = False
+    dag_domain: Optional[str] = None
+    dag_variables: List[str] = field(default_factory=list)
+    
+    # VALIDATION: Deterministic math
+    validation_function: Optional[str] = None  # e.g., "cohens_d"
+    validation_args: Dict[str, Any] = field(default_factory=dict)
+    
+    # MITIGATION: Error correction
+    mitigation_strategy: Optional[str] = None
+    fallback_step: Optional[str] = None
+    
+    # ABILITY INJECTION: Behavioral control
+    ability_injection: Optional[str] = None  # e.g., "strict_causal"
+    
+    # ========== EXECUTION STATE ==========
+    
+    # Status tracking
+    status: StepStatus = StepStatus.PENDING
+    
+    # Timing
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    duration_ms: Optional[float] = None
+    
+    # Results
+    result: Optional[Any] = None
+    output: Optional[Dict] = None
+    error: Optional[str] = None
+    
+    # CIM results
+    detected_biases: List[Dict] = field(default_factory=list)
+    selected_procedure: Optional[Dict] = None
+    context_graph: Optional[Dict] = None
+    validation_result: Optional[Dict] = None
+    
+    # Memory
+    memory_keys: List[str] = field(default_factory=list)
+    memory_writes: Dict[str, Any] = field(default_factory=dict)
+    
+    # Metadata
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def is_complete(self) -> bool:
+        """Check if step is complete"""
+        return self.status == StepStatus.COMPLETED
+    
+    def is_failed(self) -> bool:
+        """Check if step failed"""
+        return self.status == StepStatus.FAILED
+    
+    def is_blocked(self) -> bool:
+        """Check if step is blocked"""
+        return self.status == StepStatus.BLOCKED
+    
+    def can_execute(self, completed_steps: List[str]) -> bool:
+        """Check if all dependencies are satisfied"""
+        return all(dep in completed_steps for dep in self.depends_on)
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for serialization"""
+        return {
+            'id': self.id,
+            'type': self.type.value,
+            'status': self.status.value,
+            'description': self.description,
+            'depends_on': self.depends_on,
+            'result': self.result,
+            'error': self.error,
+            'detected_biases': self.detected_biases,
+            'selected_procedure': self.selected_procedure,
+            'context_graph': self.context_graph,
+            'validation_result': self.validation_result
+        }
+
+@dataclass
+class Task:
+    """
+    A collection of steps forming a complete task.
+    Represents a high-level goal broken into sequential steps.
+    """
+    
+    # Identification
+    task_id: str
+    title: str
+    description: str
+    
+    # Steps
+    steps: List[Step] = field(default_factory=list)
+    
+    # Status
+    status: str = "pending"
+    current_step_id: Optional[str] = None
+    
+    # Results
+    result: Optional[Any] = None
+    error: Optional[str] = None
+    
+    # Timing
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    
+    # Metadata
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def add_step(self, step: Step) -> None:
+        """Add a step to the task"""
+        self.steps.append(step)
+    
+    def get_step(self, step_id: str) -> Optional[Step]:
+        """Get step by ID"""
+        for step in self.steps:
+            if step.id == step_id:
+                return step
+        return None
+    
+    def get_completed_steps(self) -> List[str]:
+        """Get list of completed step IDs"""
+        return [s.id for s in self.steps if s.is_complete()]
+    
+    def get_next_executable_step(self) -> Optional[Step]:
+        """Get next step that can be executed"""
+        completed = self.get_completed_steps()
+        
+        for step in self.steps:
+            if step.status == StepStatus.PENDING and step.can_execute(completed):
+                return step
+        
+        return None
+    
+    def is_complete(self) -> bool:
+        """Check if all steps are complete"""
+        return all(s.is_complete() for s in self.steps)
+    
+    def has_failed(self) -> bool:
+        """Check if any step failed"""
+        return any(s.is_failed() for s in self.steps)
+```
+
+**Example Usage:**
+
+```python
+# Example 1: Normal step with DAG construction
+step1 = Step(
+    id="analyze_variables",
+    description="Analyze relationship between smoking and lung cancer",
+    type=StepType.NORMAL,
+    requires_dag=True,
+    dag_variables=['smoking', 'lung_cancer', 'age', 'genetics'],
+    dag_domain='epidemiology'
+)
+
+# Example 2: Gate node with cognitive bias check
+step2 = Step(
+    id="check_causal_bias",
+    description="Check for cognitive biases in causal claim",
+    type=StepType.GATE,
+    cognitive_check=True,
+    depends_on=['analyze_variables'],
+    gate_branches={
+        GateOutcome.PASS: "proceed_with_analysis",
+        GateOutcome.MITIGATE: "apply_mitigation",
+        GateOutcome.FAIL: "abort_analysis"
+    }
+)
+
+# Example 3: Switch node for procedure selection
+step3 = Step(
+    id="select_reasoning_method",
+    description="Select appropriate causal reasoning procedure",
+    type=StepType.SWITCH,
+    reasoning_template="causal_intervention",  # Will be selected dynamically
+    depends_on=['check_causal_bias'],
+    switch_routes={
+        'simple_association': ['correlation_analysis'],
+        'causal_claim': ['dag_analysis', 'confounder_check'],
+        'intervention': ['do_calculus', 'counterfactual']
+    }
+)
+
+# Example 4: Validation step with deterministic math
+step4 = Step(
+    id="validate_effect_size",
+    description="Calculate Cohen's d for effect size",
+    type=StepType.VALIDATION,
+    validation_function="cohens_d",
+    validation_args={
+        'mean1': 10.0,
+        'mean2': 12.0,
+        'sd1': 2.0,
+        'sd2': 2.0
+    },
+    depends_on=['select_reasoning_method']
+)
+
+# Example 5: Mitigation node
+step5 = Step(
+    id="apply_mitigation",
+    description="Apply mitigation strategy for detected biases",
+    type=StepType.MITIGATION,
+    mitigation_strategy="add_confounders",
+    fallback_step="abort_analysis"
+)
+
+# Build a task
+task = Task(
+    task_id="causal_analysis_001",
+    title="Smoking and Lung Cancer Causal Analysis",
+    description="Analyze causal relationship using CIM"
+)
+
+task.add_step(step1)
+task.add_step(step2)
+task.add_step(step3)
+task.add_step(step4)
+task.add_step(step5)
+```
+
+**Tests:**
+
+```python
+# tests/sequential_thinking/test_types.py
+
+import pytest
+from modules.sequential_thinking.types import (
+    Step, Task, StepType, StepStatus, GateOutcome
+)
+
+def test_step_creation():
+    """Test basic step creation"""
+    step = Step(
+        id="test_step",
+        description="Test step",
+        type=StepType.NORMAL
+    )
+    
+    assert step.id == "test_step"
+    assert step.type == StepType.NORMAL
+    assert step.status == StepStatus.PENDING
+
+def test_step_with_cim_integration():
+    """Test step with CIM fields"""
+    step = Step(
+        id="gate_step",
+        description="Gate node",
+        type=StepType.GATE,
+        cognitive_check=True,
+        requires_dag=True,
+        dag_variables=['X', 'Y'],
+        validation_function="cohens_d"
+    )
+    
+    assert step.cognitive_check == True
+    assert step.requires_dag == True
+    assert len(step.dag_variables) == 2
+    assert step.validation_function == "cohens_d"
+
+def test_step_can_execute():
+    """Test dependency checking"""
+    step = Step(
+        id="step2",
+        description="Depends on step1",
+        depends_on=['step1']
+    )
+    
+    # Cannot execute without dependency
+    assert step.can_execute([]) == False
+    
+    # Can execute when dependency complete
+    assert step.can_execute(['step1']) == True
+
+def test_task_workflow():
+    """Test task with multiple steps"""
+    task = Task(
+        task_id="test_task",
+        title="Test Task",
+        description="Test workflow"
+    )
+    
+    step1 = Step(id="step1", description="First")
+    step2 = Step(id="step2", description="Second", depends_on=['step1'])
+    
+    task.add_step(step1)
+    task.add_step(step2)
+    
+    # First step should be executable
+    next_step = task.get_next_executable_step()
+    assert next_step.id == "step1"
+    
+    # Complete first step
+    step1.status = StepStatus.COMPLETED
+    
+    # Now second step should be executable
+    next_step = task.get_next_executable_step()
+    assert next_step.id == "step2"
+```
+
+**Success Criteria:**
+- [ ] Step class supports all CIM integration fields
+- [ ] StepType enum includes gate/switch/mitigation
+- [ ] Task class can manage step workflow
+- [ ] Dependency resolution works correctly
+- [ ] All tests pass
+- [ ] Code is well-documented
+
+---
+
+### Task 4: Basic Workflow Engine
+**Time:** 3 hours  
+**Priority:** ⭐⭐⭐ CRITICAL
+
+**Goal:** Implement core step execution engine that calls CIM
+
+**Implementation:**
+
+```python
+# modules/sequential_thinking/workflow_engine.py
+
+import time
+from typing import Optional, Dict, List
+from modules.sequential_thinking.types import Step, Task, StepType, StepStatus, GateOutcome
+from modules.sequential_thinking.intelligence_loader import IntelligenceLoader
+
+class WorkflowEngine:
+    """
+    Executes sequential thinking workflows.
+    Orchestrates step execution and integrates with CIM.
+    """
+    
+    def __init__(self, intelligence_loader: IntelligenceLoader):
+        self.intelligence = intelligence_loader
+        self.current_task: Optional[Task] = None
+        self.execution_log: List[Dict] = []
+    
+    def execute_task(self, task: Task) -> Task:
+        """
+        Execute all steps in a task sequentially.
+        
+        Args:
+            task: Task to execute
+            
+        Returns:
+            Completed task with results
+        """
+        self.current_task = task
+        task.status = "running"
+        task.start_time = time.time()
+        
+        try:
+            while not task.is_complete():
+                # Get next executable step
+                next_step = task.get_next_executable_step()
+                
+                if next_step is None:
+                    # No more executable steps
+                    if task.is_complete():
+                        break
+                    elif task.has_failed():
+                        task.status = "failed"
+                        break
+                    else:
+                        # Blocked - should not happen with proper dependencies
+                        task.status = "blocked"
+                        task.error = "Workflow blocked - dependency cycle or missing steps"
+                        break
+                
+                # Execute step
+                self.execute_step(next_step, task)
+                
+                # Handle step outcome
+                if next_step.is_failed():
+                    if next_step.fallback_step:
+                        # Route to fallback
+                        fallback = task.get_step(next_step.fallback_step)
+                        if fallback:
+                            fallback.status = StepStatus.PENDING
+                    else:
+                        # No fallback, task fails
+                        task.status = "failed"
+                        task.error = f"Step {next_step.id} failed: {next_step.error}"
+                        break
+            
+            if task.is_complete():
+                task.status = "completed"
+            
+        except Exception as e:
+            task.status = "failed"
+            task.error = f"Workflow exception: {str(e)}"
+        
+        finally:
+            task.end_time = time.time()
+        
+        return task
+    
+    def execute_step(self, step: Step, task: Task) -> Step:
+        """
+        Execute a single step based on its type.
+        
+        Args:
+            step: Step to execute
+            task: Parent task (for context)
+            
+        Returns:
+            Executed step with results
+        """
+        step.status = StepStatus.RUNNING
+        step.start_time = time.time()
+        
+        self._log_step_start(step)
+        
+        try:
+            # Execute based on step type
+            if step.type == StepType.GATE:
+                self._execute_gate_node(step, task)
+            elif step.type == StepType.SWITCH:
+                self._execute_switch_node(step, task)
+            elif step.type == StepType.VALIDATION:
+                self._execute_validation_node(step, task)
+            elif step.type == StepType.MITIGATION:
+                self._execute_mitigation_node(step, task)
+            else:  # NORMAL
+                self._execute_normal_node(step, task)
+            
+            # Mark as completed if no error
+            if step.status != StepStatus.FAILED:
+                step.status = StepStatus.COMPLETED
+            
+        except Exception as e:
+            step.status = StepStatus.FAILED
+            step.error = str(e)
+            self._log_step_error(step, e)
+        
+        finally:
+            step.end_time = time.time()
+            step.duration_ms = (step.end_time - step.start_time) * 1000
+            self._log_step_end(step)
+        
+        return step
+    
+    def _execute_normal_node(self, step: Step, task: Task) -> None:
+        """Execute normal processing step"""
+        
+        # Build context graph if requested
+        if step.requires_dag:
+            step.context_graph = self.intelligence.build_context_graph(
+                variables=step.dag_variables,
+                domain=step.dag_domain
+            )
+        
+        # Apply ability injection if specified
+        if step.ability_injection:
+            injector = self.intelligence.get_ability_injector(step.ability_injection)
+            # Store injector for use in LLM call
+            step.metadata['ability_injector'] = injector
+        
+        # Execute step-specific logic here
+        # (This would call the appropriate LLM layer in real implementation)
+        step.result = {"status": "completed", "type": "normal"}
+    
+    def _execute_gate_node(self, step: Step, task: Task) -> None:
+        """Execute gate node (cognitive bias check)"""
+        
+        # Prepare context for bias checking
+        context = {
+            'text': step.description,
+            'task_description': task.description,
+            'previous_steps': [s.to_dict() for s in task.steps if s.is_complete()]
+        }
+        
+        # Check for cognitive biases
+        if step.cognitive_check:
+            step.detected_biases = self.intelligence.check_cognitive_bias(context)
+        
+        # Determine gate outcome
+        outcome = self._evaluate_gate_outcome(step)
+        
+        # Route based on outcome
+        if outcome in step.gate_branches:
+            next_step_id = step.gate_branches[outcome]
+            next_step = task.get_step(next_step_id)
+            
+            if next_step:
+                # Activate the next step
+                if outcome == GateOutcome.MITIGATE:
+                    next_step.status = StepStatus.PENDING
+                    # Mark other steps as skipped
+                    self._skip_alternative_branches(task, next_step_id, step.gate_branches)
+        
+        step.result = {
+            "outcome": outcome.value,
+            "biases_detected": len(step.detected_biases),
+            "next_step": step.gate_branches.get(outcome)
+        }
+    
+    def _execute_switch_node(self, step: Step, task: Task) -> None:
+        """Execute switch node (procedure selection)"""
+        
+        # Select reasoning procedure
+        if step.reasoning_template:
+            step.selected_procedure = self.intelligence.get_reasoning_procedure(
+                step.reasoning_template
+            )
+        
+        # Determine which route to take
+        if step.switch_logic:
+            # Custom logic function
+            route = step.switch_logic(task)
+        else:
+            # Use selected procedure to determine route
+            route = step.selected_procedure.get('task_type', 'default') if step.selected_procedure else 'default'
+        
+        # Activate steps in selected route
+        if route in step.switch_routes:
+            route_steps = step.switch_routes[route]
+            for step_id in route_steps:
+                route_step = task.get_step(step_id)
+                if route_step:
+                    route_step.status = StepStatus.PENDING
+            
+            # Skip steps in other routes
+            self._skip_alternative_routes(task, route_steps, step.switch_routes)
+        
+        step.result = {
+            "route": route,
+            "activated_steps": step.switch_routes.get(route, []),
+            "procedure": step.selected_procedure.get('procedure_id') if step.selected_procedure else None
+        }
+    
+    def _execute_validation_node(self, step: Step, task: Task) -> None:
+        """Execute validation node (deterministic math)"""
+        
+        if step.validation_function:
+            step.validation_result = self.intelligence.validate_with_math(
+                function_name=step.validation_function,
+                **step.validation_args
+            )
+        
+        step.result = {
+            "validation": step.validation_result,
+            "passed": True  # Could add validation criteria
+        }
+    
+    def _execute_mitigation_node(self, step: Step, task: Task) -> None:
+        """Execute mitigation node (error correction)"""
+        
+        # Get mitigation strategy
+        if step.mitigation_strategy:
+            # Apply mitigation based on detected biases
+            # (In real implementation, this would modify the reasoning)
+            step.result = {
+                "strategy": step.mitigation_strategy,
+                "applied": True
+            }
+        else:
+            step.result = {"strategy": "none"}
+    
+    def _evaluate_gate_outcome(self, step: Step) -> GateOutcome:
+        """Evaluate gate node outcome based on detected biases"""
+        
+        if not step.detected_biases:
+            return GateOutcome.PASS
+        
+        # Check severity of detected biases
+        critical_biases = [b for b in step.detected_biases if b['severity'] == 'critical']
+        high_biases = [b for b in step.detected_biases if b['severity'] == 'high']
+        
+        if critical_biases:
+            return GateOutcome.FAIL
+        elif high_biases:
+            return GateOutcome.MITIGATE
+        else:
+            return GateOutcome.WARN
+    
+    def _skip_alternative_branches(self, task: Task, active_branch: str, all_branches: Dict) -> None:
+        """Skip steps in non-active branches"""
+        for outcome, branch_id in all_branches.items():
+            if branch_id != active_branch:
+                branch_step = task.get_step(branch_id)
+                if branch_step and branch_step.status == StepStatus.PENDING:
+                    branch_step.status = StepStatus.SKIPPED
+    
+    def _skip_alternative_routes(self, task: Task, active_route: List[str], all_routes: Dict) -> None:
+        """Skip steps in non-active routes"""
+        for route, steps in all_routes.items():
+            if steps != active_route:
+                for step_id in steps:
+                    step = task.get_step(step_id)
+                    if step and step.status == StepStatus.PENDING:
+                        step.status = StepStatus.SKIPPED
+    
+    def _log_step_start(self, step: Step) -> None:
+        """Log step start"""
+        self.execution_log.append({
+            'event': 'step_start',
+            'step_id': step.id,
+            'type': step.type.value,
+            'timestamp': step.start_time
+        })
+    
+    def _log_step_end(self, step: Step) -> None:
+        """Log step end"""
+        self.execution_log.append({
+            'event': 'step_end',
+            'step_id': step.id,
+            'status': step.status.value,
+            'duration_ms': step.duration_ms,
+            'timestamp': step.end_time
+        })
+    
+    def _log_step_error(self, step: Step, error: Exception) -> None:
+        """Log step error"""
+        self.execution_log.append({
+            'event': 'step_error',
+            'step_id': step.id,
+            'error': str(error),
+            'timestamp': time.time()
+        })
+    
+    def get_execution_summary(self) -> Dict:
+        """Get summary of execution"""
+        if not self.current_task:
+            return {}
+        
+        task = self.current_task
+        
+        return {
+            'task_id': task.task_id,
+            'status': task.status,
+            'total_steps': len(task.steps),
+            'completed_steps': len([s for s in task.steps if s.is_complete()]),
+            'failed_steps': len([s for s in task.steps if s.is_failed()]),
+            'skipped_steps': len([s for s in task.steps if s.status == StepStatus.SKIPPED]),
+            'total_duration': (task.end_time - task.start_time) if task.end_time else None,
+            'execution_log': self.execution_log
+        }
+```
+
+**Tests:**
+
+```python
+# tests/sequential_thinking/test_workflow_engine.py
+
+import pytest
+from modules.sequential_thinking.workflow_engine import WorkflowEngine
+from modules.sequential_thinking.intelligence_loader import IntelligenceLoader
+from modules.sequential_thinking.types import Step, Task, StepType, GateOutcome
+
+@pytest.fixture
+def engine():
+    """Create workflow engine with intelligence loader"""
+    loader = IntelligenceLoader()
+    return WorkflowEngine(loader)
+
+def test_execute_normal_step(engine):
+    """Test normal step execution"""
+    step = Step(
+        id="test_step",
+        description="Test normal step",
+        type=StepType.NORMAL
+    )
+    
+    task = Task(task_id="test_task", title="Test", description="Test task")
+    task.add_step(step)
+    
+    engine.execute_step(step, task)
+    
+    assert step.is_complete()
+    assert step.duration_ms > 0
+
+def test_execute_gate_node(engine):
+    """Test gate node with bias detection"""
+    step = Step(
+        id="gate_step",
+        description="X and Y are correlated, so X causes Y",  # Trigger bias
+        type=StepType.GATE,
+        cognitive_check=True,
+        gate_branches={
+            GateOutcome.PASS: "continue",
+            GateOutcome.FAIL: "abort"
+        }
+    )
+    
+    task = Task(task_id="test_task", title="Test", description="Test task")
+    task.add_step(step)
+    
+    engine.execute_step(step, task)
+    
+    assert step.is_complete()
+    assert len(step.detected_biases) > 0  # Should detect correlation-causation
+
+def test_execute_task_workflow(engine):
+    """Test complete task execution"""
+    task = Task(
+        task_id="test_task",
+        title="Test Workflow",
+        description="Test sequential execution"
+    )
+    
+    # Create simple workflow
+    step1 = Step(id="step1", description="First step", type=StepType.NORMAL)
+    step2 = Step(
+        id="step2", 
+        description="Second step", 
+        type=StepType.NORMAL,
+        depends_on=['step1']
+    )
+    step3 = Step(
+        id="step3",
+        description="Final step",
+        type=StepType.NORMAL,
+        depends_on=['step2']
+    )
+    
+    task.add_step(step1)
+    task.add_step(step2)
+    task.add_step(step3)
+    
+    # Execute task
+    result = engine.execute_task(task)
+    
+    assert result.status == "completed"
+    assert result.is_complete()
+    assert len(result.get_completed_steps()) == 3
+
+def test_task_with_gate_routing(engine):
+    """Test task with gate-based routing"""
+    task = Task(
+        task_id="gate_test",
+        title="Gate Routing Test",
+        description="Test gate-based routing"
+    )
+    
+    # Main flow
+    step1 = Step(id="analyze", description="Analyze input", type=StepType.NORMAL)
+    
+    # Gate with bias check
+    step2 = Step(
+        id="check_bias",
+        description="X causes Y because I said so",  # Bad reasoning
+        type=StepType.GATE,
+        cognitive_check=True,
+        depends_on=['analyze'],
+        gate_branches={
+            GateOutcome.PASS: "continue_analysis",
+            GateOutcome.MITIGATE: "apply_mitigation",
+            GateOutcome.FAIL: "abort"
+        }
+    )
+    
+    # Different branches
+    step3a = Step(id="continue_analysis", description="Continue normally")
+    step3b = Step(id="apply_mitigation", description="Apply mitigation", type=StepType.MITIGATION)
+    step3c = Step(id="abort", description="Abort due to critical issues")
+    
+    task.add_step(step1)
+    task.add_step(step2)
+    task.add_step(step3a)
+    task.add_step(step3b)
+    task.add_step(step3c)
+    
+    # Execute
+    result = engine.execute_task(task)
+    
+    # Should have detected bias and routed to mitigation or abort
+    assert step2.detected_biases is not None
+    assert len(step2.detected_biases) > 0
+```
+
+**Success Criteria:**
+- [ ] Can execute normal steps
+- [ ] Can execute gate nodes with bias detection
+- [ ] Can execute switch nodes with routing
+- [ ] Can execute validation nodes with math
+- [ ] Handles dependencies correctly
+- [ ] Routes based on gate outcomes
+- [ ] All tests pass
+
+---
+
+### Task 5: Integration Tests
+**Time:** 2 hours  
+**Priority:** ⭐⭐⭐ CRITICAL
+
+**Goal:** End-to-end testing of Sequential Thinking + CIM integration
+
+**Test Scenarios:**
+
+```python
+# tests/sequential_thinking/test_integration.py
+
+import pytest
+from modules.sequential_thinking.workflow_engine import WorkflowEngine
+from modules.sequential_thinking.intelligence_loader import IntelligenceLoader
+from modules.sequential_thinking.types import Step, Task, StepType, GateOutcome
+
+@pytest.fixture
+def full_stack():
+    """Create full integration stack"""
+    loader = IntelligenceLoader()
+    engine = WorkflowEngine(loader)
+    return loader, engine
+
+def test_scenario_causal_claim_analysis(full_stack):
+    """
+    Scenario: Analyze causal claim "Smoking causes lung cancer"
+    
+    Workflow:
+    1. Build context graph (variables: smoking, lung_cancer, age, genetics)
+    2. Check for cognitive biases
+    3. Select causal reasoning procedure
+    4. Validate with deterministic math
+    """
+    loader, engine = full_stack
+    
+    task = Task(
+        task_id="causal_001",
+        title="Smoking → Lung Cancer Analysis",
+        description="Analyze causal relationship"
+    )
+    
+    # Step 1: Build context graph
+    step1 = Step(
+        id="build_graph",
+        description="Build causal graph",
+        type=StepType.NORMAL,
+        requires_dag=True,
+        dag_variables=['smoking', 'lung_cancer', 'age', 'genetics'],
+        dag_domain='epidemiology'
+    )
+    
+    # Step 2: Gate - Check biases
+    step2 = Step(
+        id="check_bias",
+        description="Smoking and lung cancer are correlated",
+        type=StepType.GATE,
+        cognitive_check=True,
+        depends_on=['build_graph'],
+        gate_branches={
+            GateOutcome.PASS: "select_procedure",
+            GateOutcome.WARN: "select_procedure",
+            GateOutcome.MITIGATE: "apply_mitigation",
+            GateOutcome.FAIL: "abort"
+        }
+    )
+    
+    # Step 3: Switch - Select procedure
+    step3 = Step(
+        id="select_procedure",
+        description="Select reasoning procedure",
+        type=StepType.SWITCH,
+        reasoning_template="causal_claim",
+        depends_on=['check_bias']
+    )
+    
+    # Step 4: Validate with math
+    step4 = Step(
+        id="validate",
+        description="Calculate effect size",
+        type=StepType.VALIDATION,
+        validation_function="cohens_d",
+        validation_args={
+            'mean1': 0.10,  # Lung cancer rate non-smokers
+            'mean2': 0.85,  # Lung cancer rate smokers  
+            'sd1': 0.05,
+            'sd2': 0.10
+        },
+        depends_on=['select_procedure']
+    )
+    
+    task.add_step(step1)
+    task.add_step(step2)
+    task.add_step(step3)
+    task.add_step(step4)
+    
+    # Execute
+    result = engine.execute_task(task)
+    
+    # Verify execution
+    assert result.is_complete()
+    
+    # Verify CIM integration
+    assert step1.context_graph is not None
+    assert 'graph' in step1.context_graph
+    
+    # May or may not detect biases depending on phrasing
+    # but should execute gate node
+    assert step2.detected_biases is not None
+    
+    assert step3.selected_procedure is not None
+    assert step4.validation_result is not None
+
+def test_scenario_with_mitigation(full_stack):
+    """
+    Scenario: Bad causal reasoning triggers mitigation
+    
+    Workflow:
+    1. Analyze: "X causes Y because they're correlated"
+    2. Gate detects correlation-causation fallacy
+    3. Routes to mitigation
+    4. Mitigation adds confounder analysis
+    """
+    loader, engine = full_stack
+    
+    task = Task(
+        task_id="mitigation_001",
+        title="Mitigation Test",
+        description="Test bias mitigation"
+    )
+    
+    # Step 1: Bad reasoning
+    step1 = Step(
+        id="bad_analysis",
+        description="X and Y are correlated, therefore X causes Y",
+        type=StepType.GATE,
+        cognitive_check=True,
+        gate_branches={
+            GateOutcome.PASS: "continue",
+            GateOutcome.MITIGATE: "apply_mitigation",
+            GateOutcome.FAIL: "abort"
+        }
+    )
+    
+    # Step 2: Mitigation
+    step2 = Step(
+        id="apply_mitigation",
+        description="Add confounder analysis",
+        type=StepType.MITIGATION,
+        mitigation_strategy="add_confounders"
+    )
+    
+    # Step 3: Continue after mitigation
+    step3 = Step(
+        id="continue",
+        description="Continue with corrected reasoning",
+        type=StepType.NORMAL,
+        depends_on=['apply_mitigation']
+    )
+    
+    task.add_step(step1)
+    task.add_step(step2)
+    task.add_step(step3)
+    
+    # Execute
+    result = engine.execute_task(task)
+    
+    # Should detect bias and route to mitigation
+    assert len(step1.detected_biases) > 0
+    assert step2.is_complete()  # Mitigation executed
+    assert step3.is_complete()  # Continued after mitigation
+
+def test_scenario_multi_switch_routing(full_stack):
+    """
+    Scenario: Switch node routes to different procedures
+    
+    Tests dynamic routing based on task type
+    """
+    loader, engine = full_stack
+    
+    task = Task(
+        task_id="switch_001",
+        title="Multi-Route Test",
+        description="Test switch routing"
+    )
+    
+    # Switch node
+    step1 = Step(
+        id="route_task",
+        description="Route based on task type",
+        type=StepType.SWITCH,
+        reasoning_template="causal_intervention",
+        switch_routes={
+            'simple': ['simple_analysis'],
+            'complex': ['dag_analysis', 'confounder_check'],
+            'experimental': ['rct_analysis']
+        }
+    )
+    
+    # Different route steps
+    step2 = Step(id="simple_analysis", description="Simple analysis")
+    step3 = Step(id="dag_analysis", description="DAG analysis")
+    step4 = Step(id="confounder_check", description="Check confounders")
+    step5 = Step(id="rct_analysis", description="RCT analysis")
+    
+    task.add_step(step1)
+    task.add_step(step2)
+    task.add_step(step3)
+    task.add_step(step4)
+    task.add_step(step5)
+    
+    # Execute
+    result = engine.execute_task(task)
+    
+    # Should complete routing
+    assert step1.is_complete()
+    assert step1.result is not None
+    assert 'route' in step1.result
+
+def test_full_pipeline_performance(full_stack):
+    """Test complete pipeline performance"""
+    loader, engine = full_stack
+    
+    # Create complex task
+    task = Task(
+        task_id="perf_001",
+        title="Performance Test",
+        description="Test full pipeline"
+    )
+    
+    # Add 10 steps with various types
+    for i in range(10):
+        if i % 3 == 0:
+            step = Step(
+                id=f"step_{i}",
+                description=f"Step {i}",
+                type=StepType.GATE,
+                cognitive_check=True
+            )
+        elif i % 3 == 1:
+            step = Step(
+                id=f"step_{i}",
+                description=f"Step {i}",
+                type=StepType.SWITCH,
+                reasoning_template="causal_claim"
+            )
+        else:
+            step = Step(
+                id=f"step_{i}",
+                description=f"Step {i}",
+                type=StepType.NORMAL
+            )
+        
+        if i > 0:
+            step.depends_on = [f"step_{i-1}"]
+        
+        task.add_step(step)
+    
+    # Execute and measure
+    import time
+    start = time.time()
+    result = engine.execute_task(task)
+    duration = time.time() - start
+    
+    # Should complete in reasonable time
+    assert result.is_complete()
+    assert duration < 10.0  # Less than 10 seconds for 10 steps
+    
+    # Get summary
+    summary = engine.get_execution_summary()
+    assert summary['completed_steps'] > 0
+```
+
+**Success Criteria:**
+- [ ] Can execute complete causal analysis workflow
+- [ ] Bias detection triggers mitigation
+- [ ] Switch routing works correctly
+- [ ] Performance is acceptable (<10s for 10 steps)
+- [ ] All integration tests pass
+
+---
+
+## 🔧 PHASE 2: CORE COMPONENTS
+
+**Duration:** Week 2 (5 tasks, ~12 hours)  
+**Goal:** Build remaining core components  
+**Dependencies:** Phase 1 complete
+
+### Task 6: Memory Manager with CIM
+**Time:** 2 hours  
+**Priority:** ⭐⭐⭐
+
+**Goal:** Track step state and CIM results in memory
+
+**Key Features:**
+- Store step execution history
+- Cache CIM query results
+- Track detected biases across steps
+- Maintain context graph state
+- Enable reflection on past decisions
+
+### Task 7: Gate Node Handler
+**Time:** 2 hours  
+**Priority:** ⭐⭐⭐
+
+**Goal:** Specialized handler for gate nodes
+
+**Key Features:**
+- Advanced bias detection logic
+- Multi-condition gate evaluation
+- Severity-based routing
+- Mitigation strategy selection
+- Gate state persistence
+
+### Task 8: Switch Node Handler  
+**Time:** 2 hours  
+**Priority:** ⭐⭐⭐
+
+**Goal:** Specialized handler for switch nodes
+
+**Key Features:**
+- Dynamic procedure selection
+- Multi-way routing
+- Route optimization
+- Procedure caching
+- Switch state tracking
+
+### Task 9: Mitigation Handler
+**Time:** 2 hours  
+**Priority:** ⭐⭐
+
+**Goal:** Apply bias mitigation strategies
+
+**Key Features:**
+- Confounder injection
+- Alternative explanation generation
+- Mechanism requirement enforcement
+- Counterfactual testing
+- Mitigation tracking
+
+### Task 10: Error Handler
+**Time:** 4 hours  
+**Priority:** ⭐⭐
+
+**Goal:** Robust error recovery
+
+**Key Features:**
+- Step-level error recovery
+- Fallback routing
+- Partial success handling
+- Error state persistence
+- Detailed error logging
+
+---
+
+## 🚀 PHASE 3: ADVANCED FEATURES
+
+**Duration:** Week 3 (5 tasks, ~14 hours)  
+**Goal:** Advanced workflow features  
+**Dependencies:** Phase 2 complete
+
+### Task 11: Dependency Manager
+**Time:** 3 hours  
+**Priority:** ⭐⭐
+
+**Goal:** Advanced dependency resolution
+
+### Task 12: Reflection System
+**Time:** 3 hours  
+**Priority:** ⭐⭐
+
+**Goal:** Meta-reasoning about execution
+
+### Task 13: Budget Management
+**Time:** 2 hours  
+**Priority:** ⭐⭐
+
+**Goal:** Token and time budgets
+
+### Task 14: Checkpoint System
+**Time:** 3 hours  
+**Priority:** ⭐⭐
+
+**Goal:** Save/restore execution state
+
+### Task 15: Performance Optimization
+**Time:** 3 hours  
+**Priority:** ⭐
+
+**Goal:** Optimize execution speed
+
+---
+
+## 🎯 PHASE 4: PRODUCTION READY
+
+**Duration:** Week 4 (4 tasks, ~18 hours)  
+**Goal:** Production deployment  
+**Dependencies:** Phase 3 complete
+
+### Task 16: Complete Test Suite
+**Time:** 6 hours  
+**Priority:** ⭐⭐⭐
+
+**Goal:** Comprehensive testing
+
+### Task 17: Documentation
+**Time:** 4 hours  
+**Priority:** ⭐⭐⭐
+
+**Goal:** Complete user and developer docs
+
+### Task 18: Performance Tuning
+**Time:** 4 hours  
+**Priority:** ⭐⭐
+
+**Goal:** Optimize for production
+
+### Task 19: Production Deployment
+**Time:** 4 hours  
+**Priority:** ⭐⭐⭐
+
+**Goal:** Deploy to TRION
+
+---
+
+## 🔗 INTEGRATION PATTERNS
+
+### Pattern 1: Gate-Before-Action
+```python
+# Always check for biases before risky operations
+gate → [pass] → action
+gate → [fail] → abort
+gate → [mitigate] → mitigation → action
+```
+
+### Pattern 2: Switch-for-Complexity
+```python
+# Route based on task complexity
+switch → [simple] → fast_path
+switch → [medium] → standard_path  
+switch → [complex] → full_cim_stack
+```
+
+### Pattern 3: Validate-Critical-Computations
+```python
+# Always validate math with deterministic tools
+claim → validation → [pass] → accept
+claim → validation → [fail] → reject
+```
+
+---
+
+## 🧪 TESTING STRATEGY
+
+### Unit Tests
+- Each component tested in isolation
+- Mock CIM for fast tests
+- 80%+ code coverage
+
+### Integration Tests
+- Full Sequential Thinking + CIM
+- Real datasets from Frank
+- End-to-end scenarios
+
+### Performance Tests
+- <50ms for gate nodes
+- <500ms for switch nodes
+- <2s for full workflow
+
+---
+
+## ⚡ PERFORMANCE TARGETS
+
+### Execution Time
+- Gate node: <50ms
+- Switch node: <100ms
+- Normal step: <500ms
+- Full workflow (10 steps): <5s
+
+### Memory Usage
+- Intelligence Loader: <100MB
+- Active workflow: <50MB
+- Total footprint: <200MB
+
+### Accuracy
+- Bias detection: >95% precision
+- Procedure selection: >90% accuracy
+- Math validation: 100% deterministic
+
+---
+
+## 📊 SUCCESS METRICS
+
+### Phase 1 Success
+- [ ] Structure setup complete
+- [ ] Intelligence Loader working
+- [ ] Basic workflow executing
+- [ ] Integration tests passing
+
+### Phase 2 Success  
+- [ ] All handlers implemented
+- [ ] Memory tracking working
+- [ ] Error recovery functional
+
+### Phase 3 Success
+- [ ] Advanced features complete
+- [ ] Performance optimized
+- [ ] Checkpoints working
+
+### Phase 4 Success
+- [ ] Production-ready code
+- [ ] Complete documentation
+- [ ] Deployed to TRION
+- [ ] Frank's approval ✅
+
+---
+
+## 🎊 CONCLUSION
+
+With Frank's CIM delivery, Sequential Thinking implementation is:
+
+**Faster:** 4 weeks instead of 6-8 weeks  
+**Better:** Production-grade intelligence built-in  
+**Stronger:** Causal reasoning from day one  
+
+**Next Steps:**
+1. Review this roadmap with Frank
+2. Start Phase 1 Task 1 (30 min)
+3. Execute tasks sequentially
+4. Iterate based on feedback
+
+**Ready to build! 💪**
+
+---
+
+**END OF ROADMAP v4.0**

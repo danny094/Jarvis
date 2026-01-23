@@ -1,50 +1,171 @@
-Discord for news: [https://discord.gg/t8jAxMtk](https://discord.gg/jmspP2gu)
+<div align="center">
 
-# Jarvis 
-It's still the AI ​​Proxy Bridge. I've now renamed it "Javi's AI Assistant" so it's easier to remember. That way, it's easier to remember.
-<img width="820" height="820" alt="ChatGPT Image 30  Dez  2025, 10_33_55" src="https://github.com/user-attachments/assets/4958af72-a31b-45f7-951c-281b0d897739" />
+# 🚀 TRION - AI Pipeline Framework
 
+**A modular, self-hosted AI assistant architecture with intelligent reasoning capabilities**
 
-# Pipline
+[![Discord](https://img.shields.io/discord/1234567890?label=Discord&logo=discord)](https://discord.gg/t8jAxMtk)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](docker-compose.yml)
 
-Simple graphic showing how the pipeline works
-<img width="1536" height="1024" alt="ChatGPT Image 1  Jan  2026, 00_25_42" src="https://github.com/user-attachments/assets/5e01230e-b85f-4d7b-917e-ad94e398818a" />
-# Architecture
+<img width="700" alt="TRION Architecture" src="https://github.com/user-attachments/assets/4958af72-a31b-45f7-951c-281b0d897739" />
 
-<img width="1536" height="1024" alt="ChatGPT Image 1  Jan  2026, 01_29_24" src="https://github.com/user-attachments/assets/bb48baf4-0532-414f-ad72-95e2d969f67e" />
-
-___ 
-features:
-- Find and merge duplicates
-- Promote important entries to LTM
-- Create summaries
-- Optimize graphs
-
-This means the AI ​​cleans up your graph and creates stronger connections at the edges, shifting memories between STM, MTM, and LTM.
-You can find more detailed information in /Jarvis/maintenance README.md
-
-<img width="671" height="615" alt="Bildschirmfoto 2026-01-04 um 18 53 22" src="https://github.com/user-attachments/assets/59d64fa4-da57-4452-b619-b00bc310b42e" />
-
-
-___
-
-There are 2 major updates on Thursday, January 8, 2026.
-
-- You can now upload your own personas without having to search through the code.
-- You can save multiple personas
-- You can switch personas during the conversation.
-<img width="769" height="734" alt="Bildschirmfoto 2026-01-08 um 17 13 42" src="https://github.com/user-attachments/assets/7d41dc61-f764-4163-814a-c19ec0eae558" />
-
+</div>
 
 ---
 
-- You can switch all AI layers without having to change the code.
-- Change thinking <<< NEW
-- Change Control <<< NEW
-- Change Output
+## ✨ Features
 
-<img width="769" height="734" alt="Bildschirmfoto 2026-01-08 um 17 13 55" src="https://github.com/user-attachments/assets/a7baeb60-a659-4c69-9e22-e95523d7b12a" />
+| Feature | Description |
+|---------|-------------|
+| 🧠 **3-Layer Pipeline** | Thinking → Control → Output architecture for intelligent responses |
+| 🔄 **Sequential Thinking** | Step-by-step reasoning with live streaming |
+| 🎯 **CIM Integration** | Causal Inference Module for hallucination prevention |
+| 💾 **Memory System** | SQL + Graph + Semantic search for context-aware responses |
+| 🔌 **MCP Servers** | Model Context Protocol for extensible tool integration |
+| 🌐 **Multiple Adapters** | Jarvis WebUI, LobeChat, OpenAI-compatible API |
+| 🐳 **Docker Ready** | One-command deployment with docker-compose |
+| 🔒 **Self-Hosted** | 100% local, GDPR-compliant, no cloud dependencies |
 
-___
+---
 
-And much more fixes and cleanups 
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        ADAPTERS                                 │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐                │
+│  │   Jarvis   │  │  LobeChat  │  │  OpenAI    │                │
+│  │   WebUI    │  │  Adapter   │  │  Compat    │                │
+│  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘                │
+└────────┼───────────────┼───────────────┼────────────────────────┘
+         │               │               │
+         └───────────────┼───────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     CORE BRIDGE                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │   THINKING   │→ │   CONTROL    │→ │    OUTPUT    │          │
+│  │    Layer     │  │    Layer     │  │    Layer     │          │
+│  │              │  │              │  │              │          │
+│  │ • Intent     │  │ • LightCIM   │  │ • Response   │          │
+│  │ • Complexity │  │ • Sequential │  │ • Streaming  │          │
+│  │ • Planning   │  │ • Validation │  │ • Memory     │          │
+│  └──────────────┘  └──────────────┘  └──────────────┘          │
+└─────────────────────────────────────────────────────────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      MCP SERVERS                                │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│  │ Sequential  │  │    CIM      │  │ SQL-Memory  │             │
+│  │  Thinking   │  │   Server    │  │   Server    │             │
+│  └─────────────┘  └─────────────┘  └─────────────┘             │
+└─────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       OLLAMA                                    │
+│   DeepSeek-R1 | Llama 3.1 | Qwen | Any local model             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Docker & Docker Compose
+- Ollama with models installed (e.g., `ollama pull deepseek-r1:8b`)
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/trion.git
+cd trion
+
+# Start all services
+docker-compose up -d
+
+# Access the WebUI
+open http://localhost:8400
+```
+
+### Services
+
+| Service | Port | Description |
+|---------|------|-------------|
+| Jarvis WebUI | 8400 | Main user interface |
+| Admin API | 8200 | Backend API |
+| Ollama | 11434 | LLM inference |
+| SQL-Memory | 8010 | Memory MCP server |
+
+---
+
+## 📁 Project Structure
+
+```
+trion/
+├── adapters/              # Frontend adapters
+│   ├── Jarvis/            # Main WebUI
+│   ├── admin-api/         # Backend API
+│   └── lobechat/          # LobeChat compatibility
+├── core/                  # Core pipeline
+│   ├── bridge.py          # Main orchestrator
+│   └── layers/            # Thinking, Control, Output
+├── mcp-servers/           # MCP tool servers
+│   ├── sequential-thinking/
+│   └── cim-server/
+├── sql-memory/            # Memory system
+├── documentation/         # Detailed docs
+└── docker-compose.yml     # Deployment config
+```
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture v5](documentation/ARCHITECTURE_v5.md) | Detailed architecture docs |
+| [API Reference](documentation/API_REFERENCE.md) | API endpoints & usage |
+| [TRION Panel](documentation/TRION_PANEL_README.md) | Observability UI |
+| [Contributing](CONTRIBUTING.md) | Contribution guidelines |
+| [FAQ](FAQ.md) | Frequently asked questions |
+
+---
+
+## 🔧 Configuration
+
+Key environment variables in `docker-compose.yml`:
+
+```yaml
+OLLAMA_BASE: http://ollama:11434
+THINKING_MODEL: deepseek-r1:8b
+CONTROL_MODEL: deepseek-r1:8b
+OUTPUT_MODEL: llama3.1:8b
+```
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
+
+## 📜 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+<div align="center">
+
+**Built with ❤️ and AI assistance**
+
+[Discord](https://discord.gg/t8jAxMtk) · [Issues](https://github.com/yourusername/trion/issues) · [Docs](documentation/)
+
+</div>

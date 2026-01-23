@@ -23,7 +23,7 @@ THINKING_MODEL = os.getenv("THINKING_MODEL", "deepseek-r1:8b")
 CONTROL_MODEL = os.getenv("CONTROL_MODEL", "qwen3:4b")
 
 # Layer 3: OutputLayer - Generiert Antwort (Default, kann per Request überschrieben werden)
-OUTPUT_MODEL = os.getenv("OUTPUT_MODEL", "llama3.1:8b")
+OUTPUT_MODEL = os.getenv("OUTPUT_MODEL", "deepseek-r1:8b")
 
 # Embedding Model für Semantic Search
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "hellord/mxbai-embed-large-v1:f16")

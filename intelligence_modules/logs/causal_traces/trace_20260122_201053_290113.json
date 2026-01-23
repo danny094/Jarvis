@@ -1,0 +1,15 @@
+{
+  "query": "\"Erkl\u00e4re mir Schritt f\u00fcr Schritt wie ein Compiler funktioniert\"",
+  "mode": "LightGraphBuilder",
+  "source": "auto_selector",
+  "graph": {
+    "nodes": [],
+    "edges": [],
+    "metrics": {
+      "node_count": 0,
+      "edge_count": 0,
+      "is_dag": true,
+      "density": 0
+    }
+  }
+}

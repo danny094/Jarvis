@@ -73,6 +73,42 @@ class OutputLayer:
             for w in warnings:
                 prompt_parts.append(f"- {w}")
         
+        # ═══════════════════════════════════════════════════════════
+        # SEQUENTIAL THINKING ERGEBNISSE (v3.0)
+        # ═══════════════════════════════════════════════════════════
+        sequential_result = verified_plan.get("_sequential_result")
+        if sequential_result and sequential_result.get("success"):
+            prompt_parts.append("\n### VORAB-ANALYSE (Sequential Thinking):")
+            prompt_parts.append("Eine tiefgehende Analyse wurde bereits durchgeführt.")
+            prompt_parts.append("NUTZE diese Ergebnisse als Basis für deine Antwort!")
+            prompt_parts.append("")
+            
+            # Full response (beste Quelle)
+            full_response = sequential_result.get("full_response", "")
+            if full_response and not full_response.startswith("[Ollama Error"):
+                prompt_parts.append("#### ANALYSE-ERGEBNIS:")
+                prompt_parts.append(full_response[:4000])  # Truncate für Kontext-Limit
+                prompt_parts.append("")
+            else:
+                # Fallback: Steps einzeln
+                steps = sequential_result.get("steps", [])
+                if steps:
+                    prompt_parts.append("#### ANALYSE-SCHRITTE:")
+                    for step in steps[:10]:  # Max 10 Steps
+                        step_num = step.get("step", "?")
+                        title = step.get("title", "")
+                        thought = step.get("thought", "")[:500]  # Truncate
+                        prompt_parts.append(f"**Step {step_num}: {title}**")
+                        prompt_parts.append(thought)
+                        prompt_parts.append("")
+            
+            # CIM Mode Info
+            cim_mode = sequential_result.get("cim_mode", "")
+            if cim_mode:
+                prompt_parts.append(f"*Analysemodus: {cim_mode}*")
+            
+            prompt_parts.append("FASSE diese Analyse zusammen und formuliere eine klare Antwort.")
+        
         # Style-Hinweis
         style = verified_plan.get("suggested_response_style", "")
         if style:

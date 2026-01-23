@@ -57,6 +57,8 @@
         
         
     </style>
+    <!-- OLD: <link rel="stylesheet" href="./static/css/sequential-ui.css"> -->
+    <link rel="stylesheet" href="./static/css/trion-panel.css">
     
     <script>
         tailwind.config = {
@@ -79,9 +81,93 @@
             }
         }
     </script>
+
+    <!-- Control Block Styles (Sequential Thinking inline) -->
+    <style>
+        /* Control Block - Inline Sequential Thinking */
+        .control-block {
+            margin-bottom: 0.5rem;
+        }
+        
+        .control-block details {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .control-block summary {
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            color: #60a5fa;
+            user-select: none;
+            list-style: none;
+        }
+        
+        .control-block summary::-webkit-details-marker {
+            display: none;
+        }
+        
+        /* Triangle indicator */
+        .control-block .triangle {
+            width: 0;
+            height: 0;
+            border-left: 5px solid currentColor;
+            border-top: 4px solid transparent;
+            border-bottom: 4px solid transparent;
+            transition: transform 0.2s ease;
+        }
+        
+        .control-block details[open] .triangle {
+            transform: rotate(90deg);
+        }
+        
+        /* Spinning animation while active */
+        .control-block.active .triangle {
+            animation: spin 1s linear infinite;
+            border-left-color: #3b82f6;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Content area */
+        .control-block .control-content {
+            padding: 0.75rem;
+            font-size: 0.8rem;
+            color: #9ca3af;
+            border-top: 1px solid rgba(59, 130, 246, 0.2);
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: Monaco, Menlo, monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        
+        /* Status indicator */
+        .control-block .status {
+            font-size: 0.75rem;
+            color: #6b7280;
+        }
+        
+        .control-block.complete .status {
+            color: #10b981;
+        }
+        
+        .control-block.error .status {
+            color: #ef4444;
+        }
+    </style>
 </head>
 <body class="bg-dark-bg text-gray-100 h-screen flex flex-col">
-    
+<!-- TRION Panel System: Sequential Thinking uses event-based plugin system -->
+
     <!-- Header -->
     <header class="bg-dark-card border-b border-dark-border px-4 py-3 flex items-center justify-between">
         <div class="flex items-center gap-3">
@@ -388,11 +474,53 @@
                     Advanced configuration options for power users.
                 </div>
                 
-                <!-- Coming Soon -->
-                <div class="border border-dashed border-gray-600 rounded-lg p-8 text-center">
-                    <i data-lucide="construction" class="w-12 h-12 mx-auto mb-3 text-gray-600"></i>
-                    <p class="text-gray-400 mb-2">Advanced Settings Coming Soon</p>
-                    <p class="text-xs text-gray-500">Layer toggles, performance tuning, experimental features</p>
+                <!-- Sequential Thinking Auto-Detection -->
+                <div class="space-y-4 p-4 bg-dark-card rounded-lg border border-dark-border">
+                    <div class="flex items-center justify-between mb-2">
+                        <div>
+                            <h3 class="text-sm font-medium text-white flex items-center gap-2">
+                                <i data-lucide="brain" class="w-4 h-4"></i>
+                                Sequential Thinking Auto-Detection
+                            </h3>
+                        </div>
+                    </div>
+                    
+                    <!-- Sensitivity Slider -->
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="text-gray-400">Analyse-Empfindlichkeit:</span>
+                            <span id="sensitivity-value" class="text-accent-primary font-medium">Balanced</span>
+                        </div>
+                        
+                        <div class="relative">
+                            <input 
+                                type="range" 
+                                id="sequential-sensitivity-slider" 
+                                min="-10" 
+                                max="10" 
+                                value="0" 
+                                step="1"
+                                class="w-full h-2 bg-dark-border rounded-lg appearance-none cursor-pointer accent-accent-primary">
+                            
+                            <div class="flex justify-between text-[10px] text-gray-500 mt-1 px-1">
+                                <span>Minimal</span>
+                                <span class="text-accent-primary/70">Standard</span>
+                                <span>Sehr häufig</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Live Feedback -->
+                        <div id="sensitivity-feedback" class="text-xs text-gray-400 bg-dark-bg p-2 rounded flex items-start gap-2">
+                            <i data-lucide="info" class="w-3 h-3 mt-0.5 flex-shrink-0"></i>
+                            <span>Sequential triggert bei komplexen Fragen</span>
+                        </div>
+                        
+                        <!-- Info Box -->
+                        <div class="text-[11px] text-gray-500 bg-dark-bg p-2 rounded border-l-2 border-accent-primary/30">
+                            💡 Bestimmt, wie leicht Sequential Thinking automatisch aktiviert wird.
+                            Beeinflusst <strong class="text-gray-400">nicht</strong> die Qualität oder Sicherheit der Antworten.
+                        </div>
+                    </div>
                 </div>
                 
             </div><!-- End Advanced Tab -->
@@ -703,10 +831,15 @@
         </div>
     </footer>
     
+
+    <!-- Sequential Thinking Module (Load BEFORE app.js) -->
+    <script src="./static/js/trion-panel.js"></script>
+    <!-- REMOVED: sequential-plugin.js - now integrated in chat.js -->
     <script type="module">
         import { initApp } from './static/js/app.js?v=1767887553';
         initApp();
     </script>
+
     <!-- Application Scripts -->
 </body>
 </html>

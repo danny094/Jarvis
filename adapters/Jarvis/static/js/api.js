@@ -34,7 +34,7 @@ export async function getModels() {
         log("debug", `Fetching models from ${API_BASE}/api/tags`);
         const res = await fetch(`${API_BASE}/api/tags`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        
+
         const data = await res.json();
         const models = data.models?.map(m => m.name) || [];
         log("debug", `Found ${models.length} models`, models);
@@ -50,7 +50,7 @@ export async function getModels() {
 // ═══════════════════════════════════════════════════════════
 export async function checkHealth() {
     try {
-        const res = await fetch(`${API_BASE}/api/tags`, { 
+        const res = await fetch(`${API_BASE}/api/tags`, {
             method: 'GET',
             signal: AbortSignal.timeout(5000)
         });
@@ -65,7 +65,7 @@ export async function checkHealth() {
 // ═══════════════════════════════════════════════════════════
 export async function executeCode(code, language = "python", container = "code-sandbox") {
     log("info", `Executing code in ${container}`, { language, codeLength: code.length });
-    
+
     try {
         const res = await fetch(`${API_BASE}/api/execute`, {
             method: "POST",
@@ -76,15 +76,15 @@ export async function executeCode(code, language = "python", container = "code-s
                 container: container
             })
         });
-        
+
         if (!res.ok) {
             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         }
-        
+
         const result = await res.json();
         log("info", `Execution complete`, result);
         return result;
-        
+
     } catch (error) {
         log("error", `Execute error: ${error.message}`);
         return { error: error.message };
@@ -100,13 +100,13 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
         messageCount: messages.length,
         conversationId
     });
-    
+
     // Log the actual messages being sent
     log("debug", "Messages being sent to backend:", messages.map(m => ({
         role: m.role,
         content: m.content.substring(0, 100) + (m.content.length > 100 ? "..." : "")
     })));
-    
+
     const res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -124,7 +124,7 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
     }
 
     log("debug", "Stream started, reading chunks...");
-    
+
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -140,11 +140,28 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
 
         for (const line of lines) {
             if (!line.trim()) continue;
-            
+
             try {
                 const data = JSON.parse(line);
                 chunkCount++;
-                
+
+                // 🆕 FLAT EVENT HANDLER (new event system)
+                // Backend sends: {type: "sequential_start", task_id: "...", ...}
+                if (data.type && typeof data.type === "string") {
+                    const flatEventTypes = [
+                        'sequential_start', 'sequential_step', 'sequential_done', 'sequential_error', 'seq_thinking_stream', 'seq_thinking_done',
+                        'mcp_call', 'mcp_result',
+                        'cim_store', 'memory_update'
+                    ];
+
+                    if (flatEventTypes.includes(data.type)) {
+                        console.log(`[API] Flat event: ${data.type}`, data);
+                        yield data;  // Pass through as-is!
+                        continue;
+                    }
+                }
+
+
                 // Live Thinking Stream
                 if (data.thinking_stream !== undefined) {
                     log("debug", `Thinking chunk: ${data.thinking_stream.substring(0, 50)}...`);
@@ -154,7 +171,7 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                     };
                     continue;
                 }
-                
+
                 // Thinking Done (mit Plan)
                 if (data.thinking) {
                     log("info", "Thinking complete", data.thinking);
@@ -165,7 +182,7 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                     };
                     continue;
                 }
-                
+
                 // Container Start
                 if (data.container_start) {
                     console.log("[API] container_start parsed:", data.container_start);
@@ -177,7 +194,7 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                     };
                     continue;
                 }
-                
+
                 // Container Done
                 if (data.container_done) {
                     console.log("[API] container_done parsed:", data.container_done);
@@ -188,7 +205,59 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                     };
                     continue;
                 }
-                
+
+                // 🆕 Old Nested Handlers removed - Flat Event Handler (line 148-162) handles all sequential events!
+                // sequential_start, sequential_step, sequential_done are now handled by flat event system
+
+
+                // 🆕 All sequential events handled by Flat Event Handler (line 148-162)
+                // Removed: sequential_step, sequential_done nested handlers
+
+
+                // 🆕 TRION Panel: Create Tab
+                if (data.panel_create_tab) {
+                    console.log("[API] panel_create_tab parsed:", data.panel_create_tab);
+                    yield {
+                        type: "panel_create_tab",
+                        tab: data.panel_create_tab.tab
+                    };
+                    continue;
+                }
+
+                // 🆕 TRION Panel: Update Content
+                if (data.panel_update) {
+                    console.log("[API] panel_update parsed:", data.panel_update);
+                    yield {
+                        type: "panel_update",
+                        tabId: data.panel_update.tabId,
+                        content: data.panel_update.content,
+                        append: data.panel_update.append || false
+                    };
+                    continue;
+                }
+
+                // 🆕 TRION Panel: Close Tab
+                if (data.panel_close_tab) {
+                    console.log("[API] panel_close_tab parsed:", data.panel_close_tab);
+                    yield {
+                        type: "panel_close_tab",
+                        tabId: data.panel_close_tab.tabId,
+                        reason: data.panel_close_tab.reason || "completed"
+                    };
+                    continue;
+                }
+
+                // 🆕 TRION Panel: Control (open/close/focus)
+                if (data.panel_control) {
+                    console.log("[API] panel_control parsed:", data.panel_control);
+                    yield {
+                        type: "panel_control",
+                        action: data.panel_control.action,
+                        tabId: data.panel_control.tabId
+                    };
+                    continue;
+                }
+
                 // Content-Chunk (mit Model-Info)
                 if (data.message?.content) {
                     yield {
@@ -199,24 +268,24 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                         code_model_used: data.code_model_used || false
                     };
                 }
-                
+
                 // Memory indicator
                 if (data.memory_used) {
                     log("info", "Memory was used for this response");
                     yield { type: "memory", used: true };
                 }
-                
+
                 // Done (mit erweiterten Infos)
                 if (data.done) {
                     log("info", `Stream complete, received ${chunkCount} chunks`);
-                    yield { 
+                    yield {
                         type: "done",
                         model: data.model || null,
                         code_model_used: data.code_model_used || false,
                         container_used: data.container_used || false
                     };
                 }
-                
+
             } catch (e) {
                 // Nicht-JSON Zeile ignorieren
             }
@@ -236,7 +305,7 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
  */
 export async function startUserSandbox(containerName = "code-sandbox", preferredModel = null) {
     log("info", `Starting User-Sandbox: ${containerName}`);
-    
+
     try {
         const res = await fetch(`${API_BASE}/api/sandbox/start`, {
             method: "POST",
@@ -246,17 +315,17 @@ export async function startUserSandbox(containerName = "code-sandbox", preferred
                 preferred_model: preferredModel
             })
         });
-        
+
         const result = await res.json();
-        
+
         if (res.ok) {
             log("info", "User-Sandbox started", result);
         } else {
             log("warn", "User-Sandbox start failed", result);
         }
-        
+
         return { ...result, ok: res.ok, status: res.status };
-        
+
     } catch (error) {
         log("error", `Sandbox start error: ${error.message}`);
         return { error: error.message, ok: false };
@@ -270,24 +339,24 @@ export async function startUserSandbox(containerName = "code-sandbox", preferred
  */
 export async function stopUserSandbox(force = false) {
     log("info", `Stopping User-Sandbox (force=${force})`);
-    
+
     try {
         const res = await fetch(`${API_BASE}/api/sandbox/stop`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ force })
         });
-        
+
         const result = await res.json();
-        
+
         if (res.ok) {
             log("info", "User-Sandbox stopped", result);
         } else {
             log("warn", "User-Sandbox stop failed", result);
         }
-        
+
         return { ...result, ok: res.ok, status: res.status };
-        
+
     } catch (error) {
         log("error", `Sandbox stop error: ${error.message}`);
         return { error: error.message, ok: false };
@@ -302,9 +371,9 @@ export async function getUserSandboxStatus() {
     try {
         const res = await fetch(`${API_BASE}/api/sandbox/status`);
         const result = await res.json();
-        
+
         return { ...result, ok: res.ok };
-        
+
     } catch (error) {
         log("error", `Sandbox status error: ${error.message}`);
         return { error: error.message, ok: false, active: false };

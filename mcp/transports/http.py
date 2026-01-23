@@ -216,6 +216,40 @@ class HTTPTransport:
     # ═══════════════════════════════════════════════════════════════
     # RESPONSE PARSING
     # ═══════════════════════════════════════════════════════════════
+    def _extract_mcp_content(self, result: Any) -> Any:
+        """
+        Extrahiert Content aus MCP Protocol Format.
+        
+        FastMCP Format: {"content": [{"type": "text", "text": "JSON_STRING"}]}
+        Diese Funktion extrahiert und parst den JSON-String.
+        """
+        # 🔍 DEBUG: Log input
+        log_debug(f"[HTTP-MCP] Extract input type={type(result).__name__}")
+        if isinstance(result, dict):
+            log_debug(f"[HTTP-MCP] Extract keys={list(result.keys())}")
+        
+        if not isinstance(result, dict):
+            return result
+        
+        content = result.get("content", [])
+        if not content or not isinstance(content, list):
+            return result
+        
+        # Extrahiere ersten Text-Block
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text", "")
+                # Versuche JSON zu parsen
+                try:
+                    parsed = json.loads(text)
+                    log_debug(f"[HTTP] Extracted MCP content: {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed)}")
+                    return parsed
+                except json.JSONDecodeError:
+                    # Kein JSON, gebe Text zurück
+                    return text
+        
+        return result
+
     
     def _parse_sse_response(self, response: requests.Response) -> Any:
         """Parst SSE-Response und extrahiert das Result."""
@@ -255,14 +289,16 @@ class HTTPTransport:
         content_type = response.headers.get("Content-Type", "")
         
         if "text/event-stream" in content_type:
-            return self._parse_sse_response(response)
+            result = self._parse_sse_response(response)
+            return self._extract_mcp_content(result)
         
         # JSON Response
         try:
             data = response.json()
             if "error" in data:
                 return {"error": data["error"]}
-            return data.get("result", data)
+            result = data.get("result", data)
+            return self._extract_mcp_content(result)
         except:
             return None
     

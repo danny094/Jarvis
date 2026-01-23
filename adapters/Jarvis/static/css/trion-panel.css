@@ -1,0 +1,510 @@
+/* ═══════════════════════════════════════════════════════════════
+   TRION SIDE-PANEL - Universal Tab System CSS
+   Core Architecture v1.0
+   ═══════════════════════════════════════════════════════════════ */
+
+/* === PANEL BASE STYLES === */
+.trion-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100vh;
+    background: linear-gradient(135deg, #1a1d2e 0%, #16192a 100%);
+    border-left: 1px solid rgba(139, 92, 246, 0.1);
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 1000;
+    overflow: hidden;
+}
+
+/* === PANEL STATES (3 widths) === */
+.trion-panel[data-state="closed"] {
+    transform: translateX(calc(100% - 48px));
+}
+
+.trion-panel[data-state="half"] {
+    transform: translateX(0);
+    width: 400px;
+}
+
+.trion-panel[data-state="full"] {
+    transform: translateX(0);
+    width: 600px;
+}
+
+/* === RESIZE HANDLE === */
+.trion-handle {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 48px;
+    height: 100%;
+    background: linear-gradient(90deg, rgba(139, 92, 246, 0.05) 0%, transparent 100%);
+    border-right: 1px solid rgba(139, 92, 246, 0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    z-index: 10;
+}
+
+.trion-handle:hover {
+    background: linear-gradient(90deg, rgba(139, 92, 246, 0.12) 0%, transparent 100%);
+    border-right-color: rgba(139, 92, 246, 0.3);
+}
+
+.trion-handle:active {
+    background: rgba(139, 92, 246, 0.15);
+}
+
+.trion-handle-icon {
+    color: rgba(139, 92, 246, 0.7);
+    transition: color 0.2s ease;
+}
+
+.trion-handle:hover .trion-handle-icon {
+    color: rgba(139, 92, 246, 1);
+}
+
+/* Rotate icon based on state */
+.trion-panel[data-state="closed"] .trion-handle-icon svg {
+    transform: rotate(180deg);
+}
+
+/* === TAB BAR === */
+.trion-tabs {
+    margin-left: 48px; /* Space for handle */
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 8px 8px 0 8px;
+    background: rgba(0, 0, 0, 0.2);
+    border-bottom: 1px solid rgba(139, 92, 246, 0.1);
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: calc(100% - 48px);
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.25s ease 0.1s;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(139, 92, 246, 0.3) transparent;
+}
+
+.trion-panel[data-state="half"] .trion-tabs,
+.trion-panel[data-state="full"] .trion-tabs {
+    opacity: 1;
+}
+
+.trion-panel[data-state="closed"] .trion-tabs {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Custom scrollbar for tabs */
+.trion-tabs::-webkit-scrollbar {
+    height: 4px;
+}
+
+.trion-tabs::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.trion-tabs::-webkit-scrollbar-thumb {
+    background: rgba(139, 92, 246, 0.3);
+    border-radius: 2px;
+}
+
+.trion-tabs::-webkit-scrollbar-thumb:hover {
+    background: rgba(139, 92, 246, 0.5);
+}
+
+/* === TAB BUTTON === */
+.trion-tab {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(139, 92, 246, 0.05);
+    border: 1px solid rgba(139, 92, 246, 0.1);
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    color: #9ca3af;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    min-width: 80px;
+    max-width: 180px;
+}
+
+.trion-tab:hover {
+    background: rgba(139, 92, 246, 0.08);
+    border-color: rgba(139, 92, 246, 0.2);
+    color: #e5e7eb;
+}
+
+.trion-tab.active {
+    background: rgba(139, 92, 246, 0.15);
+    border-color: rgba(139, 92, 246, 0.3);
+    color: #ffffff;
+    box-shadow: 0 -2px 8px rgba(139, 92, 246, 0.2);
+}
+
+.trion-tab-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.trion-tab-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: rgba(139, 92, 246, 0.5);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    opacity: 0.6;
+}
+
+.trion-tab-close:hover {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    opacity: 1;
+}
+
+.trion-tab-close svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* === ADD TAB BUTTON === */
+.trion-tab-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: rgba(139, 92, 246, 0.05);
+    border: 1px solid rgba(139, 92, 246, 0.1);
+    border-radius: 6px;
+    color: rgba(139, 92, 246, 0.5);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-left: auto;
+}
+
+.trion-tab-add:not(:disabled):hover {
+    background: rgba(139, 92, 246, 0.12);
+    border-color: rgba(139, 92, 246, 0.3);
+    color: rgba(139, 92, 246, 0.8);
+}
+
+.trion-tab-add:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.trion-tab-add svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* === CONTENT AREA === */
+.trion-content {
+    margin-left: 48px; /* Space for handle */
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 20px;
+    opacity: 0;
+    transition: opacity 0.25s ease 0.1s;
+}
+
+.trion-panel[data-state="half"] .trion-content,
+.trion-panel[data-state="full"] .trion-content {
+    opacity: 1;
+}
+
+.trion-panel[data-state="closed"] .trion-content {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Custom scrollbar */
+.trion-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.trion-content::-webkit-scrollbar-track {
+    background: rgba(139, 92, 246, 0.05);
+    border-radius: 3px;
+}
+
+.trion-content::-webkit-scrollbar-thumb {
+    background: rgba(139, 92, 246, 0.3);
+    border-radius: 3px;
+}
+
+.trion-content::-webkit-scrollbar-thumb:hover {
+    background: rgba(139, 92, 246, 0.5);
+}
+
+/* === TAB CONTENT === */
+.trion-tab-content {
+    animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* === EMPTY STATE === */
+.trion-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #6b7280;
+    text-align: center;
+    opacity: 0.6;
+}
+
+.trion-empty-state svg {
+    width: 64px;
+    height: 64px;
+    margin-bottom: 16px;
+    color: rgba(139, 92, 246, 0.3);
+    animation: float 3s ease-in-out infinite;
+}
+
+.trion-empty-state p {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 8px 0;
+    color: #9ca3af;
+}
+
+.trion-empty-state small {
+    font-size: 12px;
+    color: #6b7280;
+}
+
+@keyframes float {
+    0%, 100% {
+        transform: translateY(0px);
+    }
+    50% {
+        transform: translateY(-10px);
+    }
+}
+
+/* === CONTENT RENDERERS === */
+
+/* Markdown Content */
+.markdown-content {
+    color: #e5e7eb;
+    line-height: 1.6;
+    font-size: 14px;
+}
+
+.markdown-content h1 {
+    font-size: 24px;
+    font-weight: 700;
+    margin: 0 0 16px 0;
+    color: #ffffff;
+    border-bottom: 2px solid rgba(139, 92, 246, 0.3);
+    padding-bottom: 8px;
+}
+
+.markdown-content h2 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 24px 0 12px 0;
+    color: #f3f4f6;
+}
+
+.markdown-content h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 20px 0 10px 0;
+    color: #d1d5db;
+}
+
+.markdown-content p {
+    margin: 0 0 12px 0;
+}
+
+.markdown-content strong {
+    color: #ffffff;
+    font-weight: 600;
+}
+
+.markdown-content em {
+    color: #9ca3af;
+    font-style: italic;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+    margin: 0 0 12px 0;
+    padding-left: 20px;
+}
+
+.markdown-content li {
+    margin-bottom: 4px;
+}
+
+.markdown-content code {
+    background: rgba(139, 92, 246, 0.1);
+    color: #a78bfa;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+}
+
+.markdown-content pre {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+    margin: 0 0 12px 0;
+}
+
+.markdown-content pre code {
+    background: none;
+    padding: 0;
+    color: #e5e7eb;
+}
+
+/* Code Content (for 'code' type tabs) */
+.trion-tab-content pre {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    color: #e5e7eb;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 0;
+}
+
+.trion-tab-content pre code {
+    color: inherit;
+    background: none;
+}
+
+/* Text Content (for 'text' type tabs) */
+.trion-tab-content > pre {
+    color: #d1d5db;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* === DOWNLOAD BUTTON (for future Phase 6) === */
+.trion-download-btn {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: rgba(139, 92, 246, 0.15);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    border-radius: 6px;
+    color: #a78bfa;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    z-index: 5;
+}
+
+.trion-download-btn:hover {
+    background: rgba(139, 92, 246, 0.25);
+    border-color: rgba(139, 92, 246, 0.5);
+    color: #c4b5fd;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+}
+
+.trion-download-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* === MOBILE RESPONSIVE === */
+@media (max-width: 768px) {
+    .trion-panel[data-state="half"],
+    .trion-panel[data-state="full"] {
+        width: 100vw;
+        transform: translateX(0);
+    }
+    
+    .trion-panel[data-state="closed"] {
+        transform: translateX(calc(100% - 48px));
+    }
+    
+    /* Backdrop for mobile */
+    .trion-panel[data-state="half"]::before,
+    .trion-panel[data-state="full"]::before {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(4px);
+        z-index: -1;
+    }
+}
+
+/* === TOUCH-FRIENDLY (Mobile) === */
+@media (hover: none) and (pointer: coarse) {
+    .trion-handle {
+        width: 56px;
+    }
+    
+    .trion-tab {
+        padding: 12px 14px;
+        font-size: 14px;
+    }
+    
+    .trion-tab-close {
+        width: 24px;
+        height: 24px;
+    }
+}
+
+/* === SCROLLBAR STYLING (Firefox) === */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(139, 92, 246, 0.3) transparent;
+}

@@ -27,14 +27,23 @@ MCPS: Dict[str, Dict[str, Any]] = {
         "enabled": True,
         "description": "Persistentes Memory mit Facts, Embeddings und Knowledge Graph",
     },
-    
+
     # ─────────────────────────────────────────────────────────────
-    # Sequential Thinking
+    # CORE: Sequential Thinking v2.0 (mit CIM Integration)
     # ─────────────────────────────────────────────────────────────
     "sequential-thinking": {
-        "url": os.getenv("MCP_SEQUENTIAL", "http://mcp-sequential:8085/mcp"),
+        "url": os.getenv("MCP_SEQUENTIAL_THINKING", "http://sequential-thinking:8085/mcp"),
         "enabled": True,
-        "description": "Sequential Thinking für komplexes Reasoning",
+        "description": "Sequential Thinking Engine v2.0 - Step-by-step reasoning with CIM validation",
+    },
+
+    # ─────────────────────────────────────────────────────────────
+    # CORE: CIM Server - Frank's Causal Intelligence Module (NEU!)
+    # ─────────────────────────────────────────────────────────────
+    "cim": {
+        "url": os.getenv("MCP_CIM", "http://cim-server:8086/mcp"),
+        "enabled": True,
+        "description": "Causal Intelligence Module - Graph building, validation, anti-pattern detection",
     },
     
     # ─────────────────────────────────────────────────────────────
@@ -96,3 +105,8 @@ def get_enabled_mcps() -> Dict[str, Dict[str, Any]]:
 def get_mcp_config(name: str) -> Dict[str, Any]:
     """Gibt Config für ein spezifisches MCP zurück."""
     return MCPS.get(name, {})
+
+
+def list_core_mcps() -> list:
+    """Listet alle Core MCPs auf (immer enabled)."""
+    return ["sql-memory", "sequential-thinking", "cim"]

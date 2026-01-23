@@ -1,6 +1,9 @@
 # adapters/jarvis/adapter.py
 """
 Jarvis Adapter - Native API Format.
+# NOTE: Sequential Thinking Mode bypasses this adapter.
+# Sequential requests go directly to /chat/sequential endpoint → MCP Server.
+# This adapter handles regular chat flow only.
 
 Jarvis nutzt ein einfaches, direktes JSON-Format:
 - Request: {"query": "...", "conversation_id": "...", "stream": true/false}

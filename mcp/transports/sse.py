@@ -28,6 +28,36 @@ class SSETransport:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
     
+    def _extract_mcp_content(self, result: Any) -> Any:
+        """
+        Extrahiert Content aus MCP Protocol Format.
+        
+        FastMCP Format: {"content": [{"type": "text", "text": "JSON_STRING"}]}
+        Diese Funktion extrahiert und parst den JSON-String.
+        """
+        if not isinstance(result, dict):
+            return result
+        
+        content = result.get("content", [])
+        if not content or not isinstance(content, list):
+            return result
+        
+        # Extrahiere ersten Text-Block
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text", "")
+                # Versuche JSON zu parsen
+                try:
+                    parsed = json.loads(text)
+                    log_debug(f"[SSE] Extracted MCP content: {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed)}")
+                    return parsed
+                except json.JSONDecodeError:
+                    # Kein JSON, gebe Text zurück
+                    return text
+        
+        return result
+
+    
     def list_tools(self) -> List[Dict[str, Any]]:
         """Holt Tool-Liste vom MCP."""
         try:
@@ -108,7 +138,7 @@ class SSETransport:
                             except json.JSONDecodeError:
                                 continue
             
-            return result_data or {}
+            return self._extract_mcp_content(result_data or {})
             
         except Exception as e:
             log_error(f"[SSE] call_tool failed: {e}")

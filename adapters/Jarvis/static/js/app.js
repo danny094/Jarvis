@@ -1,6 +1,9 @@
 // app.js - Main Application mit Settings & Debug
 
 import { getModels, checkHealth, setApiBase, getApiBase } from "./api.js";
+
+// Expose getApiBase to window for non-module scripts
+window.getApiBase = getApiBase;
 import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount } from "./chat.js";
 import { log, clearLogs, setVerbose } from "./debug.js";
 import { initSettings } from "./settings.js";
@@ -99,10 +102,28 @@ export async function initApp() {
     
     // Setup event listeners
     setupEventListeners();
-    
     // Init Maintenance UI
     initMaintenance();
+
+    // Init Sequential Thinking Mode
+    if (typeof SequentialThinking !== "undefined") {
+        if (!window.sequentialThinking) {
+            window.sequentialThinking = new SequentialThinking();
+            window.sequentialThinking.initUI();
+            log("info", "Sequential Thinking Mode initialized from app.js");
+        } else {
+            log("info", "Sequential Thinking Mode already initialized");
+        }
+    } else {
+        log("warn", "Sequential Thinking not available");
+    }
     
+    // Initialize Sequential Sidebar
+    if (typeof SequentialSidebar !== 'undefined') {
+        window.sequentialSidebar = new SequentialSidebar();
+        log("info", "Sequential Sidebar initialized");
+    }
+
     log("info", "Jarvis WebUI ready!");
 }
 async function checkConnection() {

@@ -1,0 +1,19 @@
+{
+  "action": "validate_before",
+  "step_id": "step_4",
+  "result": {
+    "success": true,
+    "step_id": "step_4",
+    "safe": true,
+    "derailed": false,
+    "violations": [],
+    "violation_count": 0,
+    "max_severity": 0,
+    "warnings": [],
+    "mitigations": [],
+    "quick_graph": {
+      "node_count": 6,
+      "edge_count": 5
+    }
+  }
+}

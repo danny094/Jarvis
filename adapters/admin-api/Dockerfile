@@ -19,7 +19,7 @@ COPY adapters/base.py /app/adapters/base.py
 COPY adapters/__init__.py /app/adapters/__init__.py
 
 # Copy application last
-COPY adapters/admin-api/main.py .
+COPY adapters/admin-api/*.py .
 
 EXPOSE 8200
 

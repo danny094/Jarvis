@@ -20,6 +20,7 @@ import logging
 # Import routers
 from maintenance.persona_routes import router as persona_router
 from maintenance.routes import router as maintenance_router
+# from sequential_routes import router as sequential_router  # REMOVED - old system
 
 # Import for chat functionality
 from adapters.lobechat.adapter import get_adapter
@@ -60,6 +61,7 @@ app.add_middleware(
 # Maintenance router needs explicit prefix
 app.include_router(persona_router)
 app.include_router(maintenance_router, prefix="/api/maintenance")
+# app.include_router(sequential_router)  # REMOVED - old system  # 🆕 Sequential Thinking Live Monitoring
 
 
 # ============================================================
@@ -122,7 +124,16 @@ async def chat(request: Request):
                                 "done": False,
                             }
                         
-                        # Final Done
+                        # Generic Event Handler (for all events with metadata)
+                        elif chunk_type and chunk_type != "content" and metadata:
+                            # Pass through events with all their metadata
+                            response_data = {
+                                "model": model,
+                                "created_at": created_at,
+                                **metadata,  # Include all metadata fields
+                                "done": False,
+                            }
+                        
                         elif is_done:
                             response_data = {
                                 "model": model,

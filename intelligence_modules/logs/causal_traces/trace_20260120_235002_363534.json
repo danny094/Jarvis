@@ -1,0 +1,18 @@
+{
+  "action": "validate_after",
+  "step_id": "step_6",
+  "result": {
+    "success": true,
+    "step_id": "step_6",
+    "valid": true,
+    "needs_correction": false,
+    "violations": [],
+    "consistency_score": 1.0,
+    "consistency_issues": [],
+    "graph": {
+      "mode": "LightGraphBuilder",
+      "node_count": 6,
+      "edge_count": 5
+    }
+  }
+}
