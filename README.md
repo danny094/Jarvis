@@ -1,3 +1,9 @@
+
+
+Uploading 2026-01-23 14-24-27.mov…
+
+
+
 <div align="center">
 
 # 🚀 TRION - AI Pipeline Framework
