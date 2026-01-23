@@ -89,11 +89,11 @@ sudo docker compose restart lobechat-adapter
 **Solution**: Implemented memory_list_conversations tool  
 **Result**: Now finds 5 conversations, 48 entries, 40 nodes
 
-See: [DEBUGGING_LOG.md](/assistant-proxy/DEBUGGING_LOG.md)
+See: [DEBUGGING_LOG.md](/DEBUGGING_LOG.md)
 
 ---
 
 ## References
 - [Core Architecture](/documentation/01_CORE.md)
 - [MCP Documentation](/documentation/03_MCP.md)  
-- [Debugging Log](/assistant-proxy/DEBUGGING_LOG.md)
+- [Debugging Log](/DEBUGGING_LOG.md)
