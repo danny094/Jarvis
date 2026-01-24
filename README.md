@@ -12,7 +12,7 @@ https://github.com/user-attachments/assets/22b30fbd-9c02-4de8-a14b-b981e9805285
 **A modular, self-hosted AI assistant architecture with intelligent reasoning capabilities**
 
 [![Discord](https://img.shields.io/discord/1234567890?label=Discord&logo=discord)](https://discord.gg/t8jAxMtk)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](docker-compose.yml)
 
 <img width="700" alt="TRION Architecture" src="https://github.com/user-attachments/assets/4958af72-a31b-45f7-951c-281b0d897739" />
