@@ -47,8 +47,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "*",  # Allow all origins for local network compatibility
         "http://localhost:8400",
-        "http://192.168.0.226:8400",
         "http://jarvis-webui:80"
     ],
     allow_credentials=True,

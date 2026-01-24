@@ -1,0 +1,171 @@
+<div align="center">
+
+# 🚀 TRION - AI Pipeline Framework
+
+**A modular, self-hosted AI assistant architecture with intelligent reasoning capabilities**
+
+[![Discord](https://img.shields.io/discord/1234567890?label=Discord&logo=discord)](https://discord.gg/t8jAxMtk)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](docker-compose.yml)
+
+<img width="700" alt="TRION Architecture" src="https://github.com/user-attachments/assets/4958af72-a31b-45f7-951c-281b0d897739" />
+
+</div>
+
+---
+
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| 🧠 **3-Layer Pipeline** | Thinking → Control → Output architecture for intelligent responses |
+| 🔄 **Sequential Thinking** | Step-by-step reasoning with live streaming |
+| 🎯 **CIM Integration** | Causal Inference Module for hallucination prevention |
+| 💾 **Memory System** | SQL + Graph + Semantic search for context-aware responses |
+| 🔌 **MCP Servers** | Model Context Protocol for extensible tool integration |
+| 🌐 **Multiple Adapters** | Jarvis WebUI, LobeChat, OpenAI-compatible API |
+| 🐳 **Docker Ready** | One-command deployment with docker-compose |
+| 🔒 **Self-Hosted** | 100% local, GDPR-compliant, no cloud dependencies |
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        ADAPTERS                                 │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐                │
+│  │   Jarvis   │  │  LobeChat  │  │  OpenAI    │                │
+│  │   WebUI    │  │  Adapter   │  │  Compat    │                │
+│  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘                │
+└────────┼───────────────┼───────────────┼────────────────────────┘
+         │               │               │
+         └───────────────┼───────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     CORE BRIDGE                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │   THINKING   │→ │   CONTROL    │→ │    OUTPUT    │          │
+│  │    Layer     │  │    Layer     │  │    Layer     │          │
+│  │              │  │              │  │              │          │
+│  │ • Intent     │  │ • LightCIM   │  │ • Response   │          │
+│  │ • Complexity │  │ • Sequential │  │ • Streaming  │          │
+│  │ • Planning   │  │ • Validation │  │ • Memory     │          │
+│  └──────────────┘  └──────────────┘  └──────────────┘          │
+└─────────────────────────────────────────────────────────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      MCP SERVERS                                │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│  │ Sequential  │  │    CIM      │  │ SQL-Memory  │             │
+│  │  Thinking   │  │   Server    │  │   Server    │             │
+│  └─────────────┘  └─────────────┘  └─────────────┘             │
+└─────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       OLLAMA                                    │
+│   DeepSeek-R1 | Llama 3.1 | Qwen | Any local model             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Docker & Docker Compose
+- Ollama with models installed (e.g., `ollama pull deepseek-r1:8b`)
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/trion.git
+cd trion
+
+# Start all services
+docker-compose up -d
+
+# Access the WebUI
+open http://localhost:8400
+```
+
+### Services
+
+| Service | Port | Description |
+|---------|------|-------------|
+| Jarvis WebUI | 8400 | Main user interface |
+| Admin API | 8200 | Backend API |
+| Ollama | 11434 | LLM inference |
+| SQL-Memory | 8010 | Memory MCP server |
+
+---
+
+## 📁 Project Structure
+
+```
+trion/
+├── adapters/              # Frontend adapters
+│   ├── Jarvis/            # Main WebUI
+│   ├── admin-api/         # Backend API
+│   └── lobechat/          # LobeChat compatibility
+├── core/                  # Core pipeline
+│   ├── bridge.py          # Main orchestrator
+│   └── layers/            # Thinking, Control, Output
+├── mcp-servers/           # MCP tool servers
+│   ├── sequential-thinking/
+│   └── cim-server/
+├── sql-memory/            # Memory system
+├── documentation/         # Detailed docs
+└── docker-compose.yml     # Deployment config
+```
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture v5](documentation/ARCHITECTURE_v5.md) | Detailed architecture docs |
+| [API Reference](documentation/API_REFERENCE.md) | API endpoints & usage |
+| [TRION Panel](documentation/TRION_PANEL_README.md) | Observability UI |
+| [Contributing](CONTRIBUTING.md) | Contribution guidelines |
+| [FAQ](FAQ.md) | Frequently asked questions |
+
+---
+
+## 🔧 Configuration
+
+Key environment variables in `docker-compose.yml`:
+
+```yaml
+OLLAMA_BASE: http://ollama:11434
+THINKING_MODEL: deepseek-r1:8b
+CONTROL_MODEL: deepseek-r1:8b
+OUTPUT_MODEL: llama3.1:8b
+```
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
+
+## 📜 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+<div align="center">
+
+**Built with ❤️ and AI assistance**
+
+[Discord](https://discord.gg/t8jAxMtk) · [Issues](https://github.com/yourusername/trion/issues) · [Docs](documentation/)
+
+</div>
