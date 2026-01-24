@@ -59,8 +59,10 @@ Ready to code? Check out:
 
 1. **Fork & Clone**
 ```bash
-git clone https://github.com/YOUR-USERNAME/Jarvis.git
+git clone https://github.com/danny094/Jarvis.git
 cd Jarvis
+docker compose build
+docker compose up -d
 ```
 
 2. **Install Dependencies**
