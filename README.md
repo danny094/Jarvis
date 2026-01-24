@@ -90,8 +90,8 @@ https://github.com/user-attachments/assets/22b30fbd-9c02-4de8-a14b-b981e9805285
 
 ```bash
 # Clone the repository
-git clone https://github.com/danny094/trion.git
-cd trion
+git clone https://github.com/danny094/Jarvis.git
+cd Jarvis
 
 # Start all services
 docker-compose up -d
