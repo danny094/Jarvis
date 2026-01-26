@@ -11,7 +11,7 @@ https://github.com/user-attachments/assets/22b30fbd-9c02-4de8-a14b-b981e9805285
 
 **A modular, self-hosted AI assistant architecture with intelligent reasoning capabilities**
 
-[![Discord](https://img.shields.io/discord/1234567890?label=Discord&logo=discord)]([https://discord.gg/t8jAxMtk](https://discord.gg/KaAUUQGX))
+[![Discord](https://img.shields.io/discord/<SERVER_ID>?label=Discord&logo=discord)](https://discord.gg/KaAUUQGX)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg?style=flat-square)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](docker-compose.yml)
 
