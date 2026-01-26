@@ -30,7 +30,7 @@ class Persona:
     def __init__(self, config: Dict[str, Any]):
         self.name = config.get("name", "Assistent")
         self.role = config.get("role", "AI Assistent")
-        self.language = config.get("language", "deutsch")
+        self.language = config.get("language", "english")
         self.user_name = config.get("user_name", "User")
         self.user_context = config.get("user_context", [])
         self.personality = config.get("personality", [])
@@ -106,7 +106,7 @@ def parse_persona_txt(content: str) -> Dict[str, Any]:
     config = {
         "name": "Unknown",
         "role": "AI Assistant",
-        "language": "deutsch",
+        "language": "english",
         "user_name": "User",
         "user_context": [],
         "personality": [],

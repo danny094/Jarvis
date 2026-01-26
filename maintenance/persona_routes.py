@@ -310,7 +310,7 @@ async def upload_persona(name: str, file: UploadFile = File(...)) -> Dict[str, A
             detail="Internal server error during upload"
         )
 
-@router.put("/switch")
+@router.put("/{name}/switch")
 async def switch_active_persona(name: str) -> Dict[str, Any]:
     """
     Switch to different persona (hot-reload).
