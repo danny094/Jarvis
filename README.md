@@ -17,11 +17,12 @@
 
 ***Easy MCP Drag and Drop install***
 <div align="center">
-
+</div>
 
 [![Video Vorschaubild](https://img.youtube.com/vi/k627-Eu-i5U/0.jpg)](https://www.youtube.com/watch?v=ryk627-Eu-i5U)
 <div align="center">
 
+</div>
 
 ***Expandable plugin system***
 <div align="center">
@@ -29,15 +30,19 @@
 [![Video Vorschaubild](https://img.youtube.com/vi/TzkBheaJAcE/0.jpg)](https://www.youtube.com/watch?v=TzkBheaJAcE)
 <div align="center">
 
+</div>
+
 ***Upload and edit your own persona***
 <img width="1866" height="913" alt="Bildschirmfoto 2026-01-27 um 03 24 39" src="https://github.com/user-attachments/assets/64bd0cf0-3d86-4960-8989-ca5ed32d3096" />
+
+</div>
 
 ***Ready for the future***
 <img width="1866" height="958" alt="Bildschirmfoto 2026-01-27 um 03 27 52" src="https://github.com/user-attachments/assets/f22b7851-09a6-48d0-bfca-49d51526c330" />
 
 
+</div>
 ---
-
 ## ✨ Features
 
 | Feature | Description |
