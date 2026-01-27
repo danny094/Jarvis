@@ -1,1 +1,0 @@
-# nur damit Python den Ordner als Package erkennt
