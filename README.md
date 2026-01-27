@@ -261,5 +261,6 @@ grep "Flat event" /DATA/.../static/js/api.js
 
 ---
 
-
+### Contributors
+@frankbrsrkagentarium Provided the `CIM module` 
 
