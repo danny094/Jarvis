@@ -15,8 +15,18 @@ from typing import Optional, Dict, Any, Generator, Tuple, AsyncGenerator, List
 from .models import CoreChatRequest, CoreChatResponse
 from .layers import ThinkingLayer, ControlLayer, OutputLayer
 
-from config import OLLAMA_BASE, ENABLE_CONTROL_LAYER, SKIP_CONTROL_ON_LOW_RISK
+from config import OLLAMA_BASE, ENABLE_CONTROL_LAYER, SKIP_CONTROL_ON_LOW_RISK, ENABLE_CHUNKING, CHUNKING_THRESHOLD
 from utils.logger import log_debug, log_error, log_info, log_warn
+from utils.workspace import (
+    get_workspace_manager,
+    ChunkData,
+    ChunkStatus,
+    SessionStatus,
+)
+from utils.chunker import (
+    needs_chunking,
+    count_tokens,
+)
 from mcp.client import (
     autosave_assistant,
     get_fact_for_query,
@@ -220,7 +230,7 @@ class CoreBridge:
         # Execute Sequential Thinking if needed - BEFORE Control-Skip!
         # This ensures Sequential runs even when Control is skipped.
         
-        if thinking_plan.get("needs_sequential_thinking", False):
+        if thinking_plan.get('needs_sequential_thinking', False) or thinking_plan.get('sequential_thinking_required', False):
             log_info("[CoreBridge] 🆕 Sequential Thinking detected - executing BEFORE Control...")
             
             # Call Sequential Thinking via ControlLayer
@@ -364,6 +374,169 @@ class CoreBridge:
     # ═══════════════════════════════════════════════════════════════
     # STREAMING VERSION MIT LIVE THINKING
     # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
+    # CHUNKING ORCHESTRATOR (v2 - Hybrid: Code + 1x LLM)
+    # ═══════════════════════════════════════════════════════════════
+    
+    async def _process_chunked_stream(
+        self, 
+        user_text: str, 
+        conversation_id: str,
+        request: "CoreChatRequest"
+    ) -> AsyncGenerator[Tuple[str, bool, Dict], None]:
+        """
+        Verarbeitet lange Texte mit MCP document-processor.
+        
+        v3 Workflow (MCP-BASED):
+        1. Preprocess via MCP (~1 Sek)
+        2. Structure Analysis via MCP (~1 Sek)
+        3. EIN LLM-Aufruf mit kompakter Summary (~15-20 Sek)
+        4. Ergebnis zurück
+        
+        Yields:
+            Progress-Events für Frontend
+        """
+        log_info(f"[CoreBridge-Chunking] v3 MCP-basierte Analyse startet...")
+        
+        # Get MCP Hub
+        hub = get_hub()
+        
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 1: Preprocessing via MCP
+        # ═══════════════════════════════════════════════════════════
+        
+        yield ("", False, {
+            "type": "document_analysis_start",
+            "message": "Preprocessing document...",
+        })
+        
+        # Preprocess text via MCP
+        try:
+            preprocess_result = hub.call_tool("preprocess", {
+                "text": user_text,
+                "add_paragraph_ids": True,
+                "normalize_whitespace": True,
+                "remove_artifacts": True
+            })
+            processed_text = preprocess_result.get("text", user_text)
+            log_info(f"[CoreBridge-Chunking] Preprocessed: {len(processed_text)} chars")
+        except Exception as e:
+            log_error(f"[CoreBridge-Chunking] Preprocess failed: {e}, using raw text")
+            processed_text = user_text
+        
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 2: Structure Analysis via MCP
+        # ═══════════════════════════════════════════════════════════
+        
+        yield ("", False, {
+            "type": "document_analysis_progress",
+            "message": "Analyzing document structure...",
+        })
+        
+        # Analyze structure via MCP
+        try:
+            structure = hub.call_tool("analyze_structure", {
+                "text": processed_text
+            })
+            
+            log_info(f"[CoreBridge-Chunking] Structure: {structure.get('heading_count', 0)} Headings, "
+                    f"{structure.get('code_blocks', 0)} Code-Blöcke, "
+                    f"Complexity {structure.get('complexity', 0)}/10")
+            
+            # Build compact summary from structure
+            compact_summary = self._build_summary_from_structure(structure)
+            
+        except Exception as e:
+            log_error(f"[CoreBridge-Chunking] Structure analysis failed: {e}")
+            structure = {
+                "heading_count": 0,
+                "code_blocks": 0,
+                "complexity": 5,
+                "keywords": [],
+                "intro": processed_text[:500]
+            }
+            compact_summary = f"Text ({len(processed_text)} chars)"
+        
+        # Phase 2 fertig
+        yield ("", False, {
+            "type": "document_analysis_done",
+            "structure": {
+                "total_chars": structure.get("total_chars", len(processed_text)),
+                "total_tokens": structure.get("total_tokens", len(processed_text) // 4),
+                "total_lines": structure.get("total_lines", processed_text.count('\n')),
+                "heading_count": structure.get("heading_count", 0),
+                "headings": structure.get("headings", [])[:10],  # Top 10
+                "code_blocks": structure.get("code_blocks", 0),
+                "code_languages": structure.get("languages", []),
+                "keywords": structure.get("keywords", []),
+                "estimated_complexity": structure.get("complexity", 5),
+            },
+            "message": f"Struktur erkannt: {structure.get('heading_count', 0)} Abschnitte, {structure.get('code_blocks', 0)} Code-Blöcke",
+        })
+        
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 3: EIN LLM-Aufruf mit kompakter Info
+        # ═══════════════════════════════════════════════════════════
+        
+        yield ("", False, {
+            "type": "thinking_start",
+            "message": "Analysiere Inhalt...",
+        })
+        
+        # Baue Prompt für ThinkingLayer
+        analysis_prompt = f"""Analysiere folgendes Dokument anhand der Struktur-Übersicht:
+
+{compact_summary}
+
+Der User hat dieses Dokument gesendet. Was ist sein wahrscheinlicher Intent?
+Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
+        
+        # EIN LLM-Aufruf
+        thinking_result = await self.thinking.analyze(analysis_prompt)
+        
+        log_info(f"[CoreBridge-Chunking] ThinkingLayer: intent={thinking_result.get('intent')}, needs_sequential={thinking_result.get('needs_sequential_thinking')}")
+        
+        # ═══════════════════════════════════════════════════════════
+        # DONE - Ergebnisse zusammenführen
+        # ═══════════════════════════════════════════════════════════
+        
+        yield ("", False, {
+            "type": "chunking_done",
+            "conversation_id": conversation_id,
+            "method": "mcp_v3",
+            "aggregated_summary": compact_summary,
+            "structure": {
+                "headings": structure.get("headings", []),
+                "keywords": structure.get("keywords", []),
+                "complexity": structure.get("complexity", 5),
+            },
+            "thinking_result": thinking_result,
+            "needs_sequential_any": thinking_result.get('needs_sequential_thinking', False) or thinking_result.get('sequential_thinking_required', False),
+            "max_complexity": structure.get("complexity", 5),
+        })
+    
+    def _build_summary_from_structure(self, structure: Dict) -> str:
+        """Build compact summary from MCP structure analysis."""
+        lines = []
+        lines.append(f"# Document Overview")
+        lines.append(f"- Size: {structure.get('total_chars', 0)} chars, {structure.get('total_tokens', 0)} tokens")
+        lines.append(f"- Complexity: {structure.get('complexity', 0)}/10")
+        
+        if structure.get('headings'):
+            lines.append(f"\n## Structure ({len(structure['headings'])} headings):")
+            for h in structure['headings'][:5]:
+                lines.append(f"- {h.get('level', 1)*'#'} {h.get('text', '')}")
+        
+        if structure.get('keywords'):
+            lines.append(f"\n## Keywords: {', '.join(structure['keywords'][:10])}")
+        
+        if structure.get('intro'):
+            lines.append(f"\n## Intro:\n{structure['intro'][:300]}...")
+        
+        return '\n'.join(lines)
+
+
     async def process_stream(self, request: CoreChatRequest) -> AsyncGenerator[Tuple[str, bool, Dict], None]:
         """
         Streaming-Version von process() MIT LIVE THINKING.
@@ -382,42 +555,100 @@ class CoreBridge:
         conversation_id = request.conversation_id
 
         # ═══════════════════════════════════════════════════════════
+        # 🆕 CHUNKING CHECK - Vor allem anderen!
+        # ═══════════════════════════════════════════════════════════
+        chunking_context = None
+        
+        # DEBUG LOGGING FOR CHUNKING
+        log_info(f"[CoreBridge-Debug] ENABLE_CHUNKING={ENABLE_CHUNKING}")
+        log_info(f"[CoreBridge-Debug] CHUNKING_THRESHOLD={CHUNKING_THRESHOLD}")
+        log_info(f"[CoreBridge-Debug] User text len: {len(user_text)} chars")
+        log_info(f"[CoreBridge-Debug] needs_chunking result: {needs_chunking(user_text, CHUNKING_THRESHOLD)}")
+
+        if ENABLE_CHUNKING and needs_chunking(user_text, CHUNKING_THRESHOLD):
+            log_info(f"[CoreBridge] 🆕 Long input detected ({count_tokens(user_text)} tokens) - starting chunked processing")
+            
+            # Chunked Processing durchführen
+            async for event in self._process_chunked_stream(user_text, conversation_id, request):
+                chunk_text, is_done, metadata = event
+                
+                # Events ans Frontend durchreichen
+                yield event
+                
+                # Aggregierte Summary für späteren Kontext speichern
+                if metadata.get("type") == "chunking_done":
+                    chunking_context = {
+                        "aggregated_summary": metadata.get("aggregated_summary", ""),
+                        "needs_sequential_any": metadata.get("needs_sequential_any", False),
+                        "max_complexity": metadata.get("max_complexity", 0),
+                        "chunks_processed": metadata.get("chunks_processed", 0),
+                        "thinking_result": metadata.get("thinking_result", {}),  # 🆕 ThinkingResult speichern!
+                    }
+            
+            # Wenn Chunking stattfand, user_text durch Summary ersetzen für Layer 1
+            if chunking_context and chunking_context.get("aggregated_summary"):
+                log_info(f"[CoreBridge] Using aggregated summary as context ({len(chunking_context['aggregated_summary'])} chars)")
+
+
+        # ═══════════════════════════════════════════════════════════
         # LAYER 1: THINKING (DeepSeek) - LIVE STREAMING! 🧠
         # ═══════════════════════════════════════════════════════════
-        log_info("[CoreBridge] === LAYER 1: THINKING (STREAMING) ===")
         
         thinking_plan = {}
         thinking_text = ""
         
-        async for chunk, is_done, plan in self.thinking.analyze_stream(user_text):
-            if not is_done:
-                # Live thinking chunk
-                thinking_text += chunk
-                yield ("", False, {
-                    "type": "thinking_stream",
-                    "thinking_chunk": chunk
-                })
-            else:
-                # Thinking fertig - Plan erhalten
-                thinking_plan = plan
-                
-                # Sende "Thinking Done" Signal
-                yield ("", False, {
-                    "type": "thinking_done",
-                    "thinking": {
-                        "intent": thinking_plan.get("intent", ""),
-                        "needs_memory": thinking_plan.get("needs_memory", False),
-                        "memory_keys": thinking_plan.get("memory_keys", []),
-                        "needs_chat_history": thinking_plan.get("needs_chat_history", False),
-                        "hallucination_risk": thinking_plan.get("hallucination_risk", "medium"),
-                        "reasoning": thinking_plan.get("reasoning", ""),
-                        "is_fact_query": thinking_plan.get("is_fact_query", False),
-                        "is_new_fact": thinking_plan.get("is_new_fact", False),
-                    }
-                })
-        
-        log_info(f"[CoreBridge-Thinking] intent={thinking_plan.get('intent')}")
-        log_info(f"[CoreBridge-Thinking] hallucination_risk={thinking_plan.get('hallucination_risk')}")
+        # 🆕 SKIP Layer 1 wenn Chunking bereits ThinkingLayer aufgerufen hat!
+        if chunking_context and chunking_context.get("thinking_result"):
+            log_info("[CoreBridge] === LAYER 1: THINKING === SKIPPED (using chunking result)")
+            thinking_plan = chunking_context["thinking_result"]
+            log_info(f"[CoreBridge] DEBUG: needs_sequential_thinking from chunking = {thinking_plan.get('needs_sequential_thinking', False)}")
+            log_info(f"[CoreBridge] DEBUG: thinking_plan from chunking = {thinking_plan}")
+            
+            # Sende Thinking Done mit Chunking-Result
+            yield ("", False, {
+                "type": "thinking_done",
+                "thinking": {
+                    "intent": thinking_plan.get("intent", ""),
+                    "needs_memory": thinking_plan.get("needs_memory", False),
+                    "memory_keys": thinking_plan.get("memory_keys", []),
+                    "needs_chat_history": thinking_plan.get("needs_chat_history", False),
+                    "hallucination_risk": thinking_plan.get("hallucination_risk", "medium"),
+                    "reasoning": thinking_plan.get("reasoning", ""),
+                    "is_fact_query": thinking_plan.get("is_fact_query", False),
+                    "is_new_fact": thinking_plan.get("is_new_fact", False),
+                },
+                "source": "chunking_analysis"
+            })
+        else:
+            # Normale Layer 1 Ausführung
+            log_info("[CoreBridge] === LAYER 1: THINKING (STREAMING) ===")
+            
+            async for chunk, is_done, plan in self.thinking.analyze_stream(user_text):
+                if not is_done:
+                    # Live thinking chunk
+                    thinking_text += chunk
+                    yield ("", False, {
+                        "type": "thinking_stream",
+                        "thinking_chunk": chunk
+                    })
+                else:
+                    # Thinking fertig - Plan erhalten
+                    thinking_plan = plan
+                    
+                    # Sende "Thinking Done" Signal
+                    yield ("", False, {
+                        "type": "thinking_done",
+                        "thinking": {
+                            "intent": thinking_plan.get("intent", ""),
+                            "needs_memory": thinking_plan.get("needs_memory", False),
+                            "memory_keys": thinking_plan.get("memory_keys", []),
+                            "needs_chat_history": thinking_plan.get("needs_chat_history", False),
+                            "hallucination_risk": thinking_plan.get("hallucination_risk", "medium"),
+                            "reasoning": thinking_plan.get("reasoning", ""),
+                            "is_fact_query": thinking_plan.get("is_fact_query", False),
+                            "is_new_fact": thinking_plan.get("is_new_fact", False),
+                        }
+                    })
         
         # ═══════════════════════════════════════════════════════════
         # MEMORY RETRIEVAL - Non-Streaming
@@ -452,20 +683,30 @@ class CoreBridge:
         # ═══════════════════════════════════════════════════════════
         # 🆕 SEQUENTIAL THINKING CHECK (BEFORE Control!)
         # ═══════════════════════════════════════════════════════════
-        # 🆕 SEQUENTIAL THINKING CHECK (BEFORE Control!)
-        # ═══════════════════════════════════════════════════════════
-        if thinking_plan.get("needs_sequential_thinking", False):
+        if thinking_plan.get('needs_sequential_thinking', False) or thinking_plan.get('sequential_thinking_required', False):
             log_info("[CoreBridge-Stream] 🆕 Sequential Thinking detected - streaming events...")
+            
+            # 🆕 FIX: Wenn Chunking stattfand, verwende Summary statt vollen Text!
+            sequential_input = user_text
+            if chunking_context and chunking_context.get("aggregated_summary"):
+                # Baue kompakten Input: Intent + Summary
+                user_intent = thinking_plan.get("intent", "Analyse des Dokuments")
+                summary = chunking_context["aggregated_summary"]
+                sequential_input = f"""User-Anfrage: {user_intent}
+
+Dokument-Zusammenfassung:
+{summary}
+
+Bitte analysiere basierend auf dieser Zusammenfassung."""
+                log_info(f"[CoreBridge-Stream] Using chunking summary for Sequential ({len(sequential_input)} chars instead of {len(user_text)})")
             
             # Call Sequential Thinking Stream (emittiert Events)
             async for event in self.control._check_sequential_thinking_stream(
-                user_text=user_text,
+                user_text=sequential_input,
                 thinking_plan=thinking_plan
             ):
                 # Einfach durchreichen - KEINE Panel-Logik hier!
                 yield ("", False, event)
-
-
         # ═══════════════════════════════════════════════════════════
         # LAYER 2: CONTROL - Non-Streaming (optional skip)
         # ═══════════════════════════════════════════════════════════
@@ -506,6 +747,12 @@ class CoreBridge:
         high_risk = thinking_plan.get("hallucination_risk") == "high"
         memory_required_but_missing = needs_memory and high_risk and not memory_used
         
+        # 🆕 Chunking-Kontext hinzufügen wenn vorhanden
+        if chunking_context and chunking_context.get("aggregated_summary"):
+            chunking_summary = chunking_context["aggregated_summary"]
+            retrieved_memory = f"=== DOCUMENT ANALYSIS ===\n{chunking_summary}\n\n=== ADDITIONAL CONTEXT ===\n{retrieved_memory}" if retrieved_memory else f"=== DOCUMENT ANALYSIS ===\n{chunking_summary}"
+            log_info(f"[CoreBridge] Added chunking context to memory_data")
+
         # Sammle komplette Antwort für Memory-Save
         full_answer = ""
         

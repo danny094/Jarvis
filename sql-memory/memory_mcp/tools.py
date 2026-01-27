@@ -775,3 +775,61 @@ def register_tools(mcp):
             
         except Exception as e:
             return {"error": str(e), "pruned": 0}
+
+    # --------------------------------------------------
+    # memory_reset (NEW - FOR FORCE CLEAR)
+    # --------------------------------------------------
+    @mcp.tool
+    def memory_reset() -> Dict:
+        """
+        Wipes ALL memory, graph nodes, and edges.
+        EXTREMELY DANGEROUS - IRREVERSIBLE.
+        """
+        import sqlite3
+        from .config import DB_PATH
+        
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Delete content from all tables
+            c.execute("DELETE FROM memory")
+            memory_count = c.rowcount
+            
+            c.execute("DELETE FROM graph_edges")
+            edges_count = c.rowcount
+            
+            c.execute("DELETE FROM graph_nodes")
+            nodes_count = c.rowcount
+            
+            # Try to clear FTS if possible
+            try:
+                c.execute("DELETE FROM memory_fts")
+            except:
+                pass
+                
+            conn.commit()
+            conn.close()
+            
+            # Reset Vector Store if possible
+            try:
+                from vector_store import get_vector_store
+                vs = get_vector_store()
+                if hasattr(vs, "reset"):
+                    vs.reset()
+                elif hasattr(vs, "clear"):
+                    vs.clear()
+            except Exception as e:
+                print(f"[memory_reset] Vector store reset failed: {e}")
+            
+            return {
+                "success": True,
+                "deleted": {
+                    "memory_entries": memory_count,
+                    "graph_nodes": nodes_count,
+                    "graph_edges": edges_count
+                }
+            }
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}

@@ -1,0 +1,15 @@
+{
+  "query": "",
+  "mode": "LightGraphBuilder",
+  "source": "auto_selector",
+  "graph": {
+    "nodes": [],
+    "edges": [],
+    "metrics": {
+      "node_count": 0,
+      "edge_count": 0,
+      "is_dag": true,
+      "density": 0
+    }
+  }
+}

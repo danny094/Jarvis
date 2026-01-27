@@ -42,7 +42,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,  # Must be False when using wildcard
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -59,6 +59,15 @@ app.include_router(maintenance_router, prefix="/api/maintenance")
 async def health():
     """Health-Check Endpoint."""
     return {"status": "ok", "adapter": "lobechat"}
+
+
+@app.get("/api/version")
+async def api_version():
+    """
+    Ollama Version Endpoint.
+    OpenWebUI checks this to verify connection.
+    """
+    return {"version": "0.1.0"}
 
 
 @app.post("/api/chat")

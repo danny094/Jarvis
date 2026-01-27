@@ -10,6 +10,10 @@ let conversationId = `webui-${Date.now()}`;
 let isProcessing = false;
 let historyLimit = 10;
 
+// Storage Key für Chat Persistenz
+const CHAT_STORAGE_KEY = 'jarvis-chat-messages';
+const CONV_STORAGE_KEY = 'jarvis-conversation-id';
+
 // ═══════════════════════════════════════════════════════════
 // SETTERS & GETTERS
 // ═══════════════════════════════════════════════════════════
@@ -35,6 +39,57 @@ export function getMessageCount() {
     return messages.length;
 }
 
+// ═══════════════════════════════════════════════════════════
+// CHAT PERSISTENZ (localStorage)
+// ═══════════════════════════════════════════════════════════
+function saveChatToStorage() {
+    try {
+        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
+        localStorage.setItem(CONV_STORAGE_KEY, conversationId);
+        log("debug", `Chat saved: ${messages.length} messages`);
+    } catch (e) {
+        log("error", `Failed to save chat: ${e.message}`);
+    }
+}
+
+function loadChatFromStorage() {
+    try {
+        const savedMessages = localStorage.getItem(CHAT_STORAGE_KEY);
+        const savedConvId = localStorage.getItem(CONV_STORAGE_KEY);
+        
+        if (savedMessages) {
+            messages = JSON.parse(savedMessages);
+            log("info", `Chat restored: ${messages.length} messages`);
+        }
+        if (savedConvId) {
+            conversationId = savedConvId;
+        }
+    } catch (e) {
+        log("error", `Failed to load chat: ${e.message}`);
+        messages = [];
+    }
+}
+
+function renderSavedMessages() {
+    if (messages.length === 0) return;
+    
+    const welcome = document.getElementById("welcome-message");
+    if (welcome) welcome.classList.add("hidden");
+    
+    log("info", `Rendering ${messages.length} saved messages`);
+    
+    for (const msg of messages) {
+        renderMessage(msg.role, msg.content, false);
+    }
+    
+    updateHistoryDisplay(messages.length, Math.min(messages.length, historyLimit * 2));
+}
+
+// Exportiere init Funktion für App
+export function initChatFromStorage() {
+    loadChatFromStorage();
+    renderSavedMessages();
+}
 
 // ═══════════════════════════════════════════════════════════
 // INLINE CONTROL BLOCK (Sequential Thinking - Claude-Style)
@@ -503,6 +558,7 @@ export async function handleUserMessage(text) {
     // User message
     renderMessage("user", text);
     messages.push({ role: "user", content: text });
+    saveChatToStorage();  // Persist after user message
 
     // === SEQUENTIAL MODE INTEGRATION ===
     // [DISABLED - New system uses event dispatcher]
@@ -669,6 +725,7 @@ export async function handleUserMessage(text) {
             updateMessage(botMsgId, fullResponse, false);
         }
         messages.push({ role: "assistant", content: fullResponse });
+        saveChatToStorage();  // Persist after assistant response
 
         // Update history display
         updateHistoryDisplay(messages.length, messagesToSend.length);
@@ -758,10 +815,15 @@ function showCodeModelIndicator() {
 export function clearChat() {
     messages = [];
     conversationId = `webui-${Date.now()}`;
+    
+    // Clear localStorage
+    localStorage.removeItem(CHAT_STORAGE_KEY);
+    localStorage.removeItem(CONV_STORAGE_KEY);
+    
     document.getElementById("messages-list").innerHTML = "";
     const welcome = document.getElementById("welcome-message");
     if (welcome) welcome.classList.remove("hidden");
 
     updateHistoryDisplay(0, 0);
-    log("info", "Chat cleared");
+    log("info", "Chat cleared (including localStorage)");
 }

@@ -11,7 +11,13 @@ let eventSource = null;
 // ═══════════════════════════════════════════════════════════
 export function initMaintenance() {
     // Modal öffnen
-    document.getElementById("maintenance-btn").addEventListener("click", async () => {
+    const maintenanceBtn = document.getElementById("maintenance-btn");
+    if (!maintenanceBtn) {
+        console.log('[Maintenance] Maintenance button not found - skipping');
+        return;
+    }
+    
+    maintenanceBtn.addEventListener("click", async () => {
         document.getElementById("maintenance-modal").classList.remove("hidden");
         await loadStatus();
         lucide.createIcons();

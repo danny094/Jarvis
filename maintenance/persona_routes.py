@@ -73,8 +73,10 @@ def _validate_persona_name(name: str) -> bool:
     if ".." in name or "/" in name or "\\" in name:
         return False
     
-    # Alphanumeric + dash + underscore only
-    if not name.replace("-", "").replace("_", "").isalnum():
+    # Updated to allow spaces, dots, dashes, underscores
+    # Regex: ^[a-zA-Z0-9 _.-]+$
+    import re
+    if not re.match(r'^[a-zA-Z0-9 _.-]+$', name):
         return False
     
     return True
@@ -316,7 +318,7 @@ async def switch_active_persona(name: str) -> Dict[str, Any]:
     Switch to different persona (hot-reload).
     
     Args:
-        name: Persona name to switch to (query parameter)
+        name: Persona name to switch to (path parameter)
     
     Returns:
         {
