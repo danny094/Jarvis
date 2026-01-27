@@ -22,11 +22,23 @@ class LightCIM:
     def __init__(self):
         self.danger_keywords = [
             "harm", "hurt", "kill", "attack", "weapon",
-            "illegal", "hack", "exploit", "steal"
+            "illegal", "hack", "exploit", "steal", 
+            "murder", "assault", "abuse", "torture",
+            "bomb", "gun", "knife", "firearm",
+            "terror", "terrorism", "hostage",
+            "poison", "overdose", "suicide",
+            "threat", "blackmail", "extort",
+            "fraud", "scam", "impersonate" 
         ]
         self.sensitive_keywords = [
-            "password", "credit card", "ssn", "social security",
-            "bank account", "api key", "secret"
+            "password", "passcode", "pin",
+            "credit card", "debit card", "cvv", "cvc",
+            "ssn", "social security",
+            "bank account", "iban", "swift",
+            "api key", "apikey", "token",
+            "secret", "private key", "seed phrase",
+            "oauth", "bearer token",
+            "login", "credentials", "auth"
         ]
 
     def validate_basic(
