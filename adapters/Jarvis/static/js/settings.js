@@ -98,6 +98,11 @@ function setupBasicSettings() {
     const historySlider = document.getElementById('history-length');
     const historyValue = document.getElementById('history-length-value');
     
+    if (!historySlider || !historyValue) {
+        console.log('[Settings] History slider not found - skipping basic settings');
+        return;
+    }
+    
     historySlider.value = currentSettings.historyLength;
     historyValue.textContent = currentSettings.historyLength;
     
@@ -129,7 +134,9 @@ function setupBasicSettings() {
 }
 
 function updateToggle(toggle, isOn) {
+    if (!toggle) return;
     const slider = toggle.querySelector('span');
+    if (!slider) return;
     
     if (isOn) {
         toggle.classList.remove('bg-dark-border');
@@ -149,13 +156,18 @@ function updateToggle(toggle, isOn) {
 // ═══════════════════════════════════════════════════════════════
 
 function setupModelSettings() {
-    // Load models from Ollama
-    loadModelsFromOllama();
-    
     // Setup model selects
     const thinkingSelect = document.getElementById('thinking-model');
     const controlSelect = document.getElementById('control-model');
     const outputSelect = document.getElementById('output-model');
+    
+    if (!thinkingSelect || !controlSelect || !outputSelect) {
+        console.log('[Settings] Model select elements not found - skipping model settings');
+        return;
+    }
+    
+    // Load models from Ollama
+    loadModelsFromOllama();
     
     thinkingSelect.addEventListener('change', (e) => {
         currentSettings.models.thinking = e.target.value;
@@ -186,6 +198,11 @@ async function loadModelsFromOllama() {
     const thinkingSelect = document.getElementById('thinking-model');
     const controlSelect = document.getElementById('control-model');
     const outputSelect = document.getElementById('output-model');
+    
+    if (!thinkingSelect || !controlSelect || !outputSelect) {
+        console.log('[Settings] Model selects not found - skipping model load');
+        return;
+    }
     
     try {
         const response = await fetch(`${currentSettings.apiBase}/api/tags`);
@@ -284,6 +301,12 @@ function setupPersonaTab() {
         switchBtn.addEventListener('click', handleSwitchPersona);
     }
     
+    // Edit persona button
+    const editBtn = document.getElementById('edit-persona-btn');
+    if (editBtn) {
+        editBtn.addEventListener('click', handleEditPersona);
+    }
+    
     // Upload persona button
     const uploadBtn = document.getElementById('upload-persona-btn');
     if (uploadBtn) {
@@ -297,6 +320,9 @@ function setupPersonaTab() {
     }
     
     console.log('[Personas] Persona tab setup complete');
+    
+    // Load personas immediately (don't wait for tab switch)
+    loadPersonas();
 }
 
 async function loadPersonas() {
@@ -515,7 +541,14 @@ function handleFileInputChange(e) {
     }
 }
 
+async function handleEditPersona() {
+    console.log('[Personas] 🎯 handleEditPersona CALLED!');
+    console.log('[Personas] Edit persona clicked');
+    alert('Edit Persona functionality coming soon! For now, you can upload a custom persona using the Upload button.');
+}
+
 async function handleUploadPersona() {
+    console.log('[Personas] 🎯 handleUploadPersona CALLED!');
     const fileInput = document.getElementById('persona-file-input');
     const btn = document.getElementById('upload-persona-btn');
     const validationDiv = document.getElementById('upload-validation');
@@ -627,29 +660,48 @@ window.deletePersona = async function(name) {
 
 function setupModalButtons() {
     // Open button
-    document.getElementById('settings-btn').addEventListener('click', openSettings);
+    const settingsBtn = document.getElementById('settings-btn');
+    if (settingsBtn) {
+        settingsBtn.addEventListener('click', openSettings);
+    }
     
     // Close buttons
-    document.getElementById('close-settings-btn').addEventListener('click', closeSettings);
-    document.getElementById('close-settings-btn-footer').addEventListener('click', closeSettings);
+    const closeBtn = document.getElementById('close-settings-btn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closeSettings);
+    }
+    
+    const closeBtnFooter = document.getElementById('close-settings-btn-footer');
+    if (closeBtnFooter) {
+        closeBtnFooter.addEventListener('click', closeSettings);
+    }
     
     // Reset button
-    document.getElementById('reset-settings-btn').addEventListener('click', () => {
+    const resetBtn = document.getElementById('reset-settings-btn');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', () => {
         if (confirm('Reset all settings to defaults?')) {
             currentSettings = { ...DEFAULT_SETTINGS };
             localStorage.removeItem("sequential_sensitivity"); // Clear sequential slider
             saveSettings();
             location.reload(); // Reload to apply defaults
         }
-    });
+        });
+    }
 }
 
 function openSettings() {
-    document.getElementById('settings-modal').classList.remove('hidden');
+    const modal = document.getElementById('settings-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+    }
 }
 
 function closeSettings() {
-    document.getElementById('settings-modal').classList.add('hidden');
+    const modal = document.getElementById('settings-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════

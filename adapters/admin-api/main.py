@@ -46,12 +46,8 @@ app = FastAPI(
 # CORS Configuration for WebUI
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*",  # Allow all origins for local network compatibility
-        "http://localhost:8400",
-        "http://jarvis-webui:80"
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins for development/local network
+    allow_credentials=False,  # Must be False when using wildcard
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -61,7 +57,14 @@ app.add_middleware(
 # Maintenance router needs explicit prefix
 app.include_router(persona_router)
 app.include_router(maintenance_router, prefix="/api/maintenance")
-# app.include_router(sequential_router)  # REMOVED - old system  # 🆕 Sequential Thinking Live Monitoring
+
+# Settings Router
+from settings_routes import router as settings_router
+app.include_router(settings_router, prefix="/api/settings")
+
+# MCP Management (Installer, List, Toggle)
+from mcp.installer import router as mcp_installer_router
+app.include_router(mcp_installer_router, prefix="/api/mcp")
 
 
 # ============================================================

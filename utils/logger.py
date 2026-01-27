@@ -1,5 +1,7 @@
+import os
 from datetime import datetime
-from config import LOG_LEVEL
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
 

@@ -10,7 +10,7 @@ Funktionen:
 """
 
 from typing import Dict, Any, List, Optional
-from mcp_registry import MCPS, get_enabled_mcps
+# from mcp_registry import MCPS, get_enabled_mcps  # Removed: using dynamic import
 from mcp.transports import HTTPTransport, SSETransport, STDIOTransport
 from utils.logger import log_info, log_error, log_debug, log_warning
 
@@ -35,10 +35,16 @@ class MCPHub:
         
         log_info("[MCPHub] Initializing...")
         
-        enabled_mcps = get_enabled_mcps()
-        log_info(f"[MCPHub] Found {len(enabled_mcps)} enabled MCPs")
+        # Load from dynamic registry
+        from mcp_registry import get_mcps
+        active_mcps = get_mcps()
         
-        for mcp_name, config in enabled_mcps.items():
+        log_info(f"[MCPHub] Found {len(active_mcps)} enabled MCPs from registry")
+        
+        for mcp_name, config in active_mcps.items():
+            if not config.get("enabled", True):
+                continue
+                
             try:
                 self._init_transport(mcp_name, config)
                 self._discover_tools(mcp_name)
@@ -50,6 +56,29 @@ class MCPHub:
         
         # Auto-Registration im Graph (nach Initialisierung)
         self._auto_register_tools()
+
+    def reload_registry(self):
+        """
+        Hot Reload: Lädt Registry neu und initialisiert neue/geänderte MCPs.
+        Wird vom Installer aufgerufen.
+        """
+        log_info("[MCPHub] ♻️ HOT RELOAD TRIGGERED")
+        
+        # 1. Transport-Cache leeren?
+        # Wir schließen alte Transports sicherheitshalber
+        # (Optimierung: Nur geänderte schließen)
+        self.shutdown()
+        
+        self._transports.clear()
+        self._tools_cache.clear()
+        self._tool_definitions.clear()
+        self._initialized = False
+        self._tools_registered = False
+        
+        # 2. Neu initialisieren
+        self.initialize()
+        
+        log_info("[MCPHub] ♻️ HOT RELOAD COMPLETE")
     
     def _init_transport(self, mcp_name: str, config: Dict):
         """Erstellt Transport für ein MCP."""
@@ -346,8 +375,11 @@ class MCPHub:
         """Gibt Status aller MCPs zurück."""
         self.initialize()
         
+        from mcp_registry import get_mcps
+        all_mcps = get_mcps()
+        
         result = []
-        for mcp_name, config in MCPS.items():
+        for mcp_name, config in all_mcps.items():
             transport = self._transports.get(mcp_name)
             
             # Zähle Tools für dieses MCP
@@ -365,6 +397,7 @@ class MCPHub:
                 "detected_format": detected_format,
                 "url": config.get("url", "") or config.get("command", ""),
                 "description": config.get("description", ""),
+                "tier": config.get("tier", "core"), # Added tier
                 "online": transport.health_check() if transport else False,
                 "tools_count": tools_count,
             })

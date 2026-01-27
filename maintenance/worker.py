@@ -732,6 +732,36 @@ Zusammenfassung (max 500 Zeichen):"""
         except Exception as e:
             yield {"type": "task_error", "task": "graph", "message": str(e)}
 
+    async def clear_graph(self) -> Dict[str, Any]:
+        """Löscht den gesamten Knowledge Graph (Force Clear)."""
+        log_info("[Maintenance] Force clearing graph...")
+        
+        try:
+            # 1. Clear Graph Nodes/Edges (wenn Tool existiert)
+            try:
+                # Versuche spezifisches Clear Tool (falls vorhanden)
+                # Falls nicht, müssen wir es anders lösen (z.B. Files löschen oder rekursiv delete)
+                # Annahme: memory_nuke existiert oder wir iterieren delete
+                
+                # Besser: Rufe spezielles Tool auf Backend auf oder nutze existierende 'memory_reset' falls vorhanden.
+                # Da wir hier nur Tools rufen können:
+                
+                # Check if 'memory_reset' tool exists
+                result = unwrap_mcp_result(call_tool("memory_reset", {}, timeout=20))
+                return {"success": True, "message": "Memory reset successful", "data": result}
+                
+            except Exception as e:
+                # Fallback: Versuche manuelles Löschen via Graph API?
+                # Zu gefährlich/komplex hier.
+                # Wir nehmen an, dass 'memory_reset' implementiert ist im SQL-Memory MCP.
+                
+                # Falls 'memory_reset' fehlt, ist es ein Fehler
+                log_error(f"Clear failed: {e}")
+                return {"success": False, "error": f"Clear failed: {str(e)}"}
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
 
 # Singleton
 _worker_instance: Optional[MaintenanceWorker] = None

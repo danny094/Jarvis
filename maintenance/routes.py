@@ -90,6 +90,21 @@ async def cancel_maintenance():
     })
 
 
+@router.post("/clear")
+async def clear_memory():
+    """
+    Löscht das gesamte Memory (Graph Reset).
+    Vorsicht: Irreversibel!
+    """
+    worker = get_worker()
+    result = await worker.clear_graph()
+    
+    if result.get("success"):
+        return JSONResponse(result)
+    else:
+        return JSONResponse(result, status_code=500)
+
+
 @router.get("/history")
 async def get_maintenance_history():
     """
