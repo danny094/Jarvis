@@ -554,11 +554,7 @@ def register_tools(mcp):
                     "created_at": row[3]
                 })
             
-            return {
-                "entries": entries,
-                "count": len(entries),
-                "limit": limit
-            }
+            return {"structuredContent": {"entries": entries, "count": len(entries), "limit": limit}}
             
         except Exception as e:
             return {"error": str(e), "entries": []}
@@ -595,10 +591,7 @@ def register_tools(mcp):
                     "last_updated": row[2]
                 })
             
-            return {
-                "conversations": conversations,
-                "total": len(conversations)
-            }
+            return {"structuredContent": {"conversations": conversations, "total": len(conversations)}}
         finally:
             conn.close()
 
@@ -624,10 +617,7 @@ def register_tools(mcp):
             
             conn.commit()
             
-            return {
-                "deleted": deleted_count,
-                "total_requested": len(ids)
-            }
+            return {"structuredContent": {"deleted": deleted_count, "total_requested": len(ids)}}
             
         except Exception as e:
             return {"error": str(e), "deleted": 0}
@@ -662,10 +652,7 @@ def register_tools(mcp):
                         "count": len(node_ids)
                     })
             
-            return {
-                "duplicate_groups": duplicates,
-                "total_duplicates": sum(d["count"] - 1 for d in duplicates)
-            }
+            return {"structuredContent": {"duplicate_groups": duplicates, "total_duplicates": sum(d["count"] - 1 for d in duplicates)}}
             
         except Exception as e:
             return {"error": str(e), "duplicate_groups": []}
@@ -713,11 +700,7 @@ def register_tools(mcp):
                 # Delete the node
                 gs.delete_node(node_id)
             
-            return {
-                "merged": len(to_delete),
-                "primary_node": primary_id,
-                "deleted_nodes": to_delete
-            }
+            return {"structuredContent": {"merged": len(to_delete), "primary_node": primary_id, "deleted_nodes": to_delete}}
             
         except Exception as e:
             return {"error": str(e)}
@@ -739,10 +722,7 @@ def register_tools(mcp):
                     orphans.append(node["id"])
                     gs.delete_node(node["id"])
             
-            return {
-                "deleted": len(orphans),
-                "orphan_ids": orphans
-            }
+            return {"structuredContent": {"deleted": len(orphans), "orphan_ids": orphans}}
             
         except Exception as e:
             return {"error": str(e), "deleted": 0}
@@ -768,10 +748,7 @@ def register_tools(mcp):
                         gs.delete_edge(edge["source"], edge["target"], edge["type"])
                         pruned_count += 1
             
-            return {
-                "pruned": pruned_count,
-                "threshold": threshold
-            }
+            return {"structuredContent": {"pruned": pruned_count, "threshold": threshold}}
             
         except Exception as e:
             return {"error": str(e), "pruned": 0}
@@ -822,14 +799,7 @@ def register_tools(mcp):
             except Exception as e:
                 print(f"[memory_reset] Vector store reset failed: {e}")
             
-            return {
-                "success": True,
-                "deleted": {
-                    "memory_entries": memory_count,
-                    "graph_nodes": nodes_count,
-                    "graph_edges": edges_count
-                }
-            }
+            return {"structuredContent": {"success": True, "memory_entries": memory_count, "graph_nodes": nodes_count, "graph_edges": edges_count}}
             
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"structuredContent": {"success": False, "error": str(e)}}

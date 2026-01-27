@@ -22,9 +22,10 @@ from utils.logger import log_info, log_error, log_warning
 from mcp.client import call_tool
 
 
+
 def unwrap_mcp_result(result: Any) -> Any:
     """
-    Unwraps MCP Hub result from nested structure.
+    Unwraps MCP Hub result from nested structure - HARDENED VERSION.
     
     MCP Hub returns: {
         "result": {
@@ -34,24 +35,92 @@ def unwrap_mcp_result(result: Any) -> Any:
         }
     }
     
-    This function extracts the actual data from structuredContent.
+    Returns:
+        Union[dict, list]: Valid data as dict/list, or [] for invalid/empty input.
+        NEVER returns None - guaranteed safe for iteration.
+    
+    HARDENING:
+        - None input -> []
+        - Empty string -> []  
+        - Empty dict -> []
+        - Invalid JSON string -> [{"type": "text", "text": original}]
+        - Wrong types (int, bool) -> []
+        - Error flags -> [{"type": "error", "error": message}]
+        - Valid structuredContent -> returns as-is (dict or list)
     """
+    import json
+    
+    # Guard: None or empty input
+    if result is None:
+        return []
+    
+    # Guard: Empty string
+    if result == "":
+        return []
+    
+    # Guard: Empty dict
+    if isinstance(result, dict) and not result:
+        return []
+    
+    # Guard: Non-dict input (string, int, bool, etc.)
     if not isinstance(result, dict):
-        return result
+        # Try to parse if it looks like JSON string
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # Return as wrapped text
+            return [{"type": "text", "text": result}]
+        # Numbers, bools, etc.
+        return []
+    
+    # Check for error flag first
+    if result.get("isError") or result.get("error"):
+        return [{"type": "error", "error": result.get("error") or result.get("message") or "Unknown error"}]
     
     # Level 1: result wrapper
     inner = result.get("result", result)
     if not isinstance(inner, dict):
-        return inner
+        if inner is None:
+            return []
+        return []
     
-    # Level 2: structuredContent
+    # Level 2: structuredContent (preferred)
     structured = inner.get("structuredContent")
     if structured is not None:
         return structured
     
-    # Fallback: return inner as-is
+    # Level 3: Parse JSON from content array (fallback for standard MCP format)
+    content = inner.get("content")
+    if isinstance(content, list) and len(content) > 0:
+        first_block = content[0]
+        if isinstance(first_block, dict) and "text" in first_block:
+            text_content = first_block["text"]
+            # Try JSON parse
+            try:
+                parsed = json.loads(text_content)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                # Not valid JSON - return as text
+                return [{"type": "text", "text": text_content}]
+        elif isinstance(first_block, str):
+            # Direct string in content array
+            try:
+                parsed = json.loads(first_block)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                return [{"type": "text", "text": first_block}]
+    
+    # Fallback: return inner if useful
+    if inner is None:
+        return []
+    
     return inner
-
 
 class MaintenanceState(str, Enum):
     IDLE = "idle"
