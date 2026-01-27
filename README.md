@@ -1,7 +1,7 @@
 
+***Jarvis becomes TR|ON. A completely new web user interface. An operating system in the browser.***
 
-https://github.com/user-attachments/assets/22b30fbd-9c02-4de8-a14b-b981e9805285
-
+<img width="1866" height="913" alt="Bildschirmfoto 2026-01-27 um 02 50 07" src="https://github.com/user-attachments/assets/49e890a1-d0c0-4f86-8d0a-c72ddfc3d7b5" />
 
 
 [README.md](https://github.com/user-attachments/files/24833535/README.md)
@@ -15,12 +15,34 @@ https://github.com/user-attachments/assets/22b30fbd-9c02-4de8-a14b-b981e9805285
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg?style=flat-square)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](docker-compose.yml)
 
-<img width="700" alt="TRION Architecture" src="https://github.com/user-attachments/assets/4958af72-a31b-45f7-951c-281b0d897739" />
+***Easy MCP Drag and Drop install***
+<div align="center">
+</div>
+
+[![Video Vorschaubild](https://img.youtube.com/vi/k627-Eu-i5U/0.jpg)](https://www.youtube.com/watch?v=ryk627-Eu-i5U)
+<div align="center">
 
 </div>
 
----
+***Expandable plugin system***
+<div align="center">
+         
+[![Video Vorschaubild](https://img.youtube.com/vi/TzkBheaJAcE/0.jpg)](https://www.youtube.com/watch?v=TzkBheaJAcE)
+<div align="center">
 
+</div>
+
+***Upload and edit your own persona***
+<img width="1866" height="913" alt="Bildschirmfoto 2026-01-27 um 03 24 39" src="https://github.com/user-attachments/assets/64bd0cf0-3d86-4960-8989-ca5ed32d3096" />
+
+</div>
+
+***Ready for the future***
+<img width="1866" height="958" alt="Bildschirmfoto 2026-01-27 um 03 27 52" src="https://github.com/user-attachments/assets/f22b7851-09a6-48d0-bfca-49d51526c330" />
+
+
+</div>
+---
 ## ✨ Features
 
 | Feature | Description |
