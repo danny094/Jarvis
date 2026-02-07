@@ -1,206 +1,21 @@
-// chat.js - Chat Logic mit LIVE Thinking, Container Status & Interactive Code Blocks
-
+// chat.js - Main Controller (Fixed v3: correct box types + thought field)
 import { streamChat } from "./api.js";
 import { log } from "./debug.js";
-import { parseMessageForCodeBlocks, initCodeBlock } from "./code-block.js";
 
-let currentModel = null;
-let messages = [];
-let conversationId = `webui-${Date.now()}`;
-let isProcessing = false;
-let historyLimit = 10;
+// Modules
+import * as UI from "./chat-ui.js";
+import * as State from "./chat-state.js";
+import * as Render from "./chat-render.js";
+import * as Thinking from "./chat-thinking.js";
+import * as Sequential from "./chat-sequential.js";
 
-// Storage Key für Chat Persistenz
-const CHAT_STORAGE_KEY = 'jarvis-chat-messages';
-const CONV_STORAGE_KEY = 'jarvis-conversation-id';
-
-// ═══════════════════════════════════════════════════════════
-// SETTERS & GETTERS
-// ═══════════════════════════════════════════════════════════
-export function setModel(model) {
-    currentModel = model;
-    log("debug", `Model set to: ${model}`);
-}
-
-export function getModel() {
-    return currentModel;
-}
-
-export function isLoading() {
-    return isProcessing;
-}
-
-export function setHistoryLimit(limit) {
-    historyLimit = limit;
-    log("debug", `History limit set to: ${limit}`);
-}
-
-export function getMessageCount() {
-    return messages.length;
-}
+// Proxied Exports (State Access)
+export { setModel, getModel, isLoading, setHistoryLimit, getMessageCount } from "./chat-state.js";
 
 // ═══════════════════════════════════════════════════════════
-// CHAT PERSISTENZ (localStorage)
-// ═══════════════════════════════════════════════════════════
-function saveChatToStorage() {
-    try {
-        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
-        localStorage.setItem(CONV_STORAGE_KEY, conversationId);
-        log("debug", `Chat saved: ${messages.length} messages`);
-    } catch (e) {
-        log("error", `Failed to save chat: ${e.message}`);
-    }
-}
-
-function loadChatFromStorage() {
-    try {
-        const savedMessages = localStorage.getItem(CHAT_STORAGE_KEY);
-        const savedConvId = localStorage.getItem(CONV_STORAGE_KEY);
-        
-        if (savedMessages) {
-            messages = JSON.parse(savedMessages);
-            log("info", `Chat restored: ${messages.length} messages`);
-        }
-        if (savedConvId) {
-            conversationId = savedConvId;
-        }
-    } catch (e) {
-        log("error", `Failed to load chat: ${e.message}`);
-        messages = [];
-    }
-}
-
-function renderSavedMessages() {
-    if (messages.length === 0) return;
-    
-    const welcome = document.getElementById("welcome-message");
-    if (welcome) welcome.classList.add("hidden");
-    
-    log("info", `Rendering ${messages.length} saved messages`);
-    
-    for (const msg of messages) {
-        renderMessage(msg.role, msg.content, false);
-    }
-    
-    updateHistoryDisplay(messages.length, Math.min(messages.length, historyLimit * 2));
-}
-
-// Exportiere init Funktion für App
-export function initChatFromStorage() {
-    loadChatFromStorage();
-    renderSavedMessages();
-}
-
-// ═══════════════════════════════════════════════════════════
-// INLINE CONTROL BLOCK (Sequential Thinking - Claude-Style)
+// HISTORY DISPLAY
 // ═══════════════════════════════════════════════════════════
 
-let activeControlBlock = null;
-let controlBlockContent = "";
-
-function createControlBlock(taskId, complexity) {
-    const container = document.getElementById("messages-list");
-    
-    const blockId = "control-" + taskId;
-    const div = document.createElement("div");
-    div.id = blockId;
-    div.className = "control-block active flex gap-3 justify-start fade-in";
-    
-    div.innerHTML = 
-        "<div class=\"w-8 h-8 flex-shrink-0\"></div>" +
-        "<div class=\"max-w-[80%]\">" +
-            "<details open>" +
-                "<summary>" +
-                    "<span class=\"triangle\"></span>" +
-                    "<span class=\"label\">Control</span>" +
-                    "<span class=\"status\">analyzing (" + complexity + " steps)...</span>" +
-                "</summary>" +
-                "<div class=\"control-content\"></div>" +
-            "</details>" +
-        "</div>";
-    
-    container.appendChild(div);
-    
-    const chatContainer = document.getElementById("chat-container");
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-    
-    activeControlBlock = blockId;
-    controlBlockContent = "";
-    
-    console.log("[ControlBlock] Created:", blockId);
-    return blockId;
-}
-
-function updateControlBlockStream(blockId, chunk) {
-    const block = document.getElementById(blockId);
-    if (!block) return;
-    
-    controlBlockContent += chunk;
-    
-    const contentDiv = block.querySelector(".control-content");
-    if (contentDiv) {
-        contentDiv.textContent = controlBlockContent;
-        contentDiv.scrollTop = contentDiv.scrollHeight;
-    }
-    
-    const chatContainer = document.getElementById("chat-container");
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-}
-
-function finalizeControlBlock(blockId, steps, duration) {
-    const block = document.getElementById(blockId);
-    if (!block) return;
-    
-    block.classList.remove("active");
-    block.classList.add("complete");
-    
-    const statusSpan = block.querySelector(".status");
-    if (statusSpan) {
-        statusSpan.textContent = steps.length + " steps (" + duration + "s)";
-    }
-    
-    const details = block.querySelector("details");
-    if (details) {
-        details.removeAttribute("open");
-    }
-    
-    const contentDiv = block.querySelector(".control-content");
-    if (contentDiv && steps.length > 0) {
-        let formattedContent = "";
-        for (const step of steps) {
-            const stepNum = step.step || step.step_number;
-            formattedContent += "Step " + stepNum + ": " + step.title + "\n";
-            if (step.thought) {
-                const shortThought = step.thought.substring(0, 200) + (step.thought.length > 200 ? "..." : "");
-                formattedContent += "  " + shortThought + "\n\n";
-            }
-        }
-        contentDiv.textContent = formattedContent || controlBlockContent;
-    }
-    
-    console.log("[ControlBlock] Finalized:", blockId);
-    activeControlBlock = null;
-}
-
-function errorControlBlock(blockId, error) {
-    const block = document.getElementById(blockId);
-    if (!block) return;
-    
-    block.classList.remove("active");
-    block.classList.add("error");
-    
-    const statusSpan = block.querySelector(".status");
-    if (statusSpan) {
-        statusSpan.textContent = "error: " + error;
-    }
-    
-    console.log("[ControlBlock] Error:", blockId, error);
-    activeControlBlock = null;
-}
-
-// ═══════════════════════════════════════════════════════════
-// UPDATE HISTORY DISPLAY
-// ═══════════════════════════════════════════════════════════
 function updateHistoryDisplay(count, sent) {
     const countEl = document.getElementById("history-count");
     const sentEl = document.getElementById("history-sent");
@@ -212,618 +27,262 @@ function updateHistoryDisplay(count, sent) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// GET MESSAGES FOR BACKEND (with limit)
+// INITIALIZATION
 // ═══════════════════════════════════════════════════════════
-function getMessagesForBackend() {
-    if (historyLimit === 0) {
-        const last = messages[messages.length - 1];
-        return last ? [last] : [];
-    }
 
-    const maxMessages = historyLimit * 2;
-    const toSend = messages.slice(-maxMessages);
+export function initChatFromStorage() {
+    if (State.loadChatFromStorage()) {
+        const messages = State.getMessages();
+        if (messages.length > 0) {
+            const welcome = document.getElementById("welcome-message");
+            if (welcome) welcome.classList.add("hidden");
 
-    log("debug", `Preparing messages for backend: ${toSend.length} of ${messages.length} (limit: ${historyLimit})`);
+            messages.forEach(msg => {
+                Render.renderMessage(msg.role, msg.content, false);
+            });
 
-    return toSend;
-}
-
-// ═══════════════════════════════════════════════════════════
-// LIVE THINKING DISPLAY MIT CONTAINER STATUS
-// ═══════════════════════════════════════════════════════════
-function createThinkingBox(messageId) {
-    const container = document.getElementById("messages-list");
-    const welcome = document.getElementById("welcome-message");
-    if (welcome) welcome.classList.add("hidden");
-
-    const thinkingId = `thinking-${messageId}`;
-
-    const div = document.createElement("div");
-    div.id = thinkingId;
-    div.className = "fade-in mb-2";
-
-    div.innerHTML = `
-        <details open class="bg-dark-card border border-dark-border rounded-xl overflow-hidden">
-            <summary class="px-4 py-2 cursor-pointer hover:bg-dark-hover flex items-center gap-2 text-sm text-gray-400">
-                <i data-lucide="brain" class="w-4 h-4 text-accent-secondary animate-pulse"></i>
-                <span>Thinking...</span>
-                <span id="${thinkingId}-status" class="text-xs text-gray-500 ml-auto"></span>
-            </summary>
-            <div class="border-t border-dark-border">
-                <div id="${thinkingId}-stream" class="px-4 py-3 text-sm text-gray-400 font-mono text-xs leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap"></div>
-                <div id="${thinkingId}-meta" class="hidden px-4 py-3 border-t border-dark-border text-sm space-y-2"></div>
-                <div id="${thinkingId}-container" class="hidden px-4 py-3 border-t border-dark-border"></div>
-            </div>
-        </details>
-    `;
-
-    container.appendChild(div);
-    lucide.createIcons({ icons: lucide.icons, nameAttr: "data-lucide" });
-
-    const chatContainer = document.getElementById("chat-container");
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-
-    return thinkingId;
-}
-
-function updateThinkingStream(thinkingId, chunk) {
-    const streamEl = document.getElementById(`${thinkingId}-stream`);
-    if (streamEl) {
-        streamEl.textContent += chunk;
-        streamEl.scrollTop = streamEl.scrollHeight;
-    }
-
-    const chatContainer = document.getElementById("chat-container");
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-}
-
-function finalizeThinking(thinkingId, thinking) {
-    const box = document.getElementById(thinkingId);
-    if (!box) return;
-
-    const summary = box.querySelector("summary");
-    const icon = summary.querySelector("svg") || summary.querySelector("i");
-
-    if (icon) {
-        icon.classList.remove("animate-pulse");
-    }
-
-    const riskColors = {
-        low: "text-green-400",
-        medium: "text-yellow-400",
-        high: "text-red-400"
-    };
-    const risk = thinking.hallucination_risk || "medium";
-    const riskColor = riskColors[risk] || "text-gray-400";
-
-    const statusEl = document.getElementById(`${thinkingId}-status`);
-    if (statusEl) {
-        let statusParts = [`<span class="${riskColor}">Risk: ${risk}</span>`];
-
-        // Code-Model Anzeige
-        if (thinking.use_code_model) {
-            statusParts.push('<span class="text-accent-primary">🤖 Code-Model</span>');
+            UI.scrollToBottom();
+            updateHistoryDisplay(messages.length, Math.min(messages.length, 20));
         }
-
-        // Container Anzeige
-        if (thinking.needs_container) {
-            statusParts.push(`<span class="text-accent-secondary">📦 ${thinking.container_name}</span>`);
-        }
-
-        statusEl.innerHTML = statusParts.join(' | ');
-    }
-
-    summary.querySelector("span").textContent = "Thinking";
-
-    const metaEl = document.getElementById(`${thinkingId}-meta`);
-    if (metaEl && thinking.intent) {
-        metaEl.classList.remove("hidden");
-        metaEl.innerHTML = `
-            <div class="flex items-start gap-2">
-                <span class="text-gray-500 min-w-[100px]">Intent:</span>
-                <span class="text-gray-300">${thinking.intent || '-'}</span>
-            </div>
-            <div class="flex items-start gap-2">
-                <span class="text-gray-500 min-w-[100px]">Memory:</span>
-                <span class="text-gray-300">
-                    ${thinking.needs_memory ? '✅ Benötigt' : '❌ Nicht benötigt'}
-                    ${thinking.memory_keys?.length ? `(${thinking.memory_keys.join(', ')})` : ''}
-                </span>
-            </div>
-            <div class="flex items-start gap-2">
-                <span class="text-gray-500 min-w-[100px]">Chat-History:</span>
-                <span class="text-gray-300">
-                    ${thinking.needs_chat_history ? '✅ Wird genutzt' : '❌ Nicht benötigt'}
-                </span>
-            </div>
-            ${thinking.needs_container ? `
-            <div class="flex items-start gap-2">
-                <span class="text-gray-500 min-w-[100px]">Container:</span>
-                <span class="text-gray-300">📦 ${thinking.container_name} (${thinking.container_task || 'execute'})</span>
-            </div>
-            ` : ''}
-            ${thinking.use_code_model ? `
-            <div class="flex items-start gap-2">
-                <span class="text-gray-500 min-w-[100px]">Code-Model:</span>
-                <span class="text-accent-primary">✅ Aktiviert ${thinking.code_language ? `(${thinking.code_language})` : ''}</span>
-            </div>
-            ` : ''}
-            <div class="flex items-start gap-2">
-                <span class="text-gray-500 min-w-[100px]">Reasoning:</span>
-                <span class="text-gray-300">${thinking.reasoning || '-'}</span>
-            </div>
-        `;
-    }
-
-    const details = box.querySelector("details");
-    if (details) {
-        details.open = false;
-    }
-}
-
-// ═══════════════════════════════════════════════════════════
-// CONTAINER STATUS IN THINKING BOX
-// ═══════════════════════════════════════════════════════════
-function showContainerStart(thinkingId, container, task) {
-    const containerEl = document.getElementById(`${thinkingId}-container`);
-    if (!containerEl) return;
-
-    containerEl.classList.remove("hidden");
-    containerEl.innerHTML = `
-        <div class="flex items-center gap-3 text-sm">
-            <div class="flex items-center gap-2">
-                <i data-lucide="container" class="w-4 h-4 text-accent-secondary animate-pulse"></i>
-                <span class="text-accent-secondary font-medium">${container}</span>
-            </div>
-            <span class="text-gray-500">|</span>
-            <span class="text-gray-400">${task}</span>
-            <span class="text-gray-500">|</span>
-            <span class="text-yellow-400 flex items-center gap-1">
-                <i data-lucide="loader" class="w-3 h-3 animate-spin"></i>
-                Running...
-            </span>
-        </div>
-    `;
-    lucide.createIcons();
-    log("info", `Container started: ${container} (${task})`);
-}
-
-function showContainerDone(thinkingId, result) {
-    const containerEl = document.getElementById(`${thinkingId}-container`);
-    if (!containerEl) return;
-
-    const exitCode = result?.exit_code ?? -1;
-    const isSuccess = exitCode === 0;
-    const hasError = result?.error;
-
-    const statusColor = hasError ? "text-red-400" : (isSuccess ? "text-green-400" : "text-yellow-400");
-    const statusIcon = hasError ? "x-circle" : (isSuccess ? "check-circle" : "alert-circle");
-    const statusText = hasError ? result.error : (isSuccess ? "Success" : `Exit: ${exitCode}`);
-
-    containerEl.innerHTML = `
-        <div class="space-y-2">
-            <div class="flex items-center gap-3 text-sm">
-                <div class="flex items-center gap-2">
-                    <i data-lucide="container" class="w-4 h-4 text-accent-secondary"></i>
-                    <span class="text-accent-secondary font-medium">code-sandbox</span>
-                </div>
-                <span class="text-gray-500">|</span>
-                <span class="${statusColor} flex items-center gap-1">
-                    <i data-lucide="${statusIcon}" class="w-3 h-3"></i>
-                    ${statusText}
-                </span>
-            </div>
-            ${result?.stdout ? `
-            <div class="bg-dark-bg rounded p-2 font-mono text-xs text-green-400 max-h-24 overflow-y-auto whitespace-pre-wrap">
-                ${escapeHtml(result.stdout)}
-            </div>
-            ` : ''}
-            ${result?.stderr ? `
-            <div class="bg-dark-bg rounded p-2 font-mono text-xs text-red-400 max-h-24 overflow-y-auto whitespace-pre-wrap">
-                ${escapeHtml(result.stderr)}
-            </div>
-            ` : ''}
-        </div>
-    `;
-    lucide.createIcons();
-    log("info", `Container done: exit=${exitCode}`, result);
-}
-
-// ═══════════════════════════════════════════════════════════
-// MESSAGE RENDERING MIT INTERACTIVE CODE BLOCKS
-// ═══════════════════════════════════════════════════════════
-export function renderMessage(role, content, isStreaming = false, executionResults = {}) {
-    const container = document.getElementById("messages-list");
-    const welcome = document.getElementById("welcome-message");
-    if (welcome) welcome.classList.add("hidden");
-
-    const messageId = `msg-${Date.now()}`;
-    const isUser = role === "user";
-
-    const div = document.createElement("div");
-    div.id = messageId;
-    div.className = `flex gap-3 fade-in ${isUser ? 'justify-end' : 'justify-start'}`;
-
-    const avatar = isUser
-        ? `<div class="w-8 h-8 bg-accent-primary rounded-lg flex items-center justify-center flex-shrink-0">
-               <i data-lucide="user" class="w-4 h-4"></i>
-           </div>`
-        : `<div class="w-8 h-8 bg-gradient-to-br from-accent-primary to-accent-secondary rounded-lg flex items-center justify-center flex-shrink-0">
-               <i data-lucide="bot" class="w-4 h-4"></i>
-           </div>`;
-
-    // Parse content für interaktive Code-Blöcke (nur bei Assistant)
-    let formattedContent = formatContent(content);
-    let codeBlockIds = [];
-
-    if (!isUser && !isStreaming) {
-        const parsed = parseMessageForCodeBlocks(content, executionResults);
-        formattedContent = formatContentWithCodeBlocks(parsed.content);
-        codeBlockIds = parsed.blockIds;
-    }
-
-    const bubble = `
-        <div class="max-w-[80%] ${isUser ? 'bg-accent-primary' : 'bg-dark-card border border-dark-border'} 
-                    px-4 py-3 rounded-2xl ${isUser ? 'rounded-br-md' : 'rounded-bl-md'}">
-            <div class="message-content text-sm leading-relaxed">
-                ${formattedContent}${isStreaming ? '<span class="typing-cursor">▋</span>' : ''}
-            </div>
-        </div>
-    `;
-
-    div.innerHTML = isUser
-        ? `${bubble}${avatar}`
-        : `${avatar}${bubble}`;
-
-    container.appendChild(div);
-    lucide.createIcons({ icons: lucide.icons, nameAttr: "data-lucide" });
-
-    // Initialisiere Code-Blöcke
-    codeBlockIds.forEach(id => initCodeBlock(id));
-
-    const chatContainer = document.getElementById("chat-container");
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-
-    return messageId;
-}
-
-export function updateMessage(messageId, content, isStreaming = false) {
-    const msg = document.getElementById(messageId);
-    if (!msg) return;
-
-    const contentDiv = msg.querySelector(".message-content");
-    if (contentDiv) {
-        if (isStreaming) {
-            // Während des Streamings: einfaches Format
-            contentDiv.innerHTML = formatContent(content) + '<span class="typing-cursor">▋</span>';
-        } else {
-            // Nach dem Streaming: interaktive Code-Blöcke
-            const parsed = parseMessageForCodeBlocks(content);
-            contentDiv.innerHTML = formatContentWithCodeBlocks(parsed.content);
-
-            // Initialisiere Code-Blöcke
-            parsed.blockIds.forEach(id => initCodeBlock(id));
-            lucide.createIcons();
-        }
-    }
-
-    const chatContainer = document.getElementById("chat-container");
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-}
-
-function formatContent(text) {
-    if (!text) return "";
-
-    return text
-        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>')
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-        .replace(/\n/g, '<br>');
-}
-
-function formatContentWithCodeBlocks(text) {
-    if (!text) return "";
-
-    // Code-Blöcke werden bereits von parseMessageForCodeBlocks ersetzt
-    // Hier nur noch Inline-Formatierung
-    return text
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-        .replace(/\n/g, '<br>');
-}
-
-function escapeHtml(text) {
-    if (!text) return "";
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// ═══════════════════════════════════════════════════════════
-// SEND MESSAGE
-// ═══════════════════════════════════════════════════════════
-export async function handleUserMessage(text) {
-    if (isProcessing || !text.trim()) return;
-    if (!currentModel) {
-        alert("Bitte wähle zuerst ein Model aus!");
-        return;
-    }
-
-    isProcessing = true;
-    updateUIState(true);
-
-
-    // User message
-    renderMessage("user", text);
-    messages.push({ role: "user", content: text });
-    saveChatToStorage();  // Persist after user message
-
-    // === SEQUENTIAL MODE INTEGRATION ===
-    // [DISABLED - New system uses event dispatcher]
-    /*
-    */
-
-    // === END SEQUENTIAL MODE INTEGRATION ===
-
-    // Update history display
-    const messagesToSend = getMessagesForBackend();
-    updateHistoryDisplay(messages.length, messagesToSend.length);
-
-    log("info", `Sending message with ${messagesToSend.length} messages in history`);
-
-    // State
-    const baseMsgId = Date.now();
-    let thinkingId = null;
-    let thinkingCreated = false;
-    let botMsgId = null;
-    let fullResponse = "";
-    let containerResult = null;
-    let usedModel = currentModel;
-    let controlBlockId = null;
-    let controlStartTime = null;
-
-    try {
-        for await (const chunk of streamChat(currentModel, messagesToSend, conversationId)) {
-
-            // Live Thinking Stream
-            if (chunk.type === "thinking_stream") {
-                if (!thinkingCreated) {
-                    thinkingId = createThinkingBox(baseMsgId);
-                    thinkingCreated = true;
-                }
-                updateThinkingStream(thinkingId, chunk.chunk);
-                continue;
-            }
-
-            // Thinking Done
-            if (chunk.type === "thinking_done") {
-                if (thinkingId) {
-                    finalizeThinking(thinkingId, chunk.thinking);
-                }
-                if (chunk.memory_used) {
-                    showMemoryIndicator();
-                }
-                continue;
-            }
-
-            // Container Start
-            if (chunk.type === "container_start") {
-                console.log("[Chat] container_start received:", chunk);
-                if (thinkingId) {
-                    showContainerStart(thinkingId, chunk.container, chunk.task);
-                }
-                showContainerIndicator(true);
-
-                // Terminal aktualisieren (mit Session-Info wenn vorhanden)
-                // terminal.onContainerStart(chunk.container, chunk.task, chunk.session);
-                continue;
-            }
-
-            // Container Done
-            if (chunk.type === "container_done") {
-                console.log("[Chat] container_done received:", chunk);
-                containerResult = chunk.result;
-                if (thinkingId) {
-                    showContainerDone(thinkingId, chunk.result);
-                }
-                showContainerIndicator(false);
-
-                // Terminal aktualisieren
-                // terminal.onContainerDone(chunk.result);
-                continue;
-            }
-
-            // 🆕 INLINE CONTROL BLOCK: Handle Sequential Thinking events directly
-            if (chunk.type === "sequential_start") {
-                console.log("[Chat] Sequential Start:", chunk.task_id, "complexity:", chunk.complexity);
-                controlBlockId = createControlBlock(chunk.task_id, chunk.complexity);
-                controlStartTime = Date.now();
-                continue;
-            }
-            
-            if (chunk.type === "seq_thinking_stream") {
-                if (controlBlockId) {
-                    updateControlBlockStream(controlBlockId, chunk.chunk);
-                }
-                continue;
-            }
-            
-            if (chunk.type === "seq_thinking_done") {
-                console.log("[Chat] Thinking phase done, parsing steps...");
-                continue;
-            }
-            
-            if (chunk.type === "sequential_step") {
-                console.log("[Chat] Step:", chunk.step_number, chunk.title);
-                continue;
-            }
-            
-            if (chunk.type === "sequential_done") {
-                const duration = ((Date.now() - controlStartTime) / 1000).toFixed(1);
-                console.log("[Chat] Sequential Done:", chunk.steps?.length, "steps in", duration, "s");
-                if (controlBlockId) {
-                    finalizeControlBlock(controlBlockId, chunk.steps || [], duration);
-                    controlBlockId = null;
-                }
-                continue;
-            }
-            
-            if (chunk.type === "sequential_error") {
-                console.error("[Chat] Sequential Error:", chunk.error);
-                if (controlBlockId) {
-                    errorControlBlock(controlBlockId, chunk.error);
-                    controlBlockId = null;
-                }
-                continue;
-            }
-            
-            // Other plugin events (MCP, CIM, etc.) - dispatch to plugins
-            const pluginEvents = [
-                "mcp_call", "mcp_result", 
-                "cim_store", "memory_update",
-                "panel_create_tab", "panel_update", "panel_close_tab", "panel_control"
-            ];
-            
-            if (pluginEvents.includes(chunk.type)) {
-                console.log("[Chat] Dispatching event:", chunk.type);
-                window.dispatchEvent(new CustomEvent("sse-event", {
-                    detail: chunk
-                }));
-                continue;
-            }
-            if (chunk.type === "content") {
-                if (!botMsgId) {
-                    botMsgId = renderMessage("assistant", "", true);
-                }
-                fullResponse += chunk.content;
-                updateMessage(botMsgId, fullResponse, !chunk.done);
-
-                // Track used model
-                if (chunk.model) usedModel = chunk.model;
-            }
-
-            // Memory
-            if (chunk.type === "memory") {
-                showMemoryIndicator();
-            }
-
-            // Done
-            if (chunk.type === "done") {
-                // Update with model info
-                if (chunk.model) usedModel = chunk.model;
-                if (chunk.code_model_used) {
-                    showCodeModelIndicator();
-                }
-                break;
-            }
-        }
-
-        // Final update with interactive code blocks
-        if (botMsgId) {
-            updateMessage(botMsgId, fullResponse, false);
-        }
-        messages.push({ role: "assistant", content: fullResponse });
-        saveChatToStorage();  // Persist after assistant response
-
-        // Update history display
-        updateHistoryDisplay(messages.length, messagesToSend.length);
-
-        log("info", `Response complete, total messages: ${messages.length}, model: ${usedModel}`);
-
-    } catch (error) {
-        log("error", `Chat error: ${error.message}`);
-        if (!botMsgId) {
-            botMsgId = renderMessage("assistant", "", false);
-        }
-        updateMessage(botMsgId, `❌ Fehler: ${error.message}`, false);
-    } finally {
-        isProcessing = false;
-        updateUIState(false);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════
-// UI HELPERS
-// ═══════════════════════════════════════════════════════════
-function updateUIState(loading) {
-    const sendBtn = document.getElementById("send-btn");
-    const input = document.getElementById("user-input");
-
-    sendBtn.disabled = loading;
-    input.disabled = loading;
-
-    if (!loading) input.focus();
-}
-
-function showMemoryIndicator() {
-    const memoryStatus = document.getElementById("memory-status");
-    if (memoryStatus) {
-        memoryStatus.classList.remove("opacity-0");
-        memoryStatus.classList.add("opacity-100");
-        setTimeout(() => {
-            memoryStatus.classList.remove("opacity-100");
-            memoryStatus.classList.add("opacity-0");
-        }, 3000);
-    }
-}
-
-function showContainerIndicator(active) {
-    // Optional: Container-Status in Status-Bar anzeigen
-    const statusBar = document.getElementById("status-bar");
-    let containerIndicator = document.getElementById("container-indicator");
-
-    if (active) {
-        if (!containerIndicator) {
-            containerIndicator = document.createElement("div");
-            containerIndicator.id = "container-indicator";
-            containerIndicator.className = "flex items-center gap-1 text-accent-secondary transition-opacity";
-            containerIndicator.innerHTML = `
-                <i data-lucide="container" class="w-3 h-3"></i>
-                <span>Container running...</span>
-            `;
-            statusBar?.querySelector(".flex")?.appendChild(containerIndicator);
-            lucide.createIcons();
-        }
-    } else {
-        containerIndicator?.remove();
-    }
-}
-
-function showCodeModelIndicator() {
-    const memoryStatus = document.getElementById("memory-status");
-    if (memoryStatus) {
-        memoryStatus.innerHTML = `
-            <i data-lucide="code" class="w-3 h-3"></i>
-            <span>Code-Model used</span>
-        `;
-        memoryStatus.classList.remove("opacity-0");
-        memoryStatus.classList.add("opacity-100");
-        lucide.createIcons();
-        setTimeout(() => {
-            memoryStatus.classList.remove("opacity-100");
-            memoryStatus.classList.add("opacity-0");
-            memoryStatus.innerHTML = `
-                <i data-lucide="database" class="w-3 h-3"></i>
-                <span>Memory used</span>
-            `;
-        }, 3000);
     }
 }
 
 export function clearChat() {
-    messages = [];
-    conversationId = `webui-${Date.now()}`;
-    
-    // Clear localStorage
-    localStorage.removeItem(CHAT_STORAGE_KEY);
-    localStorage.removeItem(CONV_STORAGE_KEY);
-    
+    State.clearStorage();
     document.getElementById("messages-list").innerHTML = "";
     const welcome = document.getElementById("welcome-message");
     if (welcome) welcome.classList.remove("hidden");
 
     updateHistoryDisplay(0, 0);
-    log("info", "Chat cleared (including localStorage)");
+    log("info", "Chat cleared (Controller)");
+}
+
+// ═══════════════════════════════════════════════════════════
+// HANDLE USER MESSAGE (v3: 3 box types, thought field fix)
+// ═══════════════════════════════════════════════════════════
+
+export async function handleUserMessage(text) {
+    if (!text.trim() || State.isLoading()) return;
+
+    const model = State.getModel();
+    if (!model) {
+        alert("Bitte wähle zuerst ein Model aus!");
+        return;
+    }
+
+    State.setProcessing(true);
+    UI.updateUIState(true);
+
+    // Add User Message
+    Render.renderMessage("user", text, false);
+    State.addMessage({ role: "user", content: text });
+    State.saveChatToStorage();
+
+    // Prepare for backend
+    const messagesToSend = State.getMessagesForBackend();
+    const conversationId = State.getConversationId();
+    updateHistoryDisplay(State.getMessageCount(), messagesToSend.length);
+
+    log("info", `Sending message with ${messagesToSend.length} messages in history`);
+
+    // === State tracking ===
+    const baseMsgId = Date.now();
+    let controlThinkingId = null;  // Box 1: "Control" (classifier plan)
+    let seqThinkingId = null;      // Box 2: "Thinking" (deepseek thinking stream)
+    let currentSeqId = null;       // Box 3: "Sequential Thinking" (structured steps)
+    let botMsgId = null;
+    let fullResponse = "";
+    let usedModel = model;
+    let controlBlockId = null;
+
+    try {
+        for await (const chunk of streamChat(model, messagesToSend, conversationId)) {
+
+            // ═══════════════════════════════════════════
+            // BOX 1: CONTROL (Classifier / Thinking Plan)
+            // Label: "Control", Icon: shield-check
+            // ═══════════════════════════════════════════
+
+            if (chunk.type === "thinking_stream") {
+                if (!controlThinkingId) {
+                    controlThinkingId = Thinking.createThinkingBox(baseMsgId, "Control", "shield-check");
+                }
+                Thinking.updateThinkingStream(controlThinkingId, chunk.chunk);
+                continue;
+            }
+
+            if (chunk.type === "thinking_done") {
+                if (controlThinkingId) {
+                    Thinking.finalizeThinking(controlThinkingId, chunk.thinking);
+                }
+                if (chunk.memory_used) {
+                    UI.showMemoryIndicator();
+                }
+                continue;
+            }
+
+            // ═══════════════════════════════════════════
+            // BOX 2: THINKING (DeepSeek thinking stream)
+            // Label: "Thinking", Icon: brain
+            // ═══════════════════════════════════════════
+
+            if (chunk.type === "seq_thinking_stream") {
+                if (!seqThinkingId) {
+                    seqThinkingId = Thinking.createThinkingBox("seq-" + baseMsgId, "Thinking", "brain");
+                }
+                Thinking.updateThinkingStream(seqThinkingId, chunk.chunk);
+                continue;
+            }
+
+            if (chunk.type === "seq_thinking_done") {
+                if (seqThinkingId) {
+                    Thinking.finalizeThinkingSimple(seqThinkingId);
+                }
+                continue;
+            }
+
+            // ═══════════════════════════════════════════
+            // BOX 3: SEQUENTIAL THINKING (Structured Steps)
+            // Label: "Sequential Thinking", Icon: zap
+            // ═══════════════════════════════════════════
+
+            if (chunk.type === "sequential_start") {
+                if (!currentSeqId) {
+                    currentSeqId = Sequential.createSequentialBox(baseMsgId);
+                }
+                log("info", `Sequential started: ${chunk.task_id || ''}`);
+                continue;
+            }
+
+            // ✅ FIX: Backend sends "thought" not "content"!
+            if (chunk.type === "sequential_step") {
+                if (!currentSeqId) {
+                    currentSeqId = Sequential.createSequentialBox(baseMsgId);
+                }
+                Sequential.addCompleteStep(
+                    currentSeqId,
+                    chunk.step_number || chunk.step_num || chunk.step || "?",
+                    chunk.title || "",
+                    chunk.thought || chunk.content || chunk.text || ""
+                );
+                continue;
+            }
+
+            if (chunk.type === "sequential_done") {
+                if (currentSeqId) {
+                    Sequential.finalizeSequentialBox(currentSeqId, chunk.summary || `${(chunk.steps || []).length} steps completed`);
+                    currentSeqId = null;
+                }
+                continue;
+            }
+
+            if (chunk.type === "sequential_error") {
+                if (currentSeqId) {
+                    Sequential.finalizeSequentialBox(currentSeqId, `❌ Error: ${chunk.error || 'Unknown'}`);
+                    currentSeqId = null;
+                }
+                continue;
+            }
+
+            // ═══════════════════════════════════════════
+            // OTHER EVENTS
+            // ═══════════════════════════════════════════
+
+            // Control Layer (approval/rejection)
+            if (chunk.type === "control") {
+                if (!controlBlockId) controlBlockId = Thinking.createControlBox(botMsgId || baseMsgId);
+                Thinking.finalizeControl(controlBlockId, chunk);
+                continue;
+            }
+
+            // Container Start
+            if (chunk.type === "container_start") {
+                if (controlThinkingId) {
+                    Thinking.showContainerStart(controlThinkingId, chunk.container, chunk.task);
+                }
+                UI.showContainerIndicator(true);
+                continue;
+            }
+
+            // Container Done
+            if (chunk.type === "container_done") {
+                if (controlThinkingId) {
+                    Thinking.showContainerDone(controlThinkingId, chunk.result);
+                }
+                UI.showContainerIndicator(false);
+                continue;
+            }
+
+            // Plugin Events (MCP, Panel - NOT sequential)
+            const pluginEvents = [
+                "mcp_call", "mcp_result",
+                "cim_store", "memory_update",
+                "panel_create_tab", "panel_update", "panel_close_tab", "panel_control",
+                "workspace_update"
+            ];
+
+            if (pluginEvents.includes(chunk.type)) {
+                console.log("[Chat] Dispatching plugin event:", chunk.type);
+                window.dispatchEvent(new CustomEvent("sse-event", { detail: chunk }));
+                continue;
+            }
+
+            // Regular Content
+            if (chunk.type === "content" && chunk.content) {
+                if (!botMsgId) {
+                    botMsgId = Render.renderMessage("assistant", "", true);
+                }
+                fullResponse += chunk.content;
+                Render.updateMessage(botMsgId, fullResponse, !chunk.done);
+                if (chunk.model) usedModel = chunk.model;
+                continue;
+            }
+
+            // Memory Indicator
+            if (chunk.type === "memory") {
+                UI.showMemoryIndicator();
+                continue;
+            }
+
+            // Done
+            if (chunk.type === "done") {
+                if (chunk.model) usedModel = chunk.model;
+                if (chunk.code_model_used) UI.showCodeModelIndicator();
+                break;
+            }
+        }
+
+        // Finalize
+        if (botMsgId) {
+            Render.updateMessage(botMsgId, fullResponse, false);
+        }
+        if (fullResponse) {
+            State.addMessage({ role: "assistant", content: fullResponse });
+            State.saveChatToStorage();
+
+            // Auto-append to daily protocol (fire and forget)
+            fetch(`http://${window.location.hostname}:8200/api/protocol/append`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    user_message: text,
+                    ai_response: fullResponse,
+                    timestamp: new Date().toISOString()
+                })
+            }).catch(err => console.warn("[Chat] Protocol append failed:", err));
+        }
+
+        updateHistoryDisplay(State.getMessageCount(), messagesToSend.length);
+        log("info", `Response complete, total messages: ${State.getMessageCount()}, model: ${usedModel}`);
+
+    } catch (error) {
+        log("error", `Chat error: ${error.message}`);
+        if (!botMsgId) {
+            botMsgId = Render.renderMessage("assistant", "", false);
+        }
+        Render.updateMessage(botMsgId, `❌ Fehler: ${error.message}`, false);
+    } finally {
+        State.setProcessing(false);
+        UI.updateUIState(false);
+    }
 }

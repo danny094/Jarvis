@@ -1,0 +1,6 @@
+pattern_id,pattern_name,good_example,explanation,use_when,bad_pattern_regex,remediation_hint
+GOOD-PY-01,Safe Dict Access,"value = data.get('key', default)","Verhindert KeyError","Dict-Zugriff","data\['[^']+'\]","Use .get() with a default value to avoid crashes."
+GOOD-PY-02,Type Validation,"if not isinstance(n, int): return {'error': ...}","Frühe Fehlererkennung","Eingabe-Verarbeitung","def run\((?!.*isinstance).*","Validate all input types at the start of the function."
+GOOD-PY-03,Comprehension,"[x*2 for x in items if x > 0]","Effizient & lesbar","Listen-Transformation","for .* in .*:\s+.*\.append","Use list comprehensions for simple transformations."
+GOOD-PY-05,Async Pattern,"async def fetch(): await client.get(url)","Non-blocking I/O","Async Ops","def.*requests\.get","Use async/await for I/O operations."
+GOOD-PY-07,Relative Imports,"from . import module","Maintainability","Package Structure","^import (?!\.\.?).*$","Use relative imports within packages."

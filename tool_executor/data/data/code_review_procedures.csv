@@ -1,0 +1,8 @@
+check_id,phase,instruction_prompt,input_context,pass_criteria,remediation_action
+REV-SA-01,Static Analysis,"Verify code syntax and basic structural validity.","file_content","AST parses without errors. No undefined variables.","Run linter (flake8/eslint) and fix syntax errors."
+REV-SEC-01,Security Scan,"Scan for forbidden patterns and known vulnerabilities.","file_content","No matches for signatures in code_anti_patterns.csv.","Refactor code to replace high-risk functions with safe alternatives."
+REV-DEP-01,Dependency Check,"Ensure all dependencies are pinned and safe.","manifest_file (package.json/requirements.txt)","No wildcard (*) versions. All packages in allowlist.","Pin versions to specific semantic version numbers. Remove unknown packages."
+REV-SEC-02,Secret Detection,"Check for hardcoded secrets or keys.","file_content, config_files","No high-entropy strings resembling API keys or passwords.","Move secrets to environment variables or vault."
+REV-LOG-01,Logic Validation,"Assess code complexity and readability.","function_blocks","Cyclomatic complexity < 10. Functions < 50 lines.","Refactor into smaller helper functions. Simplify branching logic."
+REV-TYP-01,Type Safety,"Verify type definitions and safety.","function_signatures","No usage of 'Any' or 'Object' without explanation. Return types defined.","Add specific type annotations. Use strict mode."
+REV-TST-01,Test Coverage,"Ensure changes are verified by automated tests.","test_directory","Matching test file exists for modified module. Tests pass.","Generate unit tests for the new/modified logic."

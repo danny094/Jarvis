@@ -104,7 +104,7 @@ async def install_mcp(file: UploadFile):
         requirements = target_dir / "requirements.txt"
         if requirements.exists():
             result = subprocess.run(
-                ["pip", "install", "-r", str(requirements)],
+                ["uv", "pip", "install", "--system", "-r", str(requirements)],
                 capture_output=True,
                 text=True
             )

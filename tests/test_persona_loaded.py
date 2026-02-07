@@ -20,7 +20,7 @@ import json
 # CONFIGURATION
 # ============================================================
 
-API_BASE = "http://192.168.0.226:8200"
+API_BASE = os.getenv("API_BASE", "http://localhost:8200")
 PERSONAS_URL = f"{API_BASE}/api/personas"
 
 # Unique test persona to identify

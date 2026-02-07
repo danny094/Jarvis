@@ -1,7 +1,7 @@
 import os
 import sqlite3
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 from .config import DB_PATH
 
@@ -40,6 +40,44 @@ def init_db():
             """
         )
 
+        # Tabelle für Skill-Metriken
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS skill_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id TEXT UNIQUE NOT NULL,
+                version TEXT DEFAULT '1.0',
+                success_count INTEGER DEFAULT 0,
+                failure_count INTEGER DEFAULT 0,
+                avg_exec_time_ms REAL DEFAULT 0,
+                last_error TEXT,
+                status TEXT DEFAULT 'active',
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+
+        # Workspace Entries table
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workspace_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                entry_type TEXT DEFAULT 'observation',
+                source_layer TEXT DEFAULT 'thinking',
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                promoted BOOLEAN DEFAULT 0,
+                promoted_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_conv ON workspace_entries(conversation_id)"
+        )
+
         conn.commit()
     finally:
         conn.close()
@@ -74,6 +112,62 @@ def migrate_db():
             )
             """
         )
+
+    # skill_metrics Tabelle prüfen
+    cur.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='skill_metrics';
+    """)
+    if not cur.fetchone():
+        cur.execute(
+            """
+            CREATE TABLE skill_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id TEXT UNIQUE NOT NULL,
+                version TEXT DEFAULT '1.0',
+                success_count INTEGER DEFAULT 0,
+                failure_count INTEGER DEFAULT 0,
+                avg_exec_time_ms REAL DEFAULT 0,
+                last_error TEXT,
+                status TEXT DEFAULT 'active',
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+
+    # workspace_entries Tabelle prüfen
+    cur.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='workspace_entries';
+    """)
+    if not cur.fetchone():
+        cur.execute(
+            """
+            CREATE TABLE workspace_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                entry_type TEXT DEFAULT 'observation',
+                source_layer TEXT DEFAULT 'thinking',
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                promoted BOOLEAN DEFAULT 0,
+                promoted_at TEXT
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_conv ON workspace_entries(conversation_id)"
+        )
+
+    # graph_nodes: add confidence if table exists and column missing
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='graph_nodes'")
+    if cur.fetchone():
+        cur.execute("PRAGMA table_info(graph_nodes)")
+        graph_columns = [row[1] for row in cur.fetchall()]
+        if "confidence" not in graph_columns:
+            cur.execute("ALTER TABLE graph_nodes ADD COLUMN confidence REAL DEFAULT 0.5")
 
     # FTS5 prüfen
     cur.execute("""
@@ -201,6 +295,258 @@ def row_to_fact_dict(row) -> Dict:
         "value": row[4],
         "layer": row[5],
         "created_at": row[6],
+    }
+
+
+def upsert_skill_metric(skill_id: str, success: bool, exec_time_ms: float,
+                        error: Optional[str] = None, version: str = "1.0") -> int:
+    """Record a skill execution result. Creates or updates the metric row."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+        cur.execute("SELECT id, success_count, failure_count, avg_exec_time_ms FROM skill_metrics WHERE skill_id = ?", (skill_id,))
+        row = cur.fetchone()
+
+        if row:
+            old_id, s_count, f_count, avg_time = row
+            total = s_count + f_count
+            new_avg = ((avg_time * total) + exec_time_ms) / (total + 1) if total > 0 else exec_time_ms
+
+            if success:
+                cur.execute(
+                    """UPDATE skill_metrics
+                       SET success_count = success_count + 1,
+                           avg_exec_time_ms = ?, version = ?, updated_at = ?
+                       WHERE skill_id = ?""",
+                    (new_avg, version, now, skill_id)
+                )
+            else:
+                cur.execute(
+                    """UPDATE skill_metrics
+                       SET failure_count = failure_count + 1,
+                           avg_exec_time_ms = ?, last_error = ?, version = ?, updated_at = ?
+                       WHERE skill_id = ?""",
+                    (new_avg, error, version, now, skill_id)
+                )
+            conn.commit()
+            return old_id
+        else:
+            cur.execute(
+                """INSERT INTO skill_metrics
+                   (skill_id, version, success_count, failure_count, avg_exec_time_ms, last_error, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                (skill_id, version, 1 if success else 0, 0 if success else 1,
+                 exec_time_ms, error, now, now)
+            )
+            conn.commit()
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_skill_metric(skill_id: str) -> Optional[Dict]:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM skill_metrics WHERE skill_id = ?", (skill_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return _row_to_skill_metric(row)
+    finally:
+        conn.close()
+
+
+def list_skill_metrics(status: Optional[str] = None, limit: int = 50) -> List[Dict]:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        if status:
+            cur.execute("SELECT * FROM skill_metrics WHERE status = ? ORDER BY updated_at DESC LIMIT ?", (status, limit))
+        else:
+            cur.execute("SELECT * FROM skill_metrics ORDER BY updated_at DESC LIMIT ?", (limit,))
+        return [_row_to_skill_metric(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_skill_status(skill_id: str, status: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        cur.execute("UPDATE skill_metrics SET status = ?, updated_at = ? WHERE skill_id = ?", (status, now, skill_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _row_to_skill_metric(row) -> Dict:
+    return {
+        "id": row[0],
+        "skill_id": row[1],
+        "version": row[2],
+        "success_count": row[3],
+        "failure_count": row[4],
+        "avg_exec_time_ms": row[5],
+        "last_error": row[6],
+        "status": row[7],
+        "created_at": row[8],
+        "updated_at": row[9],
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# WORKSPACE ENTRIES CRUD
+# ═══════════════════════════════════════════════════════════
+
+def save_workspace_entry(
+    conversation_id: str,
+    content: str,
+    entry_type: str = "observation",
+    source_layer: str = "thinking"
+) -> int:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        cur.execute(
+            """
+            INSERT INTO workspace_entries
+            (conversation_id, content, entry_type, source_layer, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (conversation_id, content, entry_type, source_layer, now)
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def list_workspace_entries(
+    conversation_id: Optional[str] = None,
+    limit: int = 50,
+    entry_type: Optional[str] = None
+) -> List[Dict]:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        conditions = []
+        params = []
+        if conversation_id:
+            conditions.append("conversation_id = ?")
+            params.append(conversation_id)
+        if entry_type:
+            conditions.append("entry_type = ?")
+            params.append(entry_type)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        cur.execute(
+            f"""
+            SELECT id, conversation_id, content, entry_type, source_layer,
+                   created_at, updated_at, promoted, promoted_at
+            FROM workspace_entries
+            {where}
+            ORDER BY id DESC LIMIT ?
+            """,
+            (*params, limit)
+        )
+        return [_row_to_workspace_entry(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_workspace_entry(entry_id: int) -> Optional[Dict]:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, conversation_id, content, entry_type, source_layer,
+                   created_at, updated_at, promoted, promoted_at
+            FROM workspace_entries WHERE id = ?
+            """,
+            (entry_id,)
+        )
+        row = cur.fetchone()
+        return _row_to_workspace_entry(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_workspace_entry(entry_id: int, content: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        cur.execute(
+            "UPDATE workspace_entries SET content = ?, updated_at = ? WHERE id = ?",
+            (content, now, entry_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_workspace_entry(entry_id: int) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM workspace_entries WHERE id = ?", (entry_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_unpromoted_entries() -> List[Dict]:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, conversation_id, content, entry_type, source_layer,
+                   created_at, updated_at, promoted, promoted_at
+            FROM workspace_entries
+            WHERE promoted = 0
+            ORDER BY id ASC
+            """
+        )
+        return [_row_to_workspace_entry(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def mark_promoted(entry_id: int) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        cur.execute(
+            "UPDATE workspace_entries SET promoted = 1, promoted_at = ? WHERE id = ?",
+            (now, entry_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _row_to_workspace_entry(row) -> Dict:
+    return {
+        "id": row[0],
+        "conversation_id": row[1],
+        "content": row[2],
+        "entry_type": row[3],
+        "source_layer": row[4],
+        "created_at": row[5],
+        "updated_at": row[6],
+        "promoted": bool(row[7]),
+        "promoted_at": row[8],
     }
 
 

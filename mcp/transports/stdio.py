@@ -46,6 +46,54 @@ class STDIOTransport:
             
             log_info(f"[STDIO] Process started: PID {self.process.pid}")
             
+            # MCP Handshake: Initialize
+            init_payload = {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "jarvis-hub", "version": "1.0.0"}
+                }
+            }
+            log_debug("[STDIO] Sending initialize...")
+            
+            # Send init
+            request_str = json.dumps(init_payload) + "\n"
+            self.process.stdin.write(request_str)
+            self.process.stdin.flush()
+            
+            # Wait for response (manually, since thread not yet consuming queue efficiently?)
+            # Actually, the reader thread is started, so we should wait on queue
+            # But _send_request logic is similar. Let's reuse _send_request logic if possible?
+            # No, because _send_request calls _start_process which would recurse.
+            # We must adhere to the flow.
+            # Reader thread puts response in queue. We wait for it.
+            
+            try:
+                init_response = self._response_queue.get(timeout=60)
+                if "error" in init_response:
+                    log_error(f"[STDIO] Initialize failed: {init_response['error']}")
+                    raise Exception(f"Initialize failed: {init_response['error']}")
+                log_debug("[STDIO] Initialize successful")
+                
+                # Send initialized notification
+                notif_payload = {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                    "params": {}
+                }
+                notif_str = json.dumps(notif_payload) + "\n"
+                self.process.stdin.write(notif_str)
+                self.process.stdin.flush()
+                log_debug("[STDIO] Sent initialized notification")
+                
+            except queue.Empty:
+                log_error("[STDIO] Timeout waiting for initialize response")
+                raise Exception("Timeout waiting for initialize response")
+
+            
         except Exception as e:
             log_error(f"[STDIO] Failed to start: {e}")
             raise

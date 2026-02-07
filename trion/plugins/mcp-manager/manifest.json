@@ -1,0 +1,23 @@
+{
+    "id": "mcp-manager",
+    "name": "MCP System Manager",
+    "version": "1.0.0",
+    "description": "Manages system tools using uv",
+    "author": "System",
+    "icon": "🧱",
+    "tier": 3,
+    "permissions": {
+        "read": [
+            "mcp-servers"
+        ],
+        "write": [
+            "mcp-servers"
+        ],
+        "net": [
+            "*"
+        ],
+        "env": true
+    },
+    "main": "plugin.ts",
+    "trionVersion": "1.0.0"
+}

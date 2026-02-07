@@ -10,9 +10,14 @@ Funktionen:
 """
 
 from typing import Dict, Any, List, Optional
-# from mcp_registry import MCPS, get_enabled_mcps  # Removed: using dynamic import
+from mcp_registry import MCPS, get_enabled_mcps, get_mcp_config
 from mcp.transports import HTTPTransport, SSETransport, STDIOTransport
+
 from utils.logger import log_info, log_error, log_debug, log_warning
+import json
+import os
+from pathlib import Path
+
 
 
 class MCPHub:
@@ -35,50 +40,28 @@ class MCPHub:
         
         log_info("[MCPHub] Initializing...")
         
-        # Load from dynamic registry
-        from mcp_registry import get_mcps
-        active_mcps = get_mcps()
+        enabled_mcps = get_enabled_mcps()
+        log_info(f"[MCPHub] Found {len(enabled_mcps)} enabled MCPs")
         
-        log_info(f"[MCPHub] Found {len(active_mcps)} enabled MCPs from registry")
-        
-        for mcp_name, config in active_mcps.items():
-            if not config.get("enabled", True):
-                continue
-                
+        for mcp_name, config in enabled_mcps.items():
             try:
                 self._init_transport(mcp_name, config)
                 self._discover_tools(mcp_name)
             except Exception as e:
                 log_error(f"[MCPHub] Failed to init {mcp_name}: {e}")
         
+
+        # Register Container Commander tools (local, no HTTP)
+        try:
+            from container_commander.mcp_bridge import register_commander_tools
+            register_commander_tools(self)
+        except Exception as e:
+            log_warning(f"[MCPHub] Container Commander not available: {e}")
         self._initialized = True
         log_info(f"[MCPHub] Ready with {len(self._tools_cache)} tools from {len(self._transports)} MCPs")
         
         # Auto-Registration im Graph (nach Initialisierung)
         self._auto_register_tools()
-
-    def reload_registry(self):
-        """
-        Hot Reload: Lädt Registry neu und initialisiert neue/geänderte MCPs.
-        Wird vom Installer aufgerufen.
-        """
-        log_info("[MCPHub] ♻️ HOT RELOAD TRIGGERED")
-        
-        # 1. Transport-Cache leeren?
-        # Wir schließen alte Transports sicherheitshalber
-        # (Optimierung: Nur geänderte schließen)
-        self.shutdown()
-        
-        self._transports.clear()
-        self._tools_cache.clear()
-        self._tool_definitions.clear()
-        self._initialized = False
-        self._tools_registered = False
-        
-        # 2. Neu initialisieren
-        self.initialize()
-        
-        log_info("[MCPHub] ♻️ HOT RELOAD COMPLETE")
     
     def _init_transport(self, mcp_name: str, config: Dict):
         """Erstellt Transport für ein MCP."""
@@ -128,9 +111,159 @@ class MCPHub:
             log_error(f"[MCPHub] {mcp_name}: Failed to discover tools: {e}")
     
     # ═══════════════════════════════════════════════════════════════
-    # AUTO-REGISTRATION: Tool-Wissen im Graph speichern
+    # DETECTION RULES: Generierung von Rules für ThinkingLayer
     # ═══════════════════════════════════════════════════════════════
-    
+
+    def _get_mcp_config(self, mcp_name: str) -> Optional[Dict]:
+        """
+        Lädt config.json für einen MCP.
+        Strategie:
+        1. 'path' aus mcp_registry.json
+        2. Fallback: /app/custom_mcps/<mcp_name>/config.json
+        """
+        try:
+            # 1. Check Registry Path
+            config_path = None
+            # SAFE ACCESS: Use helper or handle potential NameError if MCPS is missing
+            try:
+                mcp_info = get_mcp_config(mcp_name)
+            except NameError:
+                 # Fallback if import failed
+                from mcp_registry import get_mcp_config as _get_conf
+                mcp_info = _get_conf(mcp_name)
+
+            if mcp_info and "path" in mcp_info:
+                path_str = mcp_info["path"]
+                if path_str:
+                    potential_path = Path(path_str) / "config.json"
+                    if potential_path.exists():
+                        config_path = potential_path
+            
+            # 2. Fallback Custom MCP Path
+            if not config_path:
+                fallback_path = Path(f"/app/custom_mcps/{mcp_name}/config.json")
+                if fallback_path.exists():
+                    config_path = fallback_path
+            
+            if config_path:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+                    
+        except Exception as e:
+            log_warning(f"[MCPHub] Invalid config for {mcp_name}: {e}")
+            
+        return None
+
+    def _generate_detection_rules(self) -> str:
+        """
+        Generiert Detection Rules für den ThinkingLayer.
+        Liest detection Block aus config.json aller Custom MCPs.
+        Inkludiert auch Core MCP Rules für Memory Tools.
+        """
+        rules = []
+        
+        # CORE MCP DETECTION RULES (hardcoded für sql-memory)
+        core_memory_rules = """
+TOOL: memory_save (MCP: sql-memory)
+Priority: high
+Keywords: remember, save, store, note, keep in mind, merken, speichern, notieren
+Triggers: remember that, save this, note that, please remember, bitte merken
+Examples: User: Remember my favorite color is blue -> memory_save
+
+TOOL: memory_graph_search (MCP: sql-memory)
+Priority: high
+Keywords: recall, remember, what do you know, search memory, erinnern, was weisst du
+Triggers: do you remember, what did I say, what do you know about, was habe ich gesagt
+Examples: User: What is my favorite color? -> memory_graph_search
+
+TOOL: memory_all_recent (MCP: sql-memory)
+Priority: medium
+Keywords: recent memories, last conversations, previous chats, letzte gespraeche
+Triggers: what did we talk about, show recent memories
+Examples: User: What did we discuss yesterday? -> memory_all_recent
+"""
+        rules.append((0, core_memory_rules))
+
+        # CORE CONTAINER COMMANDER DETECTION RULES
+        core_commander_rules = """
+TOOL: blueprint_list (MCP: container-commander)
+Priority: high
+Keywords: blueprint, blueprints, container-typ, sandbox, container typen, welche container, verfügbare container
+Triggers: zeig blueprints, welche blueprints, list blueprints, was für container gibt es, verfügbare sandboxes
+Examples: User: Welche Blueprints hast du? -> blueprint_list; User: Was für Container gibt es? -> blueprint_list
+
+TOOL: request_container (MCP: container-commander)
+Priority: high
+Keywords: starte container, deploy, container starten, brauche sandbox, code ausführen, python starten, node starten
+Triggers: starte einen container, deploy blueprint, ich brauche einen container, führe code aus
+Examples: User: Starte einen Python Container -> request_container; User: Ich brauche eine Sandbox -> request_container
+
+TOOL: stop_container (MCP: container-commander)
+Priority: high
+Keywords: stoppe container, stop container, beende container, container beenden, container stoppen
+Triggers: stoppe den container, beende den container, container runterfahren
+Examples: User: Stoppe den Container -> stop_container
+
+TOOL: exec_in_container (MCP: container-commander)
+Priority: high
+Keywords: ausführen, execute, run code, berechne, programmiere, führe aus, code ausführen
+Triggers: führe diesen code aus, berechne fibonacci, execute in container
+Examples: User: Berechne die Fibonacci-Folge -> request_container + exec_in_container
+
+TOOL: container_stats (MCP: container-commander)
+Priority: medium
+Keywords: container stats, container status, auslastung, efficiency, resource usage
+Triggers: wie läuft der container, container auslastung, zeig container stats
+Examples: User: Wie ist die Container-Auslastung? -> container_stats
+
+TOOL: container_logs (MCP: container-commander)
+Priority: medium
+Keywords: container logs, container ausgabe, log output
+Triggers: zeig container logs, was hat der container ausgegeben
+Examples: User: Zeig mir die Container Logs -> container_logs
+"""
+        rules.append((0, core_commander_rules))
+
+        # CUSTOM MCP DETECTION RULES (aus config.json)
+        for mcp_name in self._transports.keys():
+            if mcp_name in ["sql-memory", "sequential-thinking", "cim-server"]:
+                continue
+                
+            config = self._get_mcp_config(mcp_name)
+            if not config or "detection" not in config:
+                continue
+            
+            detection = config["detection"]
+            for tool_name, rule in detection.items():
+                keywords = rule.get("keywords", [])
+                triggers = rule.get("triggers", [])
+                examples = rule.get("examples", [])
+                priority = rule.get("priority", "medium")
+                
+                rule_text = f"""
+TOOL: {tool_name} (MCP: {mcp_name})
+Priority: {priority}
+Keywords: {", ".join(keywords)}
+Triggers: {", ".join(triggers[:3])}
+Examples: {"; ".join(examples[:2])}
+"""
+                score = 1
+                if str(priority).lower() == "high": score = 0
+                elif str(priority).lower() == "low": score = 2
+                
+                rules.append((score, rule_text))
+        
+        rules.sort(key=lambda x: x[0])
+        final_rules = [r[1] for r in rules]
+        
+        count = len(final_rules)
+        if count > 0:
+            log_info(f"[MCPHub] Generated detection rules for {count} tools (incl. core)")
+            return "=== MCP DETECTION RULES ===\n" + "\n".join(final_rules)
+        
+        return "No MCP detection rules available."
+
+
     def _auto_register_tools(self):
         """
         Registriert alle Tools automatisch im Knowledge Graph.
@@ -170,6 +303,12 @@ class MCPHub:
             usage_guide = self._generate_usage_guide()
             self._save_system_fact(memory_transport, "tool_usage_guide", usage_guide)
             
+            # 4. Detection Rules für Custom MCPs
+            detection_rules = self._generate_detection_rules()
+            self._save_system_fact(memory_transport, "mcp_detection_rules", detection_rules)
+            log_info("[MCPHub] Detection rules registered in Knowledge Graph")
+
+            
             self._tools_registered = True
             log_info(f"[MCPHub] Auto-registration complete: {len(self._tool_definitions)} tools registered")
             
@@ -191,8 +330,10 @@ class MCPHub:
             if mcp_name == "sql-memory":
                 lines.append(f"• Memory (sql-memory): Fakten speichern/laden, Graph-Suche, Embeddings")
             else:
-                config = MCPS.get(mcp_name, {})
+                config = self._get_mcp_config(mcp_name) or {}
                 desc = config.get("description", "")
+
+
                 tool_list = ", ".join(tools)
                 lines.append(f"• {mcp_name}: {desc}. Tools: {tool_list}")
         
@@ -375,11 +516,8 @@ class MCPHub:
         """Gibt Status aller MCPs zurück."""
         self.initialize()
         
-        from mcp_registry import get_mcps
-        all_mcps = get_mcps()
-        
         result = []
-        for mcp_name, config in all_mcps.items():
+        for mcp_name, config in MCPS.items():
             transport = self._transports.get(mcp_name)
             
             # Zähle Tools für dieses MCP
@@ -397,7 +535,6 @@ class MCPHub:
                 "detected_format": detected_format,
                 "url": config.get("url", "") or config.get("command", ""),
                 "description": config.get("description", ""),
-                "tier": config.get("tier", "core"), # Added tier
                 "online": transport.health_check() if transport else False,
                 "tools_count": tools_count,
             })
@@ -411,6 +548,7 @@ class MCPHub:
         self._tools_cache.clear()
         self._tool_definitions.clear()
         self._tools_registered = False  # Neu registrieren
+
         
         for mcp_name in self._transports.keys():
             self._discover_tools(mcp_name)

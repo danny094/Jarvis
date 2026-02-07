@@ -12,12 +12,16 @@ services:
     - VALIDATOR_URL=http://validator-service:8000
     - THINKING_MODEL=deepseek-r1:8b
     - CONTROL_MODEL=qwen3:4b
+    - OUTPUT_MODEL=ministral-3:3b
     - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
     - ENABLE_CONTROL_LAYER=true
     - SKIP_CONTROL_ON_LOW_RISK=true
     - ENABLE_VALIDATION=true
     - VALIDATION_HARD_FAIL=true
     - LOG_LEVEL=INFO
+    - COMMANDER_DB_PATH=/app/data/commander.db
+    - SNAPSHOT_DIR=/app/data/snapshots
+    - MARKETPLACE_DIR=/app/data/marketplace
     volumes:
     - ./config:/app/config:ro
     - ./personas:/app/personas
@@ -28,8 +32,10 @@ services:
     - ./mcp:/app/mcp:ro
     - ./utils:/app/utils:ro
     - ./maintenance:/app/maintenance:ro
+    - ./memory:/app/memory:ro
     networks:
     - big-bear-lobe-chat_default
+    user: "1000:1000"
     restart: unless-stopped
     depends_on:
     - mcp-sql-memory
@@ -49,11 +55,29 @@ services:
       - ./adapters/Jarvis/style.css:/usr/share/nginx/html/style.css:ro
       - ./adapters/Jarvis/js:/usr/share/nginx/html/js:ro
       - ./adapters/Jarvis/static:/usr/share/nginx/html/static:ro
+      - ./adapters/Jarvis/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
     - big-bear-lobe-chat_default
+    user: "1000:1000"
     restart: unless-stopped
     depends_on:
     - jarvis-admin-api
+    - trion-runtime
+
+  trion-runtime:
+    build:
+      context: ./trion
+    container_name: trion-runtime
+    ports:
+    - 8401:8401
+    volumes:
+    - ./vault:/DATA/AppData/MCP/Jarvis/vault
+    - ./trion/plugins:/DATA/AppData/MCP/Jarvis/trion/plugins
+    - ./trion/runtime:/DATA/AppData/MCP/Jarvis/trion/runtime
+    networks:
+    - big-bear-lobe-chat_default
+    user: "1000:1000"
+    restart: unless-stopped
 
   jarvis-admin-api:
     build:
@@ -63,11 +87,22 @@ services:
     ports:
     - 8200:8200
     environment:
+    - OLLAMA_BASE=http://ollama:11434
     - MCP_BASE=http://mcp-sql-memory:8081/mcp
     - CIM_URL=http://cim-server:8086
     - SEQUENTIAL_THINKING_URL=http://sequential-thinking:8085
     - DOCUMENT_PROCESSOR_URL=http://document-processor:8087
+    - THINKING_MODEL=deepseek-r1:8b
+    - CONTROL_MODEL=qwen3:4b
+    - OUTPUT_MODEL=ministral-3:3b
+    - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
+    - ENABLE_CONTROL_LAYER=true
+    - SKIP_CONTROL_ON_LOW_RISK=true
     - LOG_LEVEL=INFO
+    - COMMANDER_DB_PATH=/app/data/commander.db
+    - SNAPSHOT_DIR=/app/data/snapshots
+    - MARKETPLACE_DIR=/app/data/marketplace
+    - PROTOCOL_DIR=/app/memory
     volumes:
     - ./personas:/app/personas
     - ./core:/app/core:ro
@@ -80,8 +115,21 @@ services:
     - ./maintenance:/app/maintenance:ro
     - ./adapters/admin-api/main.py:/app/main.py:ro
     - ./adapters/admin-api/settings_routes.py:/app/settings_routes.py:ro
+    - ./adapters/admin-api/protocol_routes.py:/app/protocol_routes.py:ro
+    - ./adapters/admin-api/commander_routes.py:/app/commander_routes.py:ro
+    - ./container_commander:/app/container_commander:ro
+    - /var/run/docker.sock:/var/run/docker.sock
+    - commander-data:/app/data
+    - ./adapters/admin-api/commander_routes.py:/app/commander_routes.py:ro
+    - ./container_commander:/app/container_commander:ro
+    - /var/run/docker.sock:/var/run/docker.sock
+    - commander-data:/app/data
+    - ./memory:/app/memory
     networks:
     - big-bear-lobe-chat_default
+    group_add:
+    - "988"
+    user: "1000:1000"
     restart: unless-stopped
     depends_on:
     - mcp-sql-memory
@@ -98,11 +146,13 @@ services:
     - OLLAMA_URL=http://ollama:11434
     - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
     volumes:
+    - ./sql-memory:/app
     - ./sql-memory/data:/app/data
     ports:
     - 8082:8081
     networks:
     - big-bear-lobe-chat_default
+    user: "1000:1000"
     restart: unless-stopped
 
   cim-server:
@@ -113,12 +163,16 @@ services:
     - CIM_ROOT=/app/intelligence_modules
     - OLLAMA_BASE=http://ollama:11434
     - LOG_LEVEL=INFO
+    - COMMANDER_DB_PATH=/app/data/commander.db
+    - SNAPSHOT_DIR=/app/data/snapshots
+    - MARKETPLACE_DIR=/app/data/marketplace
     volumes:
     - ./intelligence_modules:/app/intelligence_modules
     ports:
     - 8086:8086
     networks:
     - big-bear-lobe-chat_default
+    user: "1000:1000"
     restart: unless-stopped
 
   sequential-thinking:
@@ -128,12 +182,17 @@ services:
     environment:
     - MCP_SERVER_MODE=true
     - CIM_URL=http://cim-server:8086
+    - MEMORY_URL=http://mcp-sql-memory:8081
     - OLLAMA_BASE=http://ollama:11434
     - LOG_LEVEL=INFO
+    - COMMANDER_DB_PATH=/app/data/commander.db
+    - SNAPSHOT_DIR=/app/data/snapshots
+    - MARKETPLACE_DIR=/app/data/marketplace
     ports:
     - 8085:8085
     networks:
     - big-bear-lobe-chat_default
+    user: "1000:1000"
     restart: unless-stopped
     depends_on:
     - cim-server
@@ -145,12 +204,16 @@ services:
     environment:
     - WORKSPACE_ROOT=/tmp/trion/jarvis/workspace
     - LOG_LEVEL=INFO
+    - COMMANDER_DB_PATH=/app/data/commander.db
+    - SNAPSHOT_DIR=/app/data/snapshots
+    - MARKETPLACE_DIR=/app/data/marketplace
     volumes:
     - /tmp/trion/jarvis/workspace:/tmp/trion/jarvis/workspace
     ports:
     - 8087:8087
     networks:
     - big-bear-lobe-chat_default
+    user: "1000:1000"
     restart: unless-stopped
 
   validator-service:
@@ -165,9 +228,53 @@ services:
     - 8300:8000
     networks:
     - big-bear-lobe-chat_default
+    user: "1000:1000"
     restart: unless-stopped
 
-volumes: {}
+  skill-server:
+    build:
+      context: ./mcp-servers/skill-server
+    container_name: trion-skill-server
+    environment:
+    - SKILLS_DIR=/skills
+    - REGISTRY_URL=https://raw.githubusercontent.com/trion-ai/skill-registry/main
+    - LOG_LEVEL=INFO
+    - COMMANDER_DB_PATH=/app/data/commander.db
+    - SNAPSHOT_DIR=/app/data/snapshots
+    - MARKETPLACE_DIR=/app/data/marketplace
+    - EXECUTOR_URL=http://tool-executor:8000
+    - MEMORY_URL=http://mcp-sql-memory:8081
+    volumes:
+    - /DATA/AppData/MCP/Jarvis/shared_skills:/skills:ro
+    ports:
+    - 8088:8088
+    networks:
+    - big-bear-lobe-chat_default
+    user: "1000:1000"
+    restart: unless-stopped
+    depends_on:
+    - mcp-sql-memory
+
+  tool-executor:
+    build:
+      context: ./tool_executor
+    container_name: tool-executor
+    environment:
+    - PYTHONUNBUFFERED=1
+    - SKILLS_DIR=/skills
+    - PLUGINS_DIR=/trion/plugins
+    volumes:
+    - /DATA/AppData/MCP/Jarvis/shared_skills:/skills:rw
+    - ~/.trion/plugins:/trion/plugins:rw
+    ports:
+    - 8000:8000
+    networks:
+    - big-bear-lobe-chat_default
+    user: "1000:1000"
+    restart: unless-stopped
+
+volumes:
+  commander-data:
 
 networks:
   default:

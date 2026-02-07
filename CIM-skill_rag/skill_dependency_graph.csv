@@ -1,0 +1,4 @@
+parent_skill,child_skill,dependency_type,required_version,description
+SKILL-DATA-CLEANING,SKILL-OUTLIER-DETECT,uses,>=1.0,"Cleaning pipeline uses outlier detection"
+SKILL-REPORT-GEN,SKILL-VIS-PLOT,uses,latest,"Report generator embeds plots"
+SKILL-ETL-PIPELINE,SKILL-API-FETCH,uses,1.2,"ETL pipeline fetches data via API"

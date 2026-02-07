@@ -15,6 +15,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 from ai_helpers import call_ollama, parse_ai_decision, write_conflict_log
 from ai_prompts import PROMOTION_PROMPT, DUPLICATE_PROMPT, VALIDATION_PROMPT
+from graph import build_node_with_edges
 
 
 def maintenance_run_ai(
@@ -71,6 +72,7 @@ def maintenance_run_ai(
         "promoted_to_ltm": 0,
         "summaries_created": 0,
         "graph_optimized": 0,
+        "workspace_promoted": 0,
         "conflicts_count": 0,
         "ai_decisions": 0
     }
@@ -219,8 +221,16 @@ def maintenance_run_ai(
         results["graph_optimized"] = cursor.rowcount
         conn.commit()
         
+        # ==========================================
+        # PHASE 4: WORKSPACE → GRAPH PROMOTION (DISABLED)
+        # User-controlled merge via Daily Protocol replaces auto-promotion.
+        # ==========================================
+        emit("task_start", {"message": "Phase 4: Workspace promotion (skipped – use Protokoll app)"})
+        emit("progress", {"progress": 85})
+        results["workspace_promoted"] = 0
+
         emit("progress", {"progress": 100})
-        
+
         # ==========================================
         # FINAL STATS
         # ==========================================

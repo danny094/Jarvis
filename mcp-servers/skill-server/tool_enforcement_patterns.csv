@@ -1,0 +1,11 @@
+pattern_id,trigger_category,trigger_keywords,check_skill_exists,action_if_missing,action_if_present,priority
+auto_math,calculation,"(berechne|kalkuliere|rechne|wurzel aus|multipliziere|dividiere|addiere|subtrahiere|plus|minus|mal|geteilt)",True,force_create_skill,force_run_skill,high
+auto_data,data_processing,"(sortiere|filtere|csv|tabelle analysieren|liste umwandeln|json|daten)",True,force_create_skill,force_run_skill,high
+expl_create,meta_creation,"(erstelle skill|neue funktion|programmiere|schreibe code für|baue mir|kreiere)",False,force_create_skill,force_create_skill,critical
+web_query,information,"(suche nach|wetter in|aktuell|wer ist|google mal|was ist|wikipedia)",False,web_search,web_search,normal
+sys_admin,maintenance,"(liste skills|welche skills|zeige werkzeuge|verfügbare tools|was kannst du)",False,list_skills,list_skills,normal
+file_ops,file_system,"(lies datei|datei inhalt|speichere in|lese aus|öffne datei)",True,force_create_skill,force_run_skill,high
+viz_gen,visualization,"(erstelle diagramm|plotte|zeichne graph|visualisiere|chart|grafik)",True,force_create_skill,force_run_skill,high
+translate,translation,"(übersetze|translate|auf englisch|auf deutsch|ins englische)",True,force_create_skill,force_run_skill,normal
+time_date,datetime,"(welche uhrzeit|aktuelle zeit|datum heute|wochentag)",False,force_run_skill,force_run_skill,normal
+joke,entertainment,"(erzähl.*witz|mach.*witz|witze|lustig)",True,force_create_skill,force_run_skill,low

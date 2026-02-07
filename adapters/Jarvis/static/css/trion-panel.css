@@ -40,9 +40,20 @@
     transform: translateX(calc(100% - 48px));
 }
 
-.trion-panel[data-state="open"] {
+.trion-panel[data-state="open"],
+.trion-panel[data-state="half"],
+.trion-panel[data-state="full"] {
     transform: translateX(0);
-    /* Width is handled dynamically by JS or defaults below */
+}
+
+.trion-panel[data-state="half"] {
+    width: 33vw !important;
+    min-width: 300px;
+}
+
+.trion-panel[data-state="full"] {
+    width: 50vw !important;
+    min-width: 400px;
 }
 
 /* === RESIZE HANDLE === */

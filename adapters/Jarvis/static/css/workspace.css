@@ -1,0 +1,248 @@
+/* ═══════════════════════════════════════════════════════════
+   Agent Workspace - TRION Panel Styles
+   Dark theme matching existing UI
+   ═══════════════════════════════════════════════════════════ */
+
+.ws-container {
+    padding: 12px;
+    overflow-y: auto;
+    height: 100%;
+}
+
+.ws-entries {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* ─── Card ─── */
+.ws-card {
+    background: #0d0d0d;
+    border: 1px solid #222;
+    border-radius: 10px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+
+.ws-card:hover {
+    border-color: #333;
+}
+
+/* ─── Card Header ─── */
+.ws-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #1a1a1a;
+    font-size: 11px;
+}
+
+.ws-card-layer {
+    color: #666;
+    font-family: monospace;
+    font-size: 10px;
+}
+
+.ws-card-date {
+    color: #555;
+    margin-left: auto;
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+.ws-card-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.ws-card:hover .ws-card-actions {
+    opacity: 1;
+}
+
+.ws-card-actions button {
+    background: none;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    padding: 3px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ws-card-actions button:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.ws-btn-delete:hover {
+    color: #f87171 !important;
+}
+
+/* ─── Badges ─── */
+.ws-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.ws-badge-observation {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+}
+
+.ws-badge-task {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+}
+
+.ws-badge-note {
+    background: rgba(168, 85, 247, 0.15);
+    color: #a78bfa;
+}
+
+/* ─── Card Body ─── */
+.ws-card-body {
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #ccc;
+}
+
+.ws-card-body h1,
+.ws-card-body h2,
+.ws-card-body h3 {
+    color: #e5e5e5;
+    margin: 8px 0 4px 0;
+    font-weight: 600;
+}
+
+.ws-card-body h1 { font-size: 16px; }
+.ws-card-body h2 { font-size: 14px; }
+.ws-card-body h3 { font-size: 13px; }
+
+.ws-card-body p {
+    margin: 4px 0;
+}
+
+.ws-card-body code {
+    background: #1a1a1a;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 12px;
+    color: #FFB302;
+}
+
+.ws-card-body pre {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    padding: 8px;
+    overflow-x: auto;
+    font-size: 12px;
+    margin: 6px 0;
+}
+
+.ws-card-body pre code {
+    background: none;
+    padding: 0;
+}
+
+.ws-card-body ul,
+.ws-card-body ol {
+    padding-left: 20px;
+    margin: 4px 0;
+}
+
+.ws-card-body a {
+    color: #FFB302;
+    text-decoration: none;
+}
+
+.ws-card-body a:hover {
+    text-decoration: underline;
+}
+
+/* ─── Edit Mode ─── */
+.ws-edit-area {
+    width: 100%;
+    min-height: 80px;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 8px;
+    color: #e5e5e5;
+    font-family: monospace;
+    font-size: 12px;
+    resize: vertical;
+    outline: none;
+}
+
+.ws-edit-area:focus {
+    border-color: #FFB302;
+}
+
+.ws-edit-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+    justify-content: flex-end;
+}
+
+.ws-btn-save {
+    background: #FFB302;
+    color: #000;
+    border: none;
+    padding: 4px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.ws-btn-save:hover {
+    background: #e6a200;
+}
+
+.ws-btn-cancel {
+    background: #222;
+    color: #aaa;
+    border: none;
+    padding: 4px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.ws-btn-cancel:hover {
+    background: #333;
+    color: #fff;
+}
+
+/* ─── Empty State ─── */
+.ws-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    color: #555;
+    text-align: center;
+}
+
+.ws-empty p {
+    font-size: 14px;
+    margin-bottom: 4px;
+}
+
+.ws-empty small {
+    font-size: 11px;
+    color: #444;
+}

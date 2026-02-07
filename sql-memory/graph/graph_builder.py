@@ -20,46 +20,55 @@ def build_node_with_edges(
     source_id: int = None,
     embedding: List[float] = None,
     conversation_id: str = None,
-    related_keys: List[str] = None
+    related_keys: List[str] = None,
+    weight_boost: float = 0.0,
+    confidence: float = 0.5
 ) -> int:
     """
     Erstellt einen Node UND automatisch passende Edges.
-    
+
     1. Node erstellen
     2. Temporal Edge zum letzten Node der Conversation
     3. Semantic Edges zu ähnlichen Nodes
     4. Co-Occurrence Edges wenn related_keys gegeben
+
+    Args:
+        weight_boost: Added to edge weights (for workspace-promoted nodes)
+        confidence: Node confidence score (0.5=auto, 0.9=workspace)
     """
     gs = get_graph_store()
-    
-    # 1. Node erstellen
+
+    # 1. Get last node BEFORE creating new one (so we don't find ourselves)
+    last_node = gs.get_last_node(conversation_id) if conversation_id else None
+
+    # 2. Node erstellen
     node_id = gs.add_node(
         source_type=source_type,
         content=content,
         source_id=source_id,
         embedding=embedding,
-        conversation_id=conversation_id
+        conversation_id=conversation_id,
+        confidence=confidence
     )
-    
+
     logger.info(f"[GraphBuilder] Created node {node_id}")
-    
-    # 2. Temporal Edge (zum vorherigen Node)
-    if conversation_id:
-        last_node = gs.get_last_node(conversation_id)
-        if last_node and last_node["id"] != node_id:
+
+    # 3. Temporal Edge (zum vorherigen Node)
+    if last_node and last_node["id"] != node_id:
+            temporal_weight = min(1.0, 1.0 + weight_boost)
             gs.add_edge(
                 src_node_id=last_node["id"],
                 dst_node_id=node_id,
                 edge_type="temporal",
-                weight=1.0
+                weight=temporal_weight
             )
             logger.info(f"[GraphBuilder] Temporal edge: {last_node['id']} → {node_id}")
-    
-    # 3. Semantic Edges (wenn Embedding vorhanden)
+
+    # 4. Semantic Edges (wenn Embedding vorhanden)
     if embedding:
         _create_semantic_edges(node_id, embedding, conversation_id)
-    
-    # 4. Co-Occurrence Edges (wenn mehrere Keys zusammen auftreten)
+
+    # 5. Co-Occurrence Edges (wenn mehrere Keys zusammen auftreten)
     if related_keys and len(related_keys) > 1:
         _create_cooccur_edges(node_id, related_keys, conversation_id)
     

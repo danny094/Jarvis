@@ -1,0 +1,387 @@
+{
+  "query": "build a dataset containing 10 columns and 10 rows, the data populating the fields are body language cognitive priors",
+  "mode": "HeavyGraphBuilder",
+  "source": "auto_selector",
+  "graph": {
+    "nodes": [
+      {
+        "node_id": "GATE_AP001",
+        "name": "Mitigate: Post Hoc Fallacy",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Temporal precedence is necessary but NOT sufficient for causation. Require mechanism, rule out confounders, and consider coincidence probability."
+        }
+      },
+      {
+        "node_id": "GATE_AP002",
+        "name": "Mitigate: Correlation-Causation Conflation",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Correlation can arise from: (1) X causes Y, (2) Y causes X, (3) Common cause Z, (4) Coincidence, (5) Selection bias. Never conclude causation from correlation alone."
+        }
+      },
+      {
+        "node_id": "GATE_AP003",
+        "name": "Mitigate: Ignoring Confounders",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Always ask: What third variable could cause both X and Y? List potential confounders explicitly before concluding direct causation."
+        }
+      },
+      {
+        "node_id": "GATE_AP004",
+        "name": "Mitigate: Collider Conditioning",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "NEVER condition on a collider (common effect). Conditioning on a collider creates spurious associations between its causes. Use DAG to identify colliders."
+        }
+      },
+      {
+        "node_id": "GATE_AP006",
+        "name": "Mitigate: Regression to Mean Confusion",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Extreme values naturally regress toward the mean. Improvement after extreme selection may be statistical artifact, not intervention effect. Require control group."
+        }
+      },
+      {
+        "node_id": "GATE_AP007",
+        "name": "Mitigate: Reverse Causation",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Consider: Could Y cause X instead? Could there be a feedback loop (X\u2194Y)? Test temporal precedence rigorously."
+        }
+      },
+      {
+        "node_id": "GATE_AP008",
+        "name": "Mitigate: Single Study Overconfidence",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Single studies provide preliminary evidence only. Replication across contexts is required. Maximum confidence from single study: 0.6."
+        }
+      },
+      {
+        "node_id": "GATE_AP009",
+        "name": "Mitigate: Ecological Fallacy",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Associations at group level may not hold at individual level. Cross-level inference is invalid without individual data."
+        }
+      },
+      {
+        "node_id": "GATE_AP010",
+        "name": "Mitigate: Publication Bias Blindness",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Published findings overrepresent positive results. Estimate publication bias via funnel plots. Weight evidence for likely file-drawer problem."
+        }
+      },
+      {
+        "node_id": "GATE_AP011",
+        "name": "Mitigate: Mechanism-Free Causation",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Causal claims require plausible mechanism. Ask: Through what process does X produce Y? Specify intermediate steps."
+        }
+      },
+      {
+        "node_id": "GATE_AP012",
+        "name": "Mitigate: Ignoring Effect Modification",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Effects often vary by subgroup (effect modification). Ask: For whom? Under what conditions? Heterogeneity is expected."
+        }
+      },
+      {
+        "node_id": "GATE_AP013",
+        "name": "Mitigate: Immortal Time Bias",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Time periods where outcome cannot occur (e.g., pre-treatment) create spurious protective effects. Align time origins correctly."
+        }
+      },
+      {
+        "node_id": "GATE_AP014",
+        "name": "Mitigate: Berkson's Paradox",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Selection on a common effect creates spurious negative correlation between causes. Hospital samples are particularly prone. Consider selection mechanism."
+        }
+      },
+      {
+        "node_id": "GATE_AP015",
+        "name": "Mitigate: Simpson's Paradox Ignorance",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Aggregated trends can reverse when disaggregated. Always check subgroup consistency. Identify confounding variable driving reversal."
+        }
+      },
+      {
+        "node_id": "GATE_AP016",
+        "name": "Mitigate: Omitted Variable Bias",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Regression coefficients are biased if relevant variables are omitted. Unmeasured confounders bias estimates. List omitted variables and bias direction."
+        }
+      },
+      {
+        "node_id": "GATE_AP017",
+        "name": "Mitigate: Measurement Error Dismissal",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Measurement error attenuates or inflates associations. Non-differential error biases toward null. Differential error biases unpredictably."
+        }
+      },
+      {
+        "node_id": "GATE_AP018",
+        "name": "Mitigate: P-Value Causation",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Statistical significance indicates unlikeliness under null hypothesis, NOT causation or practical importance. Effect size and mechanism matter more."
+        }
+      },
+      {
+        "node_id": "GATE_AP019",
+        "name": "Mitigate: Absence-Evidence Confusion",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Absence of evidence is not evidence of absence. Null findings may reflect low power, measurement issues, or inappropriate timing. Calculate power."
+        }
+      },
+      {
+        "node_id": "GATE_AP020",
+        "name": "Mitigate: Intention-Violation Bias",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Per-protocol analysis is biased by differential dropout. Intention-to-treat preserves randomization benefits. Report both analyses."
+        }
+      },
+      {
+        "node_id": "GATE_AP021",
+        "name": "Mitigate: Cherry-Picking Subgroups",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Post-hoc subgroup discoveries require replication. Multiple comparisons inflate false positives. Report all subgroups tested."
+        }
+      },
+      {
+        "node_id": "GATE_AP022",
+        "name": "Mitigate: Dose-Response Absence Dismissal",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Absence of dose-response weakens causal inference for monotonic relationships. Exception: threshold effects. Explain missing gradient."
+        }
+      },
+      {
+        "node_id": "GATE_AP023",
+        "name": "Mitigate: Hawthorne Effect Ignorance",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Being observed changes behavior (Hawthorne effect). Improvement may reflect observation, not intervention. Require unobserved control."
+        }
+      },
+      {
+        "node_id": "GATE_AP024",
+        "name": "Mitigate: Recall Bias Blindness",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Retrospective reports are subject to recall bias. Cases may remember exposures differently than controls. Use prospective data or objective records."
+        }
+      },
+      {
+        "node_id": "GATE_AP025",
+        "name": "Mitigate: Healthy User Bias",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "People who engage in healthy behaviors (like taking supplements) differ systematically from non-users. Selection into treatment confounds effect."
+        }
+      },
+      {
+        "node_id": "STEP_PROC008_1",
+        "name": "1. Quantify the observed association",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_001,cmt_002,cmt_006"
+        }
+      },
+      {
+        "node_id": "STEP_PROC008_2",
+        "name": "2. Compare to domain-typical effects",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_001,cmt_002,cmt_006"
+        }
+      },
+      {
+        "node_id": "STEP_PROC008_3",
+        "name": "3. Assess biological/physical plausibility of magnitude",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_001,cmt_002,cmt_006"
+        }
+      },
+      {
+        "node_id": "STEP_PROC008_4",
+        "name": "4. Consider measurement error direction",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_001,cmt_002,cmt_006"
+        }
+      },
+      {
+        "node_id": "STEP_PROC008_5",
+        "name": "5. Calculate confidence intervals",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_001,cmt_002,cmt_006"
+        }
+      },
+      {
+        "node_id": "STEP_PROC008_6",
+        "name": "6. Interpret practical significance",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_001,cmt_002,cmt_006"
+        }
+      },
+      {
+        "node_id": "STEP_PROC008_7",
+        "name": "7. Avoid overinterpretation of small effects",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_001,cmt_002,cmt_006"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source": "STEP_PROC008_1",
+        "target": "STEP_PROC008_2",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC008_2",
+        "target": "STEP_PROC008_3",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC008_3",
+        "target": "STEP_PROC008_4",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC008_4",
+        "target": "STEP_PROC008_5",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC008_5",
+        "target": "STEP_PROC008_6",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC008_6",
+        "target": "STEP_PROC008_7",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      }
+    ],
+    "metrics": {
+      "node_count": 31,
+      "edge_count": 6,
+      "is_dag": true,
+      "density": 0.0064516129032258064
+    }
+  }
+}

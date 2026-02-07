@@ -1,0 +1,12 @@
+package_name,version_constraint,purpose,security_score
+pandas,>=2.0.0,Data Analysis,A
+numpy,>=1.24.0,Math Ops,A
+scikit-learn,>=1.2.0,ML Models,A
+requests,>=2.31.0,HTTP Client,B+
+matplotlib,>=3.7.0,Visualization,A
+pydantic,>=2.0.0,Validation,A
+Pillow,>=10.0.0,Image Processing,A
+beautifulsoup4,>=4.12.0,HTML/XML Parsing,B+
+scipy,>=1.11.0,Advanced Math,A
+lxml,>=4.9.0,XML Parsing,B
+python-dateutil,>=2.8.0,Date Utilities,A

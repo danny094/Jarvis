@@ -3,7 +3,10 @@ import os
 # ═══════════════════════════════════════════════════════════════
 # CORS
 # ═══════════════════════════════════════════════════════════════
-ALLOW_ORIGINS = ["*"]
+ALLOW_ORIGINS = [
+    "http://localhost:8400",
+    "http://localhost:8100",
+]
 
 # ═══════════════════════════════════════════════════════════════
 from utils.settings import settings
@@ -24,9 +27,9 @@ def get_thinking_model():
 
 def get_control_model():
     return settings.get("CONTROL_MODEL", os.getenv("CONTROL_MODEL", "qwen3:4b"))
-    
+
 def get_output_model():
-    return settings.get("OUTPUT_MODEL", os.getenv("OUTPUT_MODEL", "deepseek-r1:8b"))
+    return settings.get("OUTPUT_MODEL", os.getenv("OUTPUT_MODEL", "ministral-3:3b"))
 
 # Backward compatibility (Module level vars will be static on import, so use functions where possible)
 # OR use a class/property trick. For now, we expose functions but keep vars for legacy.
@@ -35,7 +38,17 @@ CONTROL_MODEL = get_control_model()
 OUTPUT_MODEL = get_output_model()
 
 # Embedding Model für Semantic Search
+# Embedding Model für Semantic Search
 EMBEDDING_MODEL = settings.get("EMBEDDING_MODEL", os.getenv("EMBEDDING_MODEL", "hellord/mxbai-embed-large-v1:f16"))
+
+# ═══════════════════════════════════════════════════════════════
+# TOOL SELECTOR (Layer 0)
+# ═══════════════════════════════════════════════════════════════
+def get_tool_selector_model():
+    return settings.get("TOOL_SELECTOR_MODEL", os.getenv("TOOL_SELECTOR_MODEL", "qwen2.5:1.5b-instruct"))
+
+TOOL_SELECTOR_MODEL = get_tool_selector_model()
+ENABLE_TOOL_SELECTOR = settings.get("ENABLE_TOOL_SELECTOR", os.getenv("ENABLE_TOOL_SELECTOR", "true").lower() == "true")
 
 # ═══════════════════════════════════════════════════════════════
 # LAYER TOGGLES & OPTIMIERUNG

@@ -1,0 +1,5 @@
+harness_id,runner_type,timeout_ms,coverage_required
+TEST-PY-UNIT,unittest,5000,80
+TEST-PY-PYTEST,pytest,10000,85
+TEST-JS-JEST,jest,5000,80
+TEST-TS-MOCHA,mocha,5000,80

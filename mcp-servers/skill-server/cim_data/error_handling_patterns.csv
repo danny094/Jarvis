@@ -1,0 +1,7 @@
+pattern_id,error_type,detection,handling_code,user_message,recovery_action,retry_limit
+ERR-01,InvalidType,"not isinstance(x, expected)","return {'error': f'Expected {expected}, got {type(x)}'}","Ungültiger Eingabetyp",abort,0
+ERR-02,OutOfRange,"x < min or x > max","return {'error': f'Value must be between {min} and {max}'}","Wert außerhalb des Bereichs",abort,0
+ERR-03,MissingKey,"key not in kwargs","return {'error': f'Required parameter: {key}'}","Fehlender Parameter",abort,0
+TIMEOUT,NetworkTimeout,"except requests.exceptions.Timeout","return {'error': 'Request timed out'}","Zeitüberschreitung",retry,3
+RATE_LIMIT,ApiLimit,"resp.status_code == 429","time.sleep(retry_after)","Zu viele Anfragen",retry,5
+SCHEMA_MISMATCH,DataError,"except ValidationError","return {'error': 'Schema validation failed'}","Ungültige Daten",fallback,1

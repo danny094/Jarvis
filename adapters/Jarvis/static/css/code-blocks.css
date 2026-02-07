@@ -1,0 +1,419 @@
+/* ============================================
+   CODE BLOCKS - Override Everything
+   ============================================ */
+
+/* Reset ALL styles on code blocks */
+.code-block-interactive,
+.code-block-interactive * {
+    box-sizing: border-box;
+}
+
+.code-block-interactive {
+    background: #0d0d0d !important;
+    border-radius: 8px !important;
+    overflow: hidden !important;
+    margin: 12px 0 !important;
+    border: 1px solid #2a2a2a !important;
+    display: block !important;
+    width: 100% !important;
+}
+
+.code-block-interactive .code-header {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    padding: 8px 12px !important;
+    background: #161616 !important;
+    border-bottom: 1px solid #2a2a2a !important;
+}
+
+.code-block-interactive .code-lang {
+    font-size: 11px !important;
+    color: #888 !important;
+    font-weight: 500 !important;
+}
+
+.code-block-interactive .code-copy-btn {
+    background: none !important;
+    border: none !important;
+    color: #666 !important;
+    cursor: pointer !important;
+    padding: 4px !important;
+    border-radius: 4px !important;
+    display: flex !important;
+    align-items: center !important;
+}
+
+.code-block-interactive .code-copy-btn:hover {
+    color: #fff !important;
+    background: #333 !important;
+}
+
+.code-block-interactive .code-copy-btn.copied {
+    color: #4ade80 !important;
+}
+
+.code-block-interactive .code-copy-btn svg {
+    width: 14px !important;
+    height: 14px !important;
+}
+
+/* THE CRITICAL PART - Code Content */
+.code-block-interactive .code-content {
+    margin: 0 !important;
+    padding: 16px !important;
+    background: #0d0d0d !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    display: block !important;
+}
+
+.code-block-interactive .code-content code,
+.code-block-interactive pre code,
+.code-block-interactive code {
+    font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Consolas', 'Monaco', monospace !important;
+    font-size: 13px !important;
+    line-height: 1.5 !important;
+    white-space: pre !important;
+    word-wrap: normal !important;
+    word-break: normal !important;
+    overflow-wrap: normal !important;
+    display: block !important;
+    /* color: #e0e0e0 !important; REMOVED - kills Prism tokens */
+    background: transparent !important;
+    tab-size: 4 !important;
+    -moz-tab-size: 4 !important;
+    text-align: left !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Prism Overrides */
+.code-block-interactive pre[class*=language-],
+.code-block-interactive code[class*=language-] {
+    white-space: pre !important;
+    word-spacing: normal !important;
+    word-break: normal !important;
+    word-wrap: normal !important;
+    background: transparent !important;
+}
+
+/* Syntax Highlighting Colors */
+.code-block-interactive .token.comment,
+.code-block-interactive .token.prolog,
+.code-block-interactive .token.doctype,
+.code-block-interactive .token.cdata { color: #6c7086 !important; }
+
+.code-block-interactive .token.punctuation { color: #89b4fa !important; }
+
+.code-block-interactive .token.property,
+.code-block-interactive .token.tag,
+.code-block-interactive .token.constant,
+.code-block-interactive .token.symbol,
+.code-block-interactive .token.deleted { color: #f38ba8 !important; }
+
+.code-block-interactive .token.boolean,
+.code-block-interactive .token.number { color: #fab387 !important; }
+
+.code-block-interactive .token.selector,
+.code-block-interactive .token.attr-name,
+.code-block-interactive .token.string,
+.code-block-interactive .token.char,
+.code-block-interactive .token.builtin,
+.code-block-interactive .token.inserted { color: #a6e3a1 !important; }
+
+.code-block-interactive .token.operator,
+.code-block-interactive .token.entity,
+.code-block-interactive .token.url { color: #89dceb !important; }
+
+.code-block-interactive .token.atrule,
+.code-block-interactive .token.attr-value,
+.code-block-interactive .token.keyword { color: #cba6f7 !important; }
+
+.code-block-interactive .token.function,
+.code-block-interactive .token.class-name { color: #89b4fa !important; }
+
+.code-block-interactive .token.regex,
+.code-block-interactive .token.important,
+.code-block-interactive .token.variable { color: #f9e2af !important; }
+
+/* Scrollbar */
+.code-block-interactive .code-content::-webkit-scrollbar {
+    height: 6px !important;
+}
+
+.code-block-interactive .code-content::-webkit-scrollbar-track {
+    background: #1a1a1a !important;
+}
+
+.code-block-interactive .code-content::-webkit-scrollbar-thumb {
+    background: #444 !important;
+    border-radius: 3px !important;
+}
+
+/* Message content - preserve newlines */
+.message-content {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* SEQUENTIAL THINKING BOX STYLES (Claude-style)               */
+/* ═══════════════════════════════════════════════════════════ */
+
+/* Fade-in animation for steps */
+@keyframes fadeIn {
+    from { 
+        opacity: 0; 
+        transform: translateY(-10px); 
+    }
+    to { 
+        opacity: 1; 
+        transform: translateY(0); 
+    }
+}
+
+.fade-in {
+    animation: fadeIn 0.3s ease-in;
+}
+
+/* Sequential step border */
+.border-l-2 {
+    border-left-width: 2px;
+    transition: border-color 0.3s ease, transform 0.2s ease;
+}
+
+.border-l-2:hover {
+    border-left-color: #fbbf24 !important;
+    transform: translateX(2px);
+}
+
+/* Details styling for collapsible sections */
+details[open] summary {
+    margin-bottom: 0.75rem;
+}
+
+details summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    list-style: none;
+    user-select: none;
+}
+
+details summary::-webkit-details-marker {
+    display: none;
+}
+
+/* Smooth height animation for details */
+details[open] > *:not(summary) {
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Step content styling */
+.border-yellow-400 {
+    border-color: #fbbf24;
+}
+
+/* Thinking Box Formatting Fix */
+[id$="-stream"] {
+    white-space: pre-wrap !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* MARKDOWN TABLES & FORMATTING                                */
+/* ═══════════════════════════════════════════════════════════ */
+
+/* Tables */
+.message-content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    background: rgba(26, 26, 26, 0.5);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.message-content thead {
+    background: rgba(59, 130, 246, 0.1);
+    border-bottom: 2px solid rgba(59, 130, 246, 0.3);
+}
+
+.message-content th {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-weight: 600;
+    color: #60a5fa;
+    font-size: 0.875rem;
+}
+
+.message-content td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    color: #e5e7eb;
+    font-size: 0.875rem;
+}
+
+.message-content tr:last-child td {
+    border-bottom: none;
+}
+
+.message-content tbody tr:hover {
+    background: rgba(59, 130, 246, 0.05);
+    transition: background 0.2s ease;
+}
+
+/* Markdown Headers */
+.message-content h1, .message-content h2, .message-content h3 {
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+.message-content h1 {
+    font-size: 1.5rem;
+    color: #60a5fa;
+    border-bottom: 2px solid rgba(59, 130, 246, 0.3);
+    padding-bottom: 0.5rem;
+}
+
+.message-content h2 {
+    font-size: 1.25rem;
+    color: #60a5fa;
+}
+
+.message-content h3 {
+    font-size: 1.125rem;
+    color: #93c5fd;
+}
+
+/* Lists */
+.message-content ul, .message-content ol {
+    margin: 0.75rem 0;
+    padding-left: 1.5rem;
+}
+
+.message-content li {
+    margin: 0.375rem 0;
+    line-height: 1.6;
+}
+
+/* Blockquotes */
+.message-content blockquote {
+    border-left: 4px solid rgba(59, 130, 246, 0.5);
+    padding-left: 1rem;
+    margin: 1rem 0;
+    font-style: italic;
+    color: #9ca3af;
+}
+
+/* Horizontal Rules */
+.message-content hr {
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    margin: 1.5rem 0;
+}
+
+/* Inline Code */
+.message-content code {
+    background: rgba(59, 130, 246, 0.1);
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    font-family: Courier New, monospace;
+    font-size: 0.875em;
+    color: #60a5fa;
+}
+
+/* Code Blocks (already styled by Prism, but ensure consistency) */
+.message-content pre {
+    margin: 1rem 0;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+}
+
+.message-content pre code {
+    background: transparent;
+    padding: 0;
+}
+
+/* Links */
+.message-content a {
+    color: #60a5fa;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(59, 130, 246, 0.3);
+    transition: border-color 0.2s ease;
+}
+
+.message-content a:hover {
+    border-bottom-color: #60a5fa;
+}
+
+/* Paragraphs */
+.message-content p {
+    margin: 0.75rem 0;
+    line-height: 1.6;
+}
+
+.message-content p:first-child {
+    margin-top: 0;
+}
+
+.message-content p:last-child {
+    margin-bottom: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* USER MESSAGE BUBBLE - Dynamische Größe                      */
+/* ═══════════════════════════════════════════════════════════ */
+
+
+/* Gemini Fix: Paragraphs in message content sollten keine Bubble aufblähen */
+.message-content p {
+    margin: 0;
+    width: auto;
+}
+
+/* NUCLEAR FIX: User Bubbles müssen schrumpfen! */
+.w-fit.bg-accent-primary {
+    display: inline-block !important;
+    width: fit-content !important;
+    max-width: 80% !important;
+}
+
+.w-fit.bg-accent-primary .message-content {
+    display: inline-block !important;
+    width: fit-content !important;
+}
+
+.w-fit.bg-accent-primary .message-content p {
+    display: inline !important;
+    width: auto !important;
+    margin: 0 !important;
+}
+
+/* Fix: Whitespace in message-content ignorieren */
+.message-content {
+    white-space: normal;
+}
+
+.message-content > *:first-child {
+    margin-top: 0 !important;
+}
+
+.message-content > *:last-child {
+    margin-bottom: 0 !important;
+}

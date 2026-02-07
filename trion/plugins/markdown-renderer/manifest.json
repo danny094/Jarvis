@@ -1,0 +1,11 @@
+{
+    "id": "markdown-renderer",
+    "name": "Markdown Renderer",
+    "version": "1.0.0",
+    "description": "Renders Markdown with code syntax highlighting without conflicts",
+    "author": "Antigravity AI",
+    "icon": "📝",
+    "tier": 1,
+    "main": "plugin.ts",
+    "trionVersion": "1.0.0"
+}

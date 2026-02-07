@@ -1,0 +1,4 @@
+skill_id,version,success_count,failure_count,avg_exec_time_ms,last_error,status
+SKILL-FIB-01,1.0,50,2,150,None,active
+SKILL-REQ-01,1.1,120,5,800,TimeoutError,deprecated
+SKILL-IMG-PROCESS,0.9,10,1,2500,MemoryLimitExceeded,beta

@@ -93,7 +93,8 @@ class VectorStore:
         query: str, 
         conversation_id: str = None,
         limit: int = 5,
-        min_similarity: float = 0.5
+        min_similarity: float = 0.5,
+        content_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Semantische Suche nach ähnlichen Einträgen.
@@ -105,16 +106,18 @@ class VectorStore:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        sql = "SELECT id, content, content_type, metadata, embedding FROM embeddings WHERE 1=1"
+        params = []
+
         if conversation_id:
-            cursor.execute("""
-                SELECT id, content, content_type, metadata, embedding
-                FROM embeddings WHERE (conversation_id = ? OR conversation_id = 'global')
-            """, (conversation_id,))
-        else:
-            cursor.execute("""
-                SELECT id, content, content_type, metadata, embedding
-                FROM embeddings
-            """)
+            sql += " AND (conversation_id = ? OR conversation_id = 'global')"
+            params.append(conversation_id)
+        
+        if content_type:
+            sql += " AND content_type = ?"
+            params.append(content_type)
+
+        cursor.execute(sql, params)
         
         rows = cursor.fetchall()
         conn.close()

@@ -1,0 +1,43 @@
+{
+  "tier": "simple",
+  "name": "time-mcp",
+  "url": "http://localhost:8090",
+  "description": "Simple MCP server providing current time information",
+  "version": "1.0.0",
+  "transport": "stdio",
+  "command": "python",
+  "args": ["server.py"],
+  
+  "detection": {
+    "get_current_time": {
+      "keywords": ["time", "clock", "what time", "current time", "now", "time now"],
+      "triggers": [
+        "what time is it",
+        "tell me the time",
+        "show me the time",
+        "what's the time",
+        "current time please"
+      ],
+      "examples": [
+        "User: What time is it? → get_current_time",
+        "User: Show me the current time → get_current_time",
+        "User: What's the time now? → get_current_time"
+      ],
+      "priority": "high"
+    },
+    "get_timezone": {
+      "keywords": ["timezone", "time zone", "tz", "my timezone"],
+      "triggers": [
+        "what timezone",
+        "my timezone",
+        "what's my timezone",
+        "which timezone"
+      ],
+      "examples": [
+        "User: What timezone am I in? → get_timezone",
+        "User: Show my timezone → get_timezone"
+      ],
+      "priority": "medium"
+    }
+  }
+}

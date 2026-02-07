@@ -4,7 +4,7 @@ import { getModels, checkHealth, setApiBase, getApiBase } from "./api.js";
 
 // Expose getApiBase to window for non-module scripts
 window.getApiBase = getApiBase;
-import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount, initChatFromStorage } from "./chat.js";
+import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount, initChatFromStorage } from "./chat.js?v=1770329526";
 import { log, clearLogs, setVerbose } from "./debug.js";
 import { initSettings } from "./settings.js";
 import { initMaintenance } from "./maintenance.js";
@@ -292,7 +292,22 @@ async function loadTools() {
         log("info", `Loaded ${data.total_tools} tools from ${data.total_mcps} MCPs`);
 
         // Render MCPs
-        let html = "";
+        // Render MCPs via ZIP Upload
+        let html = `
+            <div class="mb-6 p-4 border border-dark-border rounded-lg bg-dark-card/30">
+                <div class="flex items-center justify-between mb-2">
+                    <h3 class="font-medium text-sm">Neues MCP Installieren (ZIP)</h3>
+                    <span class="text-xs text-gray-500">Tier 1 (Simple Python)</span>
+                </div>
+                <div class="flex gap-3 items-center">
+                    <input type="file" id="mcp-zip-input" accept=".zip" class="text-sm text-gray-400 file:mr-4 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-accent-primary file:text-white hover:file:bg-accent-secondary"/>
+                    <button id="btn-upload-mcp" class="px-3 py-1 bg-accent-primary text-white text-xs rounded hover:bg-accent-secondary transition-colors" onclick="uploadMcp()">
+                        Installieren
+                    </button>
+                    <span id="upload-status" class="text-xs"></span>
+                </div>
+            </div>
+        `;
 
         for (const mcp of data.mcps) {
             const statusColor = mcp.online ? "bg-green-500" : "bg-red-500";
@@ -351,3 +366,51 @@ async function loadTools() {
         lucide.createIcons();
     }
 }
+
+// ==========================================
+// MCP UPLOAD LOGIC
+// ==========================================
+window.uploadMcp = async function() {
+    const input = document.getElementById("mcp-zip-input");
+    const status = document.getElementById("upload-status");
+    
+    if (!input.files || input.files.length === 0) {
+        alert("Bitte eine ZIP-Datei auswählen!");
+        return;
+    }
+    
+    const file = input.files[0];
+    const formData = new FormData();
+    formData.append("file", file);
+    
+    status.textContent = "Upload läuft...";
+    status.className = "text-xs text-blue-400";
+    
+    try {
+        const res = await fetch(`${getApiBase()}/api/mcp/install`, {
+            method: "POST",
+            body: formData
+        });
+        
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "Upload fehlgeschlagen");
+        }
+        
+        const data = await res.json();
+        status.textContent = "✅ Installiert!";
+        status.className = "text-xs text-green-400";
+        
+        // Reload list after 1s
+        setTimeout(() => {
+            if (typeof loadTools === "function") loadTools();
+            status.textContent = "";
+            input.value = ""; // Reset input
+        }, 1500);
+        
+    } catch (e) {
+        status.textContent = `❌ Fehler: ${e.message}`;
+        status.className = "text-xs text-red-400";
+        console.error(e);
+    }
+};

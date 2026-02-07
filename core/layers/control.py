@@ -15,6 +15,14 @@ from utils.json_parser import safe_parse_json
 from core.safety import LightCIM
 from core.sequential_registry import get_registry
 
+# CIM Policy Engine für Skill-Creation Detection
+try:
+    from intelligence_modules.cim_policy.cim_policy_engine import process_cim as process_cim_policy
+    CIM_POLICY_AVAILABLE = True
+except ImportError:
+    CIM_POLICY_AVAILABLE = False
+    log_warning("[ControlLayer] CIM Policy Engine not available")
+
 CIM_URL = "http://cim-server:8086"
 
 CONTROL_PROMPT = """Du bist der CONTROL-Layer eines AI-Systems.
@@ -66,6 +74,21 @@ class ControlLayer:
         self.mcp_hub = hub
         log_info("[ControlLayer] MCP Hub connected")
     
+    def _get_available_skills(self) -> list:
+        """Holt Liste aller installierten Skills vom MCPHub."""
+        if not self.mcp_hub:
+            return []
+        try:
+            result = self.mcp_hub.call_tool("list_skills", {})
+            if isinstance(result, dict):
+                return [s.get("name", "") for s in result.get("skills", [])]
+            elif isinstance(result, list):
+                return [s.get("name", "") if isinstance(s, dict) else str(s) for s in result]
+            return []
+        except Exception as e:
+            log_debug(f"[ControlLayer] Could not fetch skills: {e}")
+            return []
+    
     async def verify(self, user_text: str, thinking_plan: Dict[str, Any], retrieved_memory: str = "") -> Dict[str, Any]:
         sequential_result = thinking_plan.get("_sequential_result")
         # FIX: Removed - Bridge handles Sequential Thinking
@@ -75,6 +98,60 @@ class ControlLayer:
             log_info(f"[ControlLayer] Sequential completed with {len(sequential_result.get('steps', []))} steps")
             thinking_plan["_sequential_result"] = sequential_result
         
+        # ═══════════════════════════════════════════════════════════
+        # CIM POLICY ENGINE - Skill Creation Detection
+        # ═══════════════════════════════════════════════════════════
+        log_info(f"[ControlLayer-DEBUG] CIM_POLICY_AVAILABLE={CIM_POLICY_AVAILABLE}")
+        if CIM_POLICY_AVAILABLE:
+            intent = thinking_plan.get("intent", "").lower()
+            # Check für skill-creation Intents
+            skill_keywords = ["skill", "erstelle", "create", "programmier", "bau", "neu"]
+            keyword_match = any(kw in intent or kw in user_text.lower() for kw in skill_keywords)
+            log_info(f"[ControlLayer-DEBUG] intent='{intent}', keyword_match={keyword_match}")
+            if keyword_match:
+                try:
+                    available_skills = self._get_available_skills()
+                    log_info(f"[ControlLayer-DEBUG] available_skills={available_skills[:5] if available_skills else []}")
+                    cim_decision = process_cim_policy(user_text, available_skills)
+                    log_info(f"[ControlLayer-DEBUG] cim_decision.matched={cim_decision.matched}, requires_confirmation={cim_decision.requires_confirmation}")
+
+                    if cim_decision.matched:
+                        log_info(f"[ControlLayer-CIM] Decision: {cim_decision.action.value} for '{cim_decision.skill_name}'")
+                        
+                        # Read-only Aktionen direkt durchlassen
+                        safe_actions = ["list_skills", "get_skill_info", "list_draft_skills"]
+                        if cim_decision.action.value in safe_actions:
+                            log_info(f"[ControlLayer-CIM] Safe read-only action: {cim_decision.action.value}")
+                            return {
+                                "approved": True,
+                                "corrections": {},
+                                "warnings": [],
+                                "final_instruction": f"Execute {cim_decision.action.value}",
+                                "_cim_decision": {
+                                    "action": cim_decision.action.value,
+                                    "skill_name": cim_decision.skill_name,
+                                },
+                                "suggested_tools": [cim_decision.action.value],
+                            }
+                        
+                        if cim_decision.requires_confirmation:
+                            log_info(f"[ControlLayer-CIM] Requires confirmation for skill '{cim_decision.skill_name}'")
+                            return {
+                                "approved": True,
+                                "corrections": {},
+                                "warnings": [],
+                                "final_instruction": "Skill creation requires user confirmation",
+                                "_cim_decision": {
+                                    "action": cim_decision.action.value,
+                                    "skill_name": cim_decision.skill_name,
+                                    "pattern_id": cim_decision.policy_match.pattern_id if cim_decision.policy_match else None
+                                },
+                                "_needs_skill_confirmation": True,
+                                "_skill_name": cim_decision.skill_name
+                            }
+                except Exception as e:
+                    log_error(f"[ControlLayer-CIM] Error: {e}")
+
         try:
             cim_result = self.light_cim.validate_basic(
                 intent=thinking_plan.get("intent", ""),
@@ -89,6 +166,8 @@ class ControlLayer:
         except Exception as e:
             log_error(f"[LightCIM] Error: {e}")
         
+
+        
         prompt = f"""{CONTROL_PROMPT}
 
 USER-ANFRAGE: {user_text}
@@ -100,7 +179,8 @@ Deine Bewertung (nur JSON):"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 r = await client.post(f"{self.ollama_base}/api/generate",
-                    json={"model": self.model, "prompt": prompt, "stream": False, "format": "json"})
+                    json={"model": self.model, "prompt": prompt, "stream": False,
+            "keep_alive": "2m", "format": "json"})
                 r.raise_for_status()
             data = r.json()
             content = data.get("response", "").strip() or data.get("thinking", "").strip()
@@ -253,7 +333,7 @@ START YOUR ANALYSIS NOW with "## Step 1:"."""
                     "POST",
                     f"{self.ollama_base}/api/chat",
                     json={
-                        "model": "deepseek-r1:8b",
+                        "model": self.sequential_model,
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}
@@ -409,4 +489,11 @@ START YOUR ANALYSIS NOW with "## Step 1:"."""
         corrected["_verified"] = True
         corrected["_final_instruction"] = verification.get("final_instruction", "")
         corrected["_warnings"] = verification.get("warnings", [])
+        # Merge suggested_tools from CIM decision
+        if verification.get("suggested_tools"):
+            existing = corrected.get("suggested_tools", [])
+            corrected["suggested_tools"] = list(set(existing + verification["suggested_tools"]))
+        # Merge CIM decision metadata
+        if verification.get("_cim_decision"):
+            corrected["_cim_decision"] = verification["_cim_decision"]
         return corrected

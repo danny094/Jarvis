@@ -1,0 +1,11 @@
+template_id,test_input,expected_output_logic,edge_case_check
+TMPL-MATH-01,"{'n': 5}","result == 120","n='five' -> error"
+TMPL-TEXT-01,"{'text': 'hello'}","metadata['length'] == 5","text=123 -> error"
+TMPL-API-WRAPPER,"{'url': 'https://httpbin.org/get'}","status == 200","url='invalid' -> error"
+TMPL-DATA-01,"{'data': [3,1,2]}","len(data) == 3","data='string' -> error"
+TMPL-CONVERT-01,"{'source': {'key': 'value'}}","result is not None","source=None -> error"
+TMPL-DB-01,"{'query': 'SELECT * FROM users', 'params': {}}","'rows' in result","query='' -> error"
+TMPL-IMG-01,"{'path': 'test.png'}","'size' in result","path='' -> error"
+TMPL-ML-01,"{'X': [[1,2],[3,4]], 'y': [0,1]}","accuracy >= 0","X=[] -> error"
+TMPL-VIS-01,"{'data': [1,2,3,4,5]}","'chart_path' in result","data=[] -> error"
+TMPL-UTIL-01,"{'path': '/tmp/test'}","'exists' in result","path='' -> error"

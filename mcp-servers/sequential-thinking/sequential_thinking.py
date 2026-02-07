@@ -26,6 +26,7 @@ from fastmcp import FastMCP
 # Configuration
 CIM_URL = os.environ.get("CIM_URL", "http://cim-server:8086")
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://ollama:11434")
+MEMORY_URL = os.environ.get("MEMORY_URL", "http://mcp-sql-memory:8081/mcp")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-r1:8b")
 
 # Initialize MCP Server
@@ -94,9 +95,12 @@ class CIMClient:
             
             self._session_id = response.headers.get("mcp-session-id")
             
-            if response.status_code == 200 and self._session_id:
+            if response.status_code == 200:
                 self._initialized = True
-                print(f"[CIMClient] Session initialized: {self._session_id[:8]}...")
+                if self._session_id:
+                    print(f"[CIMClient] Session initialized: {self._session_id[:8]}...")
+                else:
+                    print(f"[CIMClient] Session initialized (Stateless/No ID)")
                 return True
             else:
                 print(f"[CIMClient] Session init failed: {response.status_code}")
@@ -177,6 +181,48 @@ cim = CIMClient(CIM_URL)
 
 
 # ============================================================
+# MEMORY CLIENT - Calls to SQL Memory MCP Server
+# ============================================================
+
+class MemoryClient(CIMClient):
+    """
+    Client for interacting with Memory MCP (similar protocol to CIM).
+    """
+    def __init__(self, base_url: str):
+        super().__init__(base_url)
+        self.name = "memory-client"
+
+    async def search(self, query: str) -> Dict[str, Any]:
+        """
+        Search memory using graph search (semantic + graph walk).
+        """
+        # Try graph search first (most comprehensive)
+        try:
+            return await self.call_tool("memory_graph_search", {
+                "query": query,
+                "depth": 2,
+                "limit": 10
+            })
+        except Exception as e:
+            # Fallback to simple semantic search
+            print(f"[Memory] Graph search failed, fallback: {e}")
+            return await self.call_tool("memory_semantic_search", {
+                "query": query,
+                "limit": 5
+            })
+            
+    async def health_check(self) -> Dict[str, Any]:
+        # Try memory_healthcheck if available, else heuristic
+        try:
+            return await self.call_tool("memory_healthcheck", {})
+        except:
+             return {"status": "unknown"}
+
+# Initialize Memory Client
+memory = MemoryClient(MEMORY_URL)
+
+
+# ============================================================
 # OLLAMA CLIENT - Single Call for All Steps
 # ============================================================
 
@@ -202,6 +248,19 @@ async def call_ollama(prompt: str, system: str = None, timeout: float = 120.0) -
             )
             response.raise_for_status()
             result = response.json()
+            
+            # --- Performance Metrics ---
+            eval_count = result.get("eval_count", 0)
+            eval_duration_ns = result.get("eval_duration", 0)
+            eval_duration_s = eval_duration_ns / 1_000_000_000
+            
+            if eval_duration_s > 0:
+                tps = eval_count / eval_duration_s
+                print(f"[Ollama] Performance: {eval_count} tokens in {eval_duration_s:.2f}s = {tps:.2f} tokens/sec")
+            else:
+                print(f"[Ollama] Stats: {eval_count} tokens (duration unknown)")
+            # ---------------------------
+            
             return result.get("message", {}).get("content", "")
             
     except Exception as e:
@@ -290,30 +349,58 @@ async def think(
     steps: int = 5,
     mode: Optional[str] = None,
     use_cim: bool = True,
+    use_memory: bool = True,
     validate_steps: bool = False
 ) -> Dict[str, Any]:
     """
-    Sequential thinking with CIM-guided reasoning.
+    Sequential thinking with CIM-guided reasoning and Memory context.
     
     v3.0 Architecture (Frank's Design):
     1. CIM.analyze() retrieves procedures from RAG and builds REASONING ROADMAP
-    2. Single Ollama call follows the ROADMAP
-    3. Optional: lightweight validation per step
+    2. Memory.search() retrieves factual context (Dynamic RAG)
+    3. Single Ollama call follows the ROADMAP with MEMORY CONTEXT
+    4. Optional: lightweight validation per step
     
     Args:
         message: The query/task to think through
         steps: Suggested number of steps (CIM may override based on RAG procedure)
         mode: Force CIM mode (light, heavy, strategic, temporal, simulation)
         use_cim: Enable CIM for context building (default: True)
+        use_memory: Enable Memory retrieval (default: True)
         validate_steps: Enable post-step validation (default: False, adds latency)
     
     Returns:
-        Chain of reasoning steps with CIM context
+        Chain of reasoning steps with CIM context and Memory facts
     """
     cim_errors = []
     causal_prompt = ""
     cim_mode = None
     cim_graph = None
+    memory_context = ""
+    memory_results = []
+    
+    # ============================================================
+    # PHASE 0: Memory Retrieval (Dynamic RAG)
+    # ============================================================
+    if use_memory:
+        print(f"[Sequential] Calling Memory.search for: {message[:50]}...")
+        mem_response = await memory.search(message)
+        
+        if mem_response and "results" in mem_response:
+            results = mem_response["results"]
+            memory_results = results
+            print(f"[Sequential] Memory found {len(results)} items")
+            
+            if results:
+                memory_context = "=== MEMORY CONTEXT (FACTS) ===\n"
+                for idx, item in enumerate(results, 1):
+                    content = item.get("content", "")
+                    m_type = item.get("type", "fact")
+                    memory_context += f"{idx}. [{m_type.upper()}] {content}\n"
+                memory_context += "=== END MEMORY CONTEXT ===\n\n"
+        else:
+            print("[Sequential] Memory retrieval returned no results or error")
+
     
     # ============================================================
     # PHASE 1: CIM Analysis - Get REASONING ROADMAP from RAG
@@ -363,6 +450,15 @@ Continue for all steps in the roadmap."""
 === CIM CAUSAL CONTEXT ===
 {causal_prompt}
 === END CAUSAL CONTEXT ===
+"""
+    if memory_context:
+        system_prompt += f"""
+
+{memory_context}
+Use the facts from MEMORY CONTEXT to answer the query accurately. 
+Checking memory is CRITICAL for specific questions about projects, names, or stored data.
+"""
+    system_prompt += f"""
 
 Follow the REASONING ROADMAP above strictly. Address each step systematically."""
     
@@ -434,8 +530,11 @@ Provide your complete analysis following the reasoning roadmap. Be thorough and 
         "total_steps": len(parsed_steps),
         "full_response": full_response,  # Include for debugging
         "cim_enabled": use_cim,
+        "cim_enabled": use_cim,
         "cim_mode": cim_mode,
         "cim_graph": cim_graph,
+        "memory_enabled": use_memory,
+        "memory_results_count": len(memory_results),
         "cim_errors": cim_errors if cim_errors else None,
         "ollama_calls": 1,  # v3.0: Always 1!
         "summary": f"{len(parsed_steps)} steps completed with {'CIM-guided reasoning' if use_cim else 'basic reasoning'}"
@@ -468,15 +567,28 @@ async def health() -> Dict[str, Any]:
             cim_status = "unknown"
     except Exception as e:
         cim_status = f"error: {e}"
+
+    # Check Memory
+    memory_status = "unknown"
+    try:
+        mem_health = await memory.health_check()
+        if mem_health.get("status") == "ok":
+            memory_status = "connected"
+        else:
+            memory_status = f"error: {mem_health}"
+    except Exception as e:
+        memory_status = f"error: {e}"
     
     return {
         "status": "healthy",
         "service": "sequential-thinking",
-        "version": "3.0.0",
-        "architecture": "single-ollama-call",
+        "version": "3.1.0",
+        "architecture": "single-ollama-call-with-memory",
         "cim_url": CIM_URL,
         "cim_status": cim_status,
         "cim_session": cim_session,
+        "memory_url": MEMORY_URL,
+        "memory_status": memory_status,
         "ollama_url": OLLAMA_BASE,
         "ollama_model": OLLAMA_MODEL
     }

@@ -1,0 +1,5 @@
+env_id,runtime,docker_image,max_memory_mb,timeout_cap_sec,description
+ENV-PY-DATA,python-3.11,python:3.11-slim-bookworm,512,60,"Standard Data Science environment (Pandas, Numpy)"
+ENV-PY-MIN,python-3.11,python:3.11-alpine,128,10,"Minimal Python environment for simple logic"
+ENV-JS-NODE,node-18,node:18-alpine,256,30,"Node.js environment for API/Web tasks"
+ENV-SANDBOX,python-restricted,sandbox:latest,64,5,"Highly restricted sandbox for untrusted code"

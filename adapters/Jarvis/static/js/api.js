@@ -151,7 +151,8 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                     const flatEventTypes = [
                         'sequential_start', 'sequential_step', 'sequential_done', 'sequential_error', 'seq_thinking_stream', 'seq_thinking_done',
                         'mcp_call', 'mcp_result',
-                        'cim_store', 'memory_update'
+                        'cim_store', 'memory_update',
+                        'workspace_update'
                     ];
 
                     if (flatEventTypes.includes(data.type)) {

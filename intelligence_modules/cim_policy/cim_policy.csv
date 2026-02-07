@@ -1,0 +1,9 @@
+pattern_id,trigger_category,trigger_regex,intent_confidence,check_skill_exists,skill_scope,action_if_missing,action_if_present,fallback_action,allows_chaining,requires_confirmation,safety_level,priority,notes
+auto_math,calculation,"(berechne|kalkuliere|wurzel aus|multipliziere|addiere|subtrahiere|dividiere|fakultät|fibonacci|primzahl)",0.8,True,stateless,force_create_skill,force_run_skill,fallback_chat,False,False,low,high,"Grundlegende Mathematik"
+auto_data,data_processing,"(sortiere|filtere|csv|tabelle analysieren|konvertiere|json|liste)",0.8,True,stateless,force_create_skill,force_run_skill,fallback_chat,False,False,low,high,"Datenmanipulation"
+planner,planning,"(erstelle plan|roadmap|schritte aufteilen|strategie|workflow)",0.6,True,session,force_create_skill,force_run_skill,retry_once,True,False,medium,critical,"Meta-Orchestrierung"
+file_ops,file_system,"(lies datei|speichere|lese aus|datei inhalt|schreibe in datei)",0.9,True,persistent,request_user_confirmation,run_skill,fallback_chat,False,True,high,high,"Dateisystem Zugriff"
+web_query,information,"(suche nach|suche im internet|wetter in|aktuell|google mal|wer ist|recherchiere)",0.7,False,system,web_search,web_search,fallback_chat,False,False,low,normal,"Websuche (System Tool)"
+sys_admin,maintenance,"(liste skills|welche skills|zeige werkzeuge|verfügbare skills|skill liste)",1.0,False,system,list_skills,list_skills,fallback_chat,False,False,low,normal,"Wartung"
+policy_guard,security,"(darf ich|ist erlaubt|hacke|passwort|crack|exploit|injection|sudo|root)",1.0,False,system,deny_autonomy,policy_check,fallback_chat,False,True,critical,critical,"Sicherheitsgrenzen"
+expl_create,meta_creation,"(erstelle.*skill|erstelle skill|neue funktion|programmiere|schreibe code für|baue skill|neuer skill)",1.0,False,persistent,force_create_skill,force_create_skill,fallback_chat,False,True,medium,critical,"Explizite Erstellung"

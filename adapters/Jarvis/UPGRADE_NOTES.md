@@ -307,7 +307,7 @@ Bei Fragen oder Problemen:
 
 ## 🎯 Nächste Schritte
 
-1. **Testen** - UI in Browser öffnen: `http://192.168.0.224:8400`
+1. **Testen** - UI in Browser öffnen: `http://localhost:8400`
 2. **Backend-Integration** - app.js erweitern für neue Features
 3. **Feedback sammeln** - Was funktioniert gut? Was fehlt?
 4. **Phase 2 planen** - Welche Features als nächstes?

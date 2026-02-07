@@ -22,7 +22,7 @@ export async function initSettingsApp() {
 
     // Load initial data for active page (default Personas)
     await loadPersonas();
-    
+
     // Setup Persona Button Handlers
     setupPersonaHandlers();
 
@@ -34,8 +34,15 @@ export async function initSettingsApp() {
             const category = item.dataset.category;
             if (category === 'personas') loadPersonas();
             if (category === 'models') loadModels();
+            if (category === 'plugins') loadPlugins();
         });
     });
+
+    // Initial load check
+    const activeCat = document.querySelector('.settings-category.active');
+    if (activeCat && activeCat.dataset.category === 'plugins') {
+        loadPlugins();
+    }
 }
 
 /**
@@ -43,7 +50,7 @@ export async function initSettingsApp() {
  */
 function setupPersonaHandlers() {
     log('info', '[Personas] Setting up button handlers...');
-    
+
     // Edit Button (use event delegation since button is dynamically created)
     document.addEventListener('click', (e) => {
         const editBtn = e.target.closest('button');
@@ -51,21 +58,21 @@ function setupPersonaHandlers() {
             handleEditPersona();
         }
     });
-    
+
     // Upload Button
     const uploadBtn = document.getElementById('upload-persona-btn');
     if (uploadBtn) {
         uploadBtn.addEventListener('click', handleUploadPersona);
         log('info', '[Personas] Upload button listener attached');
     }
-    
+
     // Switch Button  
     const switchBtn = document.getElementById('switch-persona-btn');
     if (switchBtn) {
         switchBtn.addEventListener('click', handleSwitchPersona);
         log('info', '[Personas] Switch button listener attached');
     }
-    
+
     // File Input
     const fileInput = document.getElementById('persona-file-input');
     if (fileInput) {
@@ -91,15 +98,15 @@ function handleEditPersona() {
  */
 async function openPersonaEditor(name) {
     log('info', `[Personas] Opening editor for: ${name}`);
-    
+
     try {
         // Fetch persona content
         const res = await fetch(`${getApiBase()}/api/personas/${encodeURIComponent(name)}`);
         if (!res.ok) throw new Error('Failed to load persona');
         const data = await res.json();
-        
+
         log('info', `[Personas] Loaded persona content (${data.content.length} chars)`);
-        
+
         // Create modal
         const modal = document.createElement('div');
         modal.id = 'persona-editor-modal';
@@ -144,30 +151,32 @@ async function openPersonaEditor(name) {
                 </div>
             </div>
         `;
-        
+
         document.body.appendChild(modal);
-        
+
         // Set content AFTER appending (avoids template literal issues with special chars)
         const textarea = document.getElementById('persona-editor-content');
         textarea.value = data.content;
-        
+
         lucide.createIcons();
-        
+
         // Focus textarea
         textarea.focus();
-        
+
         log('info', '[Personas] Editor modal opened successfully');
-        
+
         // Close on escape
         modal.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closePersonaEditor();
         });
-        
+
         // Close on backdrop click
         modal.addEventListener('click', (e) => {
             if (e.target === modal) closePersonaEditor();
         });
-        
+
+        // Trap focus (simple version)
+
     } catch (err) {
         log('error', `[Personas] Failed to open editor: ${err.message}`);
         showToast(`Failed to load persona: ${err.message}`, 'error');
@@ -187,35 +196,35 @@ function closePersonaEditor() {
  */
 async function savePersonaEdit(name) {
     const content = document.getElementById('persona-editor-content').value;
-    
+
     log('info', `[Personas] Saving changes to: ${name}`);
-    
+
     try {
         showToast('Saving...', 'info');
-        
+
         // Create a blob/file from the content
         const blob = new Blob([content], { type: 'text/plain' });
         const file = new File([blob], `${name}.txt`, { type: 'text/plain' });
-        
+
         const formData = new FormData();
         formData.append('file', file);
-        
+
         const res = await fetch(`${getApiBase()}/api/personas/${encodeURIComponent(name)}`, {
             method: 'POST',
             body: formData
         });
-        
+
         if (!res.ok) {
             const errorData = await res.json().catch(() => ({ detail: res.statusText }));
             throw new Error(errorData.detail || `HTTP ${res.status}`);
         }
-        
+
         log('info', `[Personas] Save successful for: ${name}`);
         showToast(`Persona "${name}" saved successfully!`, 'success');
-        
+
         closePersonaEditor();
         await loadPersonas();
-        
+
     } catch (err) {
         log('error', `[Personas] Save failed: ${err.message}`);
         showToast(`Save failed: ${err.message}`, 'error');
@@ -247,38 +256,38 @@ async function handleSwitchPersona() {
 async function handleFileInputChange(e) {
     const file = e.target.files[0];
     if (!file) return;
-    
+
     log('info', `[Personas] File selected: ${file.name}`);
-    
+
     // Create FormData for upload
     const formData = new FormData();
     formData.append('file', file);
-    
+
     try {
         showToast(`Uploading ${file.name}...`, 'info');
-        
+
         const personaName = file.name.replace(/.txt$/i, '');
         const res = await fetch(`${getApiBase()}/api/personas/${encodeURIComponent(personaName)}`, {
             method: 'POST',
             body: formData
         });
-        
+
         if (!res.ok) {
             const errorText = await res.text();
             throw new Error(`HTTP ${res.status}: ${errorText}`);
         }
-        
+
         const data = await res.json();
         log('info', `[Personas] Upload successful: ${JSON.stringify(data)}`);
-        
+
         showToast(`Persona "${data.name || file.name}" uploaded successfully!`, 'success');
-        
+
         // Reload personas to show new one
         await loadPersonas();
-        
+
         // Clear file input
         e.target.value = '';
-        
+
     } catch (err) {
         log('error', `[Personas] Upload failed: ${err.message}`);
         showToast(`Upload failed: ${err.message}`, 'error');
@@ -296,13 +305,13 @@ async function handleFileInputChange(e) {
  */
 function parseIdentitySection(content) {
     const identity = {};
-    
+
     // Find [IDENTITY] section
     const identityMatch = content.match(/\[IDENTITY\]([\s\S]*?)(?=\[|$)/);
     if (!identityMatch) return identity;
-    
+
     const section = identityMatch[1];
-    
+
     // Parse key: value pairs
     const lines = section.split('\n');
     for (const line of lines) {
@@ -313,7 +322,7 @@ function parseIdentitySection(content) {
             identity[key] = value;
         }
     }
-    
+
     return identity;
 }
 
@@ -354,10 +363,10 @@ function renderPersonas(list, activeName, activeIdentity, container) {
     // Separate Active vs Others
     const active = list.find(p => p === activeName) || list[0];
     const others = list.filter(p => p !== activeName);
-    
+
     // Store active persona for edit functionality
     currentActivePersona = active;
-    
+
     // Build identity preview HTML
     const identityFields = ['name', 'role', 'language', 'user_name'];
     const identityHtml = identityFields
@@ -439,11 +448,11 @@ function renderPersonas(list, activeName, activeIdentity, container) {
              </div>
         </div>
     `;
-    
+
     // Add hidden file input for upload
 
     container.innerHTML = html;
-    
+
     // Create and append file input element
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
@@ -452,9 +461,9 @@ function renderPersonas(list, activeName, activeIdentity, container) {
     fileInput.className = 'hidden';
     fileInput.addEventListener('change', handleFileInputChange);
     container.appendChild(fileInput);
-    
+
     log('info', '[Personas] File input element created and listener attached');
-    
+
     lucide.createIcons();
 
     // bind global for onclick
@@ -502,37 +511,37 @@ async function switchPersona(name) {
  */
 async function deletePersona(name) {
     log('info', `[Personas] 🗑️ Delete requested for: ${name}`);
-    
+
     // Safety checks
     if (name === 'default') {
         showToast("Cannot delete the default persona", "error");
         return;
     }
-    
+
     if (!confirm(`Are you sure you want to delete persona "${name}"?\n\nThis action cannot be undone.`)) {
         return;
     }
-    
+
     try {
         showToast(`Deleting "${name}"...`, 'info');
-        
+
         const res = await fetch(`${getApiBase()}/api/personas/${encodeURIComponent(name)}`, {
             method: 'DELETE'
         });
-        
+
         if (!res.ok) {
             const errorData = await res.json().catch(() => ({ detail: res.statusText }));
             throw new Error(errorData.detail || `HTTP ${res.status}`);
         }
-        
+
         const data = await res.json();
         log('info', `[Personas] Delete successful: ${JSON.stringify(data)}`);
-        
+
         showToast(`Persona "${name}" deleted successfully!`, 'success');
-        
+
         // Reload personas list
         await loadPersonas();
-        
+
     } catch (err) {
         log('error', `[Personas] Delete failed: ${err.message}`);
         showToast(`Delete failed: ${err.message}`, 'error');
@@ -683,7 +692,91 @@ async function saveModelSettings() {
 }
 
 /**
- * Toast Helper (Duplicated to ensure isolation)
+ * ═══════════════════════════════════════════════════════════
+ * PLUGINS (TRION)
+ * ═══════════════════════════════════════════════════════════
+ */
+async function loadPlugins() {
+    const container = document.getElementById('plugins-container');
+    if (!container) return;
+
+    if (!window.TRIONBridge) {
+        container.innerHTML = `<div class="p-4 text-red-400">TRION Bridge not connected. Plugins unavailable.</div>`;
+        return;
+    }
+
+    container.innerHTML = `
+        <div class="flex items-center text-gray-500">
+            <i data-lucide="loader" class="animate-spin w-5 h-5 mr-3"></i>
+            Fetching plugins from runtime...
+        </div>
+    `;
+    lucide.createIcons();
+
+    try {
+        const plugins = await window.TRIONBridge.getPlugins(); // request('plugin:list')
+        renderPlugins(plugins, container);
+    } catch (e) {
+        container.innerHTML = `<div class="p-4 text-red-400">Failed to load plugins: ${e.message}</div>`;
+    }
+}
+
+function renderPlugins(plugins, container) {
+    if (!plugins || plugins.length === 0) {
+        container.innerHTML = `<div class="p-4 text-gray-500">No plugins installed in TRION Runtime.</div>`;
+        return;
+    }
+
+    const html = plugins.map(p => `
+        <div class="bg-[#111] border border-dark-border rounded-xl p-6 flex items-start justify-between">
+            <div class="flex items-start gap-4">
+                <div class="w-12 h-12 bg-dark-bg rounded-lg flex items-center justify-center border border-dark-border">
+                    <i data-lucide="puzzle" class="w-6 h-6 text-accent-primary"></i>
+                </div>
+                <div>
+                    <h3 class="text-lg font-bold text-gray-200">${p.manifest?.name || p.manifest?.id} <span class="text-xs text-gray-500 font-normal ml-2">v${p.manifest?.version || '1.0.0'}</span></h3>
+                    <p class="text-sm text-gray-400 mt-1">${p.manifest?.description || 'No description available.'}</p>
+                    <div class="flex flex-wrap gap-2 mt-3">
+                        ${(p.manifest?.permissions ? Object.keys(p.manifest.permissions) : [] || []).map(c => `<span class="bg-dark-bg border border-dark-border px-2 py-1 rounded text-xs text-gray-500 font-mono">${c}</span>`).join('')}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-3">
+                <span class="text-xs font-mono uppercase ${p.enabled ? 'text-green-500' : 'text-gray-600'}">
+                    ${p.enabled ? 'Enabled' : 'Disabled'}
+                </span>
+                <button onclick="togglePlugin('${p.manifest?.id}', ${!p.enabled})" 
+                    class="w-12 h-6 rounded-full transition-colors relative ${p.enabled ? 'bg-accent-primary' : 'bg-gray-700'}"
+                    title="${p.enabled ? 'Disable' : 'Enable'}">
+                    <div class="absolute top-1 left-1 bg-white w-4 h-4 rounded-full transition-transform ${p.enabled ? 'translate-x-6' : 'translate-x-0'}"></div>
+                </button>
+            </div>
+        </div>
+    `).join('');
+
+    container.innerHTML = html;
+    lucide.createIcons();
+}
+
+window.togglePlugin = async (id, shouldEnable) => {
+    try {
+        if (shouldEnable) {
+            await window.TRIONBridge.enablePlugin(id);
+            showToast(`Enabled ${id}`, 'success');
+        } else {
+            await window.TRIONBridge.disablePlugin(id);
+            showToast(`Disabled ${id}`, 'success');
+        }
+        // Refresh
+        loadPlugins();
+    } catch (e) {
+        showToast(`Operation failed: ${e.message}`, 'error');
+    }
+};
+
+/**
+ * Toast Helper
  */
 function showToast(msg, type = 'info') {
     const container = document.getElementById('toast-container');

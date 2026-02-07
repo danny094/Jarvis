@@ -12,6 +12,15 @@ from .database import (
     load_fact,
     row_to_memory_dict,
     row_to_fact_dict,
+    upsert_skill_metric,
+    get_skill_metric,
+    list_skill_metrics,
+    update_skill_status,
+    save_workspace_entry,
+    list_workspace_entries,
+    get_workspace_entry,
+    update_workspace_entry,
+    delete_workspace_entry,
 )
 from .auto_layer import auto_assign_layer
 
@@ -338,6 +347,35 @@ def register_tools(mcp):
             return {"success": False, "error": "Could not save"}
 
     # --------------------------------------------------
+    # tool_embedding_save
+    # --------------------------------------------------
+    @mcp.tool
+    def tool_embedding_save(
+        tool_name: str,
+        description: str,
+        capabilities: List[str]
+    ) -> Dict:
+        """Saves a tool definition for semantic search."""
+        cap_str = ", ".join(capabilities)
+        content = f"Tool: {tool_name}\nDescription: {description}\nCapabilities: {cap_str}"
+        
+        vs = get_vector_store()
+        try:
+            vs.add(
+                conversation_id="global",
+                content=content,
+                content_type="tool_def",
+                metadata={
+                    "tool_name": tool_name, 
+                    "capabilities": capabilities,
+                    "description": description
+                }
+            )
+            return {"result": f"Tool {tool_name} vectorized"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    # --------------------------------------------------
     # memory_semantic_search
     # --------------------------------------------------
     @mcp.tool
@@ -345,7 +383,8 @@ def register_tools(mcp):
         query: str,
         conversation_id: str = None,
         limit: int = 5,
-        min_similarity: float = 0.5
+        min_similarity: float = 0.5,
+        content_type: Optional[str] = None
     ) -> Dict:
         """Semantische Suche - findet ähnliche Einträge nach Bedeutung."""
         vs = get_vector_store()
@@ -354,7 +393,8 @@ def register_tools(mcp):
             query=query,
             conversation_id=conversation_id,
             limit=limit,
-            min_similarity=min_similarity
+            min_similarity=min_similarity,
+            content_type=content_type
         )
 
         return {
@@ -803,3 +843,170 @@ def register_tools(mcp):
             
         except Exception as e:
             return {"structuredContent": {"success": False, "error": str(e)}}
+
+    # --------------------------------------------------
+    # skill_metric_record
+    # --------------------------------------------------
+    @mcp.tool
+    def skill_metric_record(
+        skill_id: str,
+        success: bool,
+        exec_time_ms: float,
+        error: Optional[str] = None,
+        version: str = "1.0"
+    ) -> Dict:
+        """Records a skill execution result (success/failure, timing)."""
+        row_id = upsert_skill_metric(skill_id, success, exec_time_ms, error, version)
+        return {
+            "structuredContent": {
+                "recorded": True,
+                "skill_id": skill_id,
+                "row_id": row_id
+            }
+        }
+
+    # --------------------------------------------------
+    # skill_metric_get
+    # --------------------------------------------------
+    @mcp.tool
+    def skill_metric_get(skill_id: str) -> Dict:
+        """Returns metrics for a single skill."""
+        metric = get_skill_metric(skill_id)
+        if metric:
+            return {"structuredContent": metric}
+        return {"structuredContent": {"error": f"No metrics for {skill_id}"}}
+
+    # --------------------------------------------------
+    # skill_metrics_list
+    # --------------------------------------------------
+    @mcp.tool
+    def skill_metrics_list(
+        status: Optional[str] = None,
+        limit: int = 50
+    ) -> Dict:
+        """Lists all skill metrics, optionally filtered by status."""
+        metrics = list_skill_metrics(status, limit)
+        return {
+            "structuredContent": {
+                "metrics": metrics,
+                "count": len(metrics)
+            }
+        }
+
+    # --------------------------------------------------
+    # skill_metric_set_status
+    # --------------------------------------------------
+    @mcp.tool
+    def skill_metric_set_status(skill_id: str, status: str) -> Dict:
+        """Updates a skill's status (active/deprecated/beta)."""
+        updated = update_skill_status(skill_id, status)
+        return {
+            "structuredContent": {
+                "updated": updated,
+                "skill_id": skill_id,
+                "status": status
+            }
+        }
+
+    # --------------------------------------------------
+    # graph_add_node (for Daily Protocol merge)
+    # --------------------------------------------------
+    @mcp.tool
+    def graph_add_node(
+        source_type: str,
+        content: str,
+        conversation_id: str = "daily-protocol",
+        confidence: float = 0.85
+    ) -> Dict:
+        """Creates a graph node with edges. Used by Daily Protocol merge."""
+        node_id = build_node_with_edges(
+            source_type=source_type,
+            content=content,
+            conversation_id=conversation_id,
+            confidence=confidence,
+            weight_boost=0.5
+        )
+        return {
+            "structuredContent": {
+                "node_id": node_id,
+                "created": True
+            }
+        }
+
+    # --------------------------------------------------
+    # workspace_save
+    # --------------------------------------------------
+    @mcp.tool
+    def workspace_save(
+        conversation_id: str,
+        content: str,
+        entry_type: str = "observation",
+        source_layer: str = "thinking"
+    ) -> Dict:
+        """Saves a workspace entry (observation, task, or note)."""
+        entry_id = save_workspace_entry(conversation_id, content, entry_type, source_layer)
+        return {
+            "structuredContent": {
+                "id": entry_id,
+                "conversation_id": conversation_id,
+                "entry_type": entry_type,
+                "source_layer": source_layer
+            }
+        }
+
+    # --------------------------------------------------
+    # workspace_list
+    # --------------------------------------------------
+    @mcp.tool
+    def workspace_list(
+        conversation_id: Optional[str] = None,
+        limit: int = 50,
+        entry_type: Optional[str] = None
+    ) -> Dict:
+        """Lists workspace entries, optionally filtered by conversation and/or entry_type."""
+        entries = list_workspace_entries(conversation_id, limit, entry_type)
+        return {
+            "structuredContent": {
+                "entries": entries,
+                "count": len(entries)
+            }
+        }
+
+    # --------------------------------------------------
+    # workspace_get
+    # --------------------------------------------------
+    @mcp.tool
+    def workspace_get(entry_id: int) -> Dict:
+        """Gets a single workspace entry by ID."""
+        entry = get_workspace_entry(entry_id)
+        if entry:
+            return {"structuredContent": entry}
+        return {"structuredContent": {"error": f"Entry {entry_id} not found"}}
+
+    # --------------------------------------------------
+    # workspace_update
+    # --------------------------------------------------
+    @mcp.tool
+    def workspace_update(entry_id: int, content: str) -> Dict:
+        """Updates the content of a workspace entry."""
+        updated = update_workspace_entry(entry_id, content)
+        return {
+            "structuredContent": {
+                "updated": updated,
+                "entry_id": entry_id
+            }
+        }
+
+    # --------------------------------------------------
+    # workspace_delete
+    # --------------------------------------------------
+    @mcp.tool
+    def workspace_delete(entry_id: int) -> Dict:
+        """Deletes a workspace entry."""
+        deleted = delete_workspace_entry(entry_id)
+        return {
+            "structuredContent": {
+                "deleted": deleted,
+                "entry_id": entry_id
+            }
+        }

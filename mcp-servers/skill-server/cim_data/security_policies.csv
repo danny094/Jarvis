@@ -1,0 +1,6 @@
+policy_id,rule_description,check_function,severity
+SEC-01,No SMTP Outbound,"port != 25 and port != 587",CRITICAL
+SEC-02,Memory Limit,"mem_usage < 512MB",High
+SEC-03,No Root Access,"uid != 0",CRITICAL
+SEC-04,Path Traversal,"'..' not in path",High
+SEC-05,No Eval,"'eval(' not in code",CRITICAL

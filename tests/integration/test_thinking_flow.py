@@ -46,8 +46,11 @@ async def test_flow_light_skips_control(mock_thinking_plan_light):
         bridge = CoreBridge()
         
         # Setup Thinking Mock
-        bridge.thinking.analyze = AsyncMock(return_value=mock_thinking_plan_light)
-        bridge.output.generate = AsyncMock(return_value="Response")
+        bridge.orchestrator.thinking.analyze = AsyncMock(return_value=mock_thinking_plan_light)
+        bridge.orchestrator.output.generate = AsyncMock(return_value="Response")
+        # Phase 2: Explicitly mock control methods to enable assert_not_called
+        bridge.orchestrator.control.verify = AsyncMock()
+        bridge.orchestrator.control._check_sequential_thinking = AsyncMock()
         
         # Request
         req = CoreChatRequest(
@@ -59,11 +62,10 @@ async def test_flow_light_skips_control(mock_thinking_plan_light):
         await bridge.process(req)
         
         # Verify: Control was NOT called
-        bridge.control.verify.assert_not_called()
+        bridge.orchestrator.control.verify.assert_not_called()
         
         # Verify: Sequential was NOT called
-        # _check_sequential_thinking is internal on ControlLayer, but Bridge calls it
-        bridge.control._check_sequential_thinking.assert_not_called()
+        bridge.orchestrator.control._check_sequential_thinking.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_flow_heavy_triggers_sequential(mock_thinking_plan_heavy):
@@ -78,12 +80,12 @@ async def test_flow_heavy_triggers_sequential(mock_thinking_plan_heavy):
         bridge = CoreBridge()
         
         # Setup Thinking Mock
-        bridge.thinking.analyze = AsyncMock(return_value=mock_thinking_plan_heavy)
-        bridge.output.generate = AsyncMock(return_value="Response")
+        bridge.orchestrator.thinking.analyze = AsyncMock(return_value=mock_thinking_plan_heavy)
+        bridge.orchestrator.output.generate = AsyncMock(return_value="Response")
         
         # Setup Control Mock return values
-        bridge.control._check_sequential_thinking = AsyncMock(return_value={"steps": ["1", "2"]})
-        bridge.control.verify = AsyncMock(return_value={"approved": True})
+        bridge.orchestrator.control._check_sequential_thinking = AsyncMock(return_value={"steps": ["1", "2"]})
+        bridge.orchestrator.control.verify = AsyncMock(return_value={"approved": True})
 
         # Request
         req = CoreChatRequest(
@@ -95,15 +97,15 @@ async def test_flow_heavy_triggers_sequential(mock_thinking_plan_heavy):
         await bridge.process(req)
         
         # Verify: Sequential WAS called
-        bridge.control._check_sequential_thinking.assert_called_once()
+        bridge.orchestrator.control._check_sequential_thinking.assert_called_once()
         
         # Check arguments passed to sequential
-        call_kwargs = bridge.control._check_sequential_thinking.call_args.kwargs
+        call_kwargs = bridge.orchestrator.control._check_sequential_thinking.call_args.kwargs
         assert call_kwargs["user_text"] == "Analyze X"
         assert call_kwargs["thinking_plan"]["needs_sequential_thinking"] is True
         
         # Verify: Control Verify WAS also called (Sequential happens BEFORE verify)
-        bridge.control.verify.assert_called_once()
+        bridge.orchestrator.control.verify.assert_called_once()
 
 @pytest.mark.asyncio
 async def test_flow_medium_triggers_control(mock_thinking_plan_medium):
@@ -119,9 +121,11 @@ async def test_flow_medium_triggers_control(mock_thinking_plan_medium):
         bridge = CoreBridge()
         
         # Setup Thinking Mock
-        bridge.thinking.analyze = AsyncMock(return_value=mock_thinking_plan_medium)
-        bridge.output.generate = AsyncMock(return_value="Response")
-        bridge.control.verify = AsyncMock(return_value={"approved": True})
+        bridge.orchestrator.thinking.analyze = AsyncMock(return_value=mock_thinking_plan_medium)
+        bridge.orchestrator.output.generate = AsyncMock(return_value="Response")
+        bridge.orchestrator.control.verify = AsyncMock(return_value={"approved": True})
+        # Phase 2: Explicitly mock _check_sequential_thinking to enable assert_not_called
+        bridge.orchestrator.control._check_sequential_thinking = AsyncMock()
         
         # Request
         req = CoreChatRequest(
@@ -133,11 +137,8 @@ async def test_flow_medium_triggers_control(mock_thinking_plan_medium):
         await bridge.process(req)
         
         # Verify: Sequential NOT called
-        if hasattr(bridge.control, "_check_sequential_thinking"):
-             # It might be mocked or real, we need to check if we can assert
-             # Since we mocked the CLASS, the instance methods are MagicMocks/AsyncMocks
-             bridge.control._check_sequential_thinking.assert_not_called()
+        bridge.orchestrator.control._check_sequential_thinking.assert_not_called()
         
         # Verify: Control Verify WAS called
-        bridge.control.verify.assert_called_once()
+        bridge.orchestrator.control.verify.assert_called_once()
 

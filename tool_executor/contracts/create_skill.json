@@ -1,0 +1,40 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Create Skill Contract",
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+$",
+            "maxLength": 64,
+            "description": "Unique identifier for the skill (snake_case)"
+        },
+        "description": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 1000
+        },
+        "script": {
+            "type": "string",
+            "maxLength": 50000,
+            "description": "Python source code"
+        },
+        "triggers": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "maxLength": 100
+            },
+            "maxItems": 20
+        },
+        "auto_promote": {
+            "type": "boolean",
+            "default": false
+        }
+    },
+    "required": [
+        "name",
+        "script",
+        "description"
+    ]
+}

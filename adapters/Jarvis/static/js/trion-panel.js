@@ -293,7 +293,9 @@ class TRIONPanel {
                 const div = document.createElement('div');
                 div.className = 'markdown-content';
                 div.innerHTML = this.basicMarkdownToHTML(content);
+                    if (window.Prism) Prism.highlightAllUnder(container);
                 container.appendChild(div);
+                if (window.Prism) Prism.highlightAllUnder(container);
             },
             update: (content, container, append) => {
                 let div = container.querySelector('.markdown-content');
@@ -301,11 +303,13 @@ class TRIONPanel {
                     div = document.createElement('div');
                     div.className = 'markdown-content';
                     container.appendChild(div);
+                if (window.Prism) Prism.highlightAllUnder(container);
                 }
                 if (append) {
                     div.innerHTML += this.basicMarkdownToHTML(content);
                 } else {
                     div.innerHTML = this.basicMarkdownToHTML(content);
+                    if (window.Prism) Prism.highlightAllUnder(container);
                 }
             },
             fileExtension: '.md'

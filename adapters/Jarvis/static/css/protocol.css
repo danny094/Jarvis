@@ -1,0 +1,430 @@
+/* ═══════════════════════════════════════════════════════════
+   Daily Protocol (Agenten Arbeitsbereich) Styles
+   Dark theme matching existing UI
+   ═══════════════════════════════════════════════════════════ */
+
+.proto-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    position: relative;  /* Needed for absolute positioned form overlay */
+}
+
+/* ─── Header ─── */
+.proto-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid #222;
+    background: rgba(5, 5, 5, 0.8);
+    backdrop-filter: blur(8px);
+    flex-shrink: 0;
+}
+
+.proto-header h2 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #e5e5e5;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.proto-header h2 .proto-icon {
+    color: #FFB302;
+}
+
+.proto-refresh-btn {
+    background: none;
+    border: 1px solid #333;
+    color: #888;
+    padding: 6px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s;
+}
+
+.proto-refresh-btn:hover {
+    border-color: #FFB302;
+    color: #FFB302;
+}
+
+/* ─── Date Tabs ─── */
+.proto-tabs {
+    display: flex;
+    gap: 6px;
+    padding: 10px 20px;
+    border-bottom: 1px solid #1a1a1a;
+    overflow-x: auto;
+    flex-shrink: 0;
+}
+
+.proto-tab {
+    position: relative;
+    padding: 6px 14px;
+    border-radius: 8px;
+    background: #111;
+    border: 1px solid #222;
+    color: #888;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s;
+}
+
+.proto-tab:hover {
+    border-color: #444;
+    color: #ccc;
+}
+
+.proto-tab.active {
+    background: #FFB302;
+    border-color: #FFB302;
+    color: #000;
+    font-weight: 600;
+}
+
+.proto-tab .proto-dot {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ef4444;
+    border: 2px solid #0a0a0a;
+}
+
+/* ─── Entries List ─── */
+.proto-entries {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ─── Entry Card ─── */
+.proto-entry {
+    background: #0d0d0d;
+    border: 1px solid #222;
+    border-radius: 10px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+    min-height: 80px;
+    flex-shrink: 0;  /* Prevent collapsing in flex container */
+}
+
+.proto-entry:hover {
+    border-color: #333;
+}
+
+.proto-entry-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    border-bottom: 1px solid #1a1a1a;
+}
+
+.proto-entry-time {
+    font-family: monospace;
+    font-size: 13px;
+    color: #FFB302;
+    font-weight: 600;
+}
+
+.proto-entry-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.proto-entry:hover .proto-entry-actions {
+    opacity: 1;
+}
+
+.proto-entry-actions button {
+    background: none;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 14px;
+    transition: all 0.15s;
+}
+
+.proto-entry-actions button:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.proto-entry-actions .proto-btn-delete:hover {
+    color: #f87171;
+}
+
+.proto-entry-body {
+    padding: 12px 14px;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #ccc;
+    min-height: 40px;
+}
+
+.proto-entry-body strong {
+    color: #e5e5e5;
+}
+
+.proto-entry-body p {
+    margin: 4px 0;
+}
+
+.proto-entry-body code {
+    background: #1a1a1a;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 12px;
+    color: #FFB302;
+}
+
+.proto-entry-body pre {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    padding: 8px;
+    overflow-x: auto;
+    font-size: 12px;
+    margin: 6px 0;
+}
+
+/* ─── Edit Mode ─── */
+.proto-edit-area {
+    width: 100%;
+    min-height: 120px;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 10px;
+    color: #e5e5e5;
+    font-family: monospace;
+    font-size: 13px;
+    resize: vertical;
+    outline: none;
+}
+
+.proto-edit-area:focus {
+    border-color: #FFB302;
+}
+
+.proto-edit-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    justify-content: flex-end;
+}
+
+/* ─── Footer / Actions Bar ─── */
+.proto-footer {
+    padding: 12px 20px;
+    border-top: 1px solid #222;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    background: rgba(5, 5, 5, 0.9);
+}
+
+.proto-footer-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.proto-add-btn {
+    background: #111;
+    border: 1px solid #333;
+    color: #aaa;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s;
+}
+
+.proto-add-btn:hover {
+    border-color: #FFB302;
+    color: #FFB302;
+}
+
+.proto-merge-btn {
+    background: #FFB302;
+    border: none;
+    color: #000;
+    padding: 8px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s;
+}
+
+.proto-merge-btn:hover {
+    background: #e6a200;
+}
+
+.proto-merge-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.proto-status {
+    font-size: 12px;
+    color: #666;
+}
+
+/* ─── Buttons (shared) ─── */
+.proto-btn-save {
+    background: #FFB302;
+    color: #000;
+    border: none;
+    padding: 6px 16px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.proto-btn-save:hover {
+    background: #e6a200;
+}
+
+.proto-btn-cancel {
+    background: #222;
+    color: #aaa;
+    border: none;
+    padding: 6px 16px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.proto-btn-cancel:hover {
+    background: #333;
+    color: #fff;
+}
+
+/* ─── Empty State ─── */
+.proto-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 20px;
+    color: #555;
+    text-align: center;
+}
+
+.proto-empty p {
+    font-size: 15px;
+    margin-bottom: 4px;
+}
+
+.proto-empty small {
+    font-size: 12px;
+    color: #444;
+}
+
+/* ─── Add Entry Form ─── */
+.proto-add-form {
+    position: absolute;
+    bottom: 60px;  /* Footer height + spacing */
+    left: 20px;
+    right: 20px;
+    background: #0d0d0d;
+    border: 1px solid #333;
+    border-radius: 10px;
+    padding: 14px;
+    display: none;
+    z-index: 10;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.proto-add-form.visible {
+    display: block;
+}
+
+.proto-add-form textarea {
+    width: 100%;
+    min-height: 60px;
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    padding: 8px;
+    color: #e5e5e5;
+    font-size: 13px;
+    resize: vertical;
+    outline: none;
+    margin-bottom: 8px;
+}
+
+.proto-add-form textarea:focus {
+    border-color: #FFB302;
+}
+
+.proto-add-form label {
+    display: block;
+    font-size: 11px;
+    color: #666;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 4px;
+    letter-spacing: 0.5px;
+}
+
+/* ─── Badge (Red Dot) ─── */
+.proto-badge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    min-width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    background: #ef4444;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    border: 2px solid #0a0a0a;
+}
+
+.proto-badge:empty,
+.proto-badge.hidden {
+    display: none;
+}
+
+/* ─── Merged indicator ─── */
+.proto-merged-badge {
+    font-size: 10px;
+    color: #22c55e;
+    margin-left: 8px;
+}

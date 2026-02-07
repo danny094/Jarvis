@@ -1,0 +1,10 @@
+{
+  "id": "ping-test",
+  "name": "Ping Test",
+  "version": "1.0.0",
+  "description": "Simple connectivity test plugin",
+  "author": "Claude & Dennis",
+  "icon": "zap",
+  "tier": 1,
+  "main": "plugin.ts"
+}

@@ -1,0 +1,62 @@
+template_id,category,intent_keywords,code_template,description,input_schema,output_schema,permissions_required,timeout_sec,docstring_format
+TMPL-MATH-01,math,"berechne|calculate|summe|factorial|fibonacci","def run(**kwargs):
+    n = kwargs.get('n', 0)
+    if not isinstance(n, (int, float)): return {'error': 'n muss eine Zahl sein'}
+    result = ...
+    return {'result': result, 'input': n}","Mathematische Berechnungen","{n: int}","{result: any, input: any}",none,5,"Args: n (int|float). Returns: dict."
+TMPL-TEXT-01,text,"parse|extract|format|split|join","def run(**kwargs):
+    text = kwargs.get('text', '')
+    if not isinstance(text, str): return {'error': 'text must be a string'}
+    result = ...
+    return {'result': result, 'metadata': {'length': len(text)}}","Text Mapping and Extraction","{text: str}","{result: str, metadata: dict}",none,10,"Args: text (str). Returns: dict."
+TMPL-DATA-01,data,"filter|sort|group|aggregate","def run(**kwargs):
+    data = kwargs.get('data', [])
+    if not isinstance(data, list): return {'error': 'data must be a list'}
+    result = ...
+    return {'data': result, 'count': len(result)}","Data filtering and aggregation","{data: list}","{data: list, count: int}",none,20,"Args: data (list). Returns: dict."
+TMPL-CONVERT-01,convert,"umwandeln|convert|transform","def run(**kwargs):
+    source = kwargs.get('source', None)
+    if source is None: return {'error': 'No source data provided'}
+    result = ...
+    return {'result': result}","Format Conversion (JSON/XML/YAML)","{source: any}","{result: any}",none,15,"Args: source (any). Returns: dict."
+TMPL-DB-01,database,"query|sql|select|insert|update","def run(**kwargs):
+    query = kwargs.get('query', '')
+    params = kwargs.get('params', {})
+    # Use parameterized query engine
+    result = db.execute_safe(query, params)
+    return {'rows': result}","Safe Parameterized SQL Execution","{query: str, params: dict}","{rows: list}",fs_read,30,"Args: query (str), params (dict). Returns: list."
+TMPL-API-WRAPPER,api,"fetch|get|post|api|request","def run(**kwargs):
+    url = kwargs.get('url', '')
+    method = kwargs.get('method', 'GET')
+    resp = requests.request(method, url, timeout=10)
+    return {'status': resp.status_code, 'data': resp.json()}","Generic REST API Wrapper","{url: str, method: str}","{status: int, data: any}",net_access,30,"Args: url (str). Returns: dict."
+TMPL-IMG-01,image,"image|resize|crop|filter|rotate","def run(**kwargs):
+    from PIL import Image
+    img_path = kwargs.get('path', '')
+    if not img_path: return {'error': 'No image path provided'}
+    img = Image.open(img_path)
+    # Apply operation
+    result_path = 'output.png'
+    img.save(result_path)
+    return {'path': result_path, 'size': img.size}","Image Processing (Resize/Crop/Filter)","{path: str, operation: str}","{path: str, size: tuple}",fs_read,20,"Args: path (str). Returns: dict."
+TMPL-ML-01,ml,"predict|classify|cluster|train|model","def run(**kwargs):
+    from sklearn.ensemble import RandomForestClassifier
+    X = kwargs.get('X', [])
+    y = kwargs.get('y', [])
+    if not X or not y: return {'error': 'Missing training data'}
+    model = RandomForestClassifier()
+    model.fit(X, y)
+    return {'model': 'trained', 'accuracy': model.score(X, y)}","ML Model Training (Scikit-Learn)","{X: list, y: list}","{model: str, accuracy: float}",none,60,"Args: X (features), y (labels). Returns: dict."
+TMPL-VIS-01,visualization,"plot|chart|graph|visualize","def run(**kwargs):
+    import matplotlib.pyplot as plt
+    data = kwargs.get('data', [])
+    if not data: return {'error': 'No data provided'}
+    plt.plot(data)
+    plt.savefig('chart.png')
+    return {'chart_path': 'chart.png'}","Data Visualization (Matplotlib)","{data: list}","{chart_path: str}",fs_read,15,"Args: data (list). Returns: dict."
+TMPL-UTIL-01,utility,"check|exists|delete|cleanup|stats","def run(**kwargs):
+    import os
+    path = kwargs.get('path', '')
+    if not path: return {'error': 'No path provided'}
+    exists = os.path.exists(path)
+    return {'exists': exists, 'path': path}","File System Utilities","{path: str}","{exists: bool, path: str}",fs_read,5,"Args: path (str). Returns: dict."

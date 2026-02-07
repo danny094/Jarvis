@@ -1,0 +1,8 @@
+standard_id,category,success_format,error_format,example,serialization_format,schema_validation
+OUT-01,calculation,"{result: any, input: any}","{error: str, input: any}","{result: 3628800, input: 10}",json,strict
+OUT-02,text_processing,"{text: str, metadata: dict}","{error: str}","{text: 'HELLO', metadata: {length: 5}}",json,strict
+OUT-03,data_transform,"{data: list|dict, count: int}","{error: str, partial: list}","{data: [...], count: 42}",json,loose
+OUT-STREAM,large_file,"{stream_id: str, chunk_size: int}","{error: str}","{stream_id: 'x8s7', chunk_size: 1024}",binary,strict
+OUT-GRAPH,graph_generation,"{nodes: list, edges: list}","{error: str, broken_graph: dict}","{nodes: [{id: 'A'}], edges: [{source: 'A', target: 'B'}]}",json,strict
+OUT-IMAGE,image_processing,"{path: str, size: tuple, format: str}","{error: str}","{path: '/out/img.png', size: (800, 600), format: 'PNG'}",binary,loose
+OUT-CHART,visualization,"{chart_path: str, data_points: int}","{error: str}","{chart_path: '/charts/plot.png', data_points: 100}",binary,loose

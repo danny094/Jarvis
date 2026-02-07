@@ -37,9 +37,16 @@ class GraphStore:
                 content TEXT NOT NULL,
                 embedding BLOB,
                 conversation_id TEXT,
+                confidence REAL DEFAULT 0.5,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migration: add confidence if table existed before
+        cursor.execute("PRAGMA table_info(graph_nodes)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "confidence" not in columns:
+            cursor.execute("ALTER TABLE graph_nodes ADD COLUMN confidence REAL DEFAULT 0.5")
         
         # Edges Tabelle
         cursor.execute("""
@@ -91,23 +98,43 @@ class GraphStore:
         content: str,
         source_id: int = None,
         embedding: List[float] = None,
-        conversation_id: str = None
+        conversation_id: str = None,
+        confidence: float = 0.5
     ) -> int:
         """Fügt einen Node hinzu."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
-        cursor.execute("""
-            INSERT INTO graph_nodes 
-            (source_type, source_id, content, embedding, conversation_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            source_type,
-            source_id,
-            content,
-            json.dumps(embedding) if embedding else None,
-            conversation_id
-        ))
+
+        # Check if confidence column exists (migration may not have run yet)
+        cursor.execute("PRAGMA table_info(graph_nodes)")
+        columns = [row[1] for row in cursor.fetchall()]
+        has_confidence = "confidence" in columns
+
+        if has_confidence:
+            cursor.execute("""
+                INSERT INTO graph_nodes
+                (source_type, source_id, content, embedding, conversation_id, confidence)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                source_type,
+                source_id,
+                content,
+                json.dumps(embedding) if embedding else None,
+                conversation_id,
+                confidence
+            ))
+        else:
+            cursor.execute("""
+                INSERT INTO graph_nodes
+                (source_type, source_id, content, embedding, conversation_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                source_type,
+                source_id,
+                content,
+                json.dumps(embedding) if embedding else None,
+                conversation_id
+            ))
         
         conn.commit()
         node_id = cursor.lastrowid
@@ -120,15 +147,15 @@ class GraphStore:
         """Holt einen Node by ID."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            SELECT id, source_type, source_id, content, embedding, conversation_id, created_at
+            SELECT id, source_type, source_id, content, embedding, conversation_id, created_at, confidence
             FROM graph_nodes WHERE id = ?
         """, (node_id,))
-        
+
         row = cursor.fetchone()
         conn.close()
-        
+
         if row:
             return {
                 "id": row[0],
@@ -137,7 +164,8 @@ class GraphStore:
                 "content": row[3],
                 "embedding": json.loads(row[4]) if row[4] else None,
                 "conversation_id": row[5],
-                "created_at": row[6]
+                "created_at": row[6],
+                "confidence": row[7] if len(row) > 7 else 0.5,
             }
         return None
     
@@ -312,36 +340,41 @@ class GraphStore:
         """
         Graph-Walk von Start-Nodes aus.
         Sammelt Nodes bis zur gegebenen Tiefe.
+        Sorts results by confidence (higher = more relevant).
         """
         visited = set()
         results = []
-        
+
         current_level = start_node_ids
-        
+
         for d in range(depth):
             next_level = []
-            
+
             for node_id in current_level:
                 if node_id in visited:
                     continue
                 visited.add(node_id)
-                
+
                 node = self.get_node(node_id)
                 if node:
                     node["depth"] = d
                     results.append(node)
-                
+
                 # Nachbarn holen
                 neighbors = self.get_neighbors(node_id)
                 for neighbor in neighbors:
                     if neighbor["node_id"] not in visited:
                         next_level.append(neighbor["node_id"])
-            
+
             current_level = next_level
-            
+
             if len(results) >= limit:
                 break
-        
+
+        # Sort by confidence (desc) then depth (asc) so workspace-promoted
+        # nodes (confidence=0.9) rank above auto-extracted (confidence=0.5)
+        results.sort(key=lambda n: (-n.get("confidence", 0.5), n.get("depth", 0)))
+
         return results[:limit]
 
 

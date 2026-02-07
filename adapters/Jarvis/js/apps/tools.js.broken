@@ -1,0 +1,233 @@
+/**
+ * tools.js - MCP Manager UI (Tier 3 System Tools)
+ */
+
+export function initToolsApp() {
+    console.log("[ToolsApp] Initializing...");
+    const container = document.getElementById("app-tools");
+
+    // Initial UI Skeleton
+    container.innerHTML = `
+        <div class="p-8 max-w-4xl mx-auto w-full h-full flex flex-col">
+            <h2 class="text-3xl font-light mb-8 text-gray-200 border-b border-dark-border pb-4 flex items-center justify-between">
+                <span><i data-lucide="wrench" class="inline-block mr-3 text-accent-primary"></i>System Tools (MCP)</span>
+                <button id="tools-refresh-btn" class="text-sm bg-dark-hover px-3 py-1.5 rounded-lg hover:text-white transition-colors">
+                    <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                </button>
+            </h2>
+
+            <!-- Install Section -->
+            <div class="bg-dark-card border border-dark-border rounded-xl p-6 mb-8">
+                <h3 class="text-lg font-medium mb-4 text-gray-300">Install New Tool</h3>
+                <div class="flex gap-4">
+                    <div class="relative flex-1">
+                        <i data-lucide="box" class="absolute left-3 top-3 w-5 h-5 text-gray-500"></i>
+                        <input type="text" id="tool-install-input" placeholder="Package name (e.g. pandas, mcp-server-git)..." 
+                            class="w-full bg-dark-bg border border-dark-border rounded-lg pl-10 pr-4 py-2.5 text-gray-200 focus:border-accent-primary outline-none transition-colors">
+                    </div>
+                    <button id="tool-install-btn" class="bg-accent-primary text-black px-6 py-2.5 rounded-lg font-semibold hover:bg-orange-500 transition-colors flex items-center gap-2">
+                        <i data-lucide="download"></i>
+                        Install (UV)
+                    </button>
+                </div>
+                <div id="install-logs" class="mt-4 hidden p-4 bg-black/50 rounded-lg text-xs font-mono text-gray-400 max-h-32 overflow-y-auto"></div>
+            </div>
+
+            <!-- Install from ZIP Section -->
+            <div class="bg-dark-card border border-dark-border rounded-xl p-6 mb-8">
+                <h3 class="text-lg font-medium mb-4 text-gray-300">Install from ZIP</h3>
+                <p class="text-sm text-gray-500 mb-4">Upload a ZIP file containing a Tier 1 MCP with config.json and requirements.txt</p>
+                <div class="flex gap-4 items-center">
+                    <input type="file" id="mcp-zip-input" accept=".zip" 
+                        class="flex-1 text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-accent-primary file:text-black hover:file:bg-orange-500 file:transition-colors"/>
+                    <button id="btn-upload-mcp" class="bg-accent-primary text-black px-6 py-2.5 rounded-lg font-semibold hover:bg-orange-500 transition-colors flex items-center gap-2">
+                        <i data-lucide="upload"></i>
+                        Upload & Install
+                    </button>
+                </div>
+                <div id="upload-status" class="mt-3 text-sm"></div>
+            </div>
+
+            <!-- Installed Tools List -->
+            <div class="flex-1 overflow-hidden flex flex-col">
+                <h3 class="text-lg font-medium mb-4 text-gray-300">Installed Packages</h3>
+                <div class="flex-1 overflow-y-auto border border-dark-border rounded-xl bg-dark-bg/50">
+                    <table class="w-full text-left border-collapse">
+                        <thead class="bg-dark-card sticky top-0">
+                            <tr>
+                                <th class="p-4 border-b border-dark-border font-medium text-gray-400">Package</th>
+                                <th class="p-4 border-b border-dark-border font-medium text-gray-400">Version</th>
+                                <th class="p-4 border-b border-dark-border font-medium text-gray-400 w-24">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tools-list-body" class="divide-y divide-dark-border text-sm">
+                            <tr>
+                                <td colspan="3" class="p-8 text-center text-gray-500">
+                                    <i data-lucide="loader-2" class="w-6 h-6 animate-spin mx-auto mb-2"></i>
+                                    Fetching installed packages...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Initialize Icons
+    if (window.lucide) window.lucide.createIcons();
+
+    // Bind Events
+    bindEvents();
+
+    // Initial Load
+    refreshTools();
+
+    // Listen for events
+    if (window.TRIONBridge) {
+        window.TRIONBridge.on('mcp:list_result', (data) => renderToolsList(data.packages));
+        window.TRIONBridge.on('mcp:install_success', (data) => {
+            showLog(`✅ Success: ${data.package}`, 'text-green-400');
+            setInstalling(false);
+            refreshTools();
+        });
+        window.TRIONBridge.on('mcp:install_error', (data) => {
+            showLog(`❌ Error: ${data.error}`, 'text-red-400');
+            setInstalling(false);
+        });
+    }
+}
+
+function bindEvents() {
+    const installBtn = document.getElementById("tool-install-btn");
+    const input = document.getElementById("tool-install-input");
+    const refreshBtn = document.getElementById("tools-refresh-btn");
+
+    installBtn?.addEventListener("click", () => {
+        const pkg = input.value.trim();
+        if (!pkg) return;
+
+        setInstalling(true);
+        showLog(`📦 Installing ${pkg}... (this may take a moment)`, 'text-gray-300');
+
+        window.TRIONBridge.request('mcp:install', { package: pkg });
+    });
+
+    input?.addEventListener("keypress", (e) => {
+        if (e.key === 'Enter') installBtn.click();
+    });
+
+    refreshBtn?.addEventListener("click", refreshTools);
+
+    // ZIP Upload Handler
+    const uploadBtn = document.getElementById("btn-upload-mcp");
+    const zipInput = document.getElementById("mcp-zip-input");
+    const statusEl = document.getElementById("upload-status");
+
+    uploadBtn?.addEventListener("click", async () => {
+        if (!zipInput.files || zipInput.files.length === 0) {
+            alert("Bitte eine ZIP-Datei auswählen!");
+            return;
+        }
+
+        const file = zipInput.files[0];
+        if (!file.name.endsWith(".zip")) {
+            alert("Nur ZIP-Dateien sind erlaubt!");
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        statusEl.textContent = "📤 Uploading...";
+        statusEl.className = "mt-3 text-sm text-blue-400";
+        uploadBtn.disabled = true;
+
+        try {
+            const res = await fetch("http://localhost:8200/mcp/install", {
+                method: "POST",
+                body: formData
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || "Upload failed");
+            }
+
+            const data = await res.json();
+            statusEl.textContent = ❌ Error: ${e.message}`;
+            statusEl.className = "mt-3 text-sm text-red-400";
+        } finally {
+            uploadBtn.disabled = false;
+        }
+    });
+}
+
+function refreshTools() {
+    if (window.TRIONBridge) {
+        window.TRIONBridge.request("mcp:list", {}).catch(e => console.warn("MCP list not available yet:", e.message));
+    }
+}
+
+function renderToolsList(rawOutput) {
+    const tbody = document.getElementById("tools-list-body");
+    if (!tbody) return;
+
+    if (!rawOutput) {
+        tbody.innerHTML = `<tr><td colspan="3" class="p-8 text-center text-gray-500">No tools found</td></tr>`;
+        return;
+    }
+
+    // Parse 'uv pip list' output roughly (Package Version lines)
+    // Skip header lines
+    const lines = rawOutput.split('\n').filter(l => l.trim() && !l.startsWith('Package') && !l.startsWith('-------'));
+
+    const rows = lines.map(line => {
+        const parts = line.split(/\s+/);
+        if (parts.length < 2) return '';
+        const name = parts[0];
+        const version = parts[1];
+
+        return `
+            <tr class="hover:bg-dark-hover transition-colors group">
+                <td class="p-4 text-gray-200 font-mono">${name}</td>
+                <td class="p-4 text-gray-500 font-mono">${version}</td>
+                <td class="p-4">
+                    <span class="inline-flex items-center px-2 py-1 rounded bg-green-500/10 text-green-400 text-xs font-medium border border-green-500/20">
+                        Active
+                    </span>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    tbody.innerHTML = rows;
+}
+
+function setInstalling(isInstalling) {
+    const btn = document.getElementById("tool-install-btn");
+    if (!btn) return;
+
+    if (isInstalling) {
+        btn.disabled = true;
+        btn.innerHTML = `<i data-lucide="loader-2" class="animate-spin"></i> Installing...`;
+        btn.classList.add("opacity-50", "cursor-not-allowed");
+    } else {
+        btn.disabled = false;
+        btn.innerHTML = `<i data-lucide="download"></i> Install (UV)`;
+        btn.classList.remove("opacity-50", "cursor-not-allowed");
+    }
+    if (window.lucide) window.lucide.createIcons();
+}
+
+function showLog(msg, colorClass) {
+    const logBox = document.getElementById("install-logs");
+    if (!logBox) return;
+
+    logBox.classList.remove("hidden");
+    const line = document.createElement("div");
+    line.className = `mb-1 ${colorClass}`;
+    line.textContent = `> ${msg}`;
+    logBox.appendChild(line);
+    logBox.scrollTop = logBox.scrollHeight;
+}

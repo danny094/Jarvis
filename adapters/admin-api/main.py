@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 # Create FastAPI app
 app = FastAPI(
     title="Jarvis Admin API",
-    description="Management API for Jarvis WebUI - Personas, Maintenance & Chat",
-    version="1.1.0",
+    description="Management API for Jarvis WebUI - Personas, Maintenance, Chat & MCP Hub (inkl. Skill-Server)",
+    version="1.2.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -65,6 +65,87 @@ app.include_router(settings_router, prefix="/api/settings")
 # MCP Management (Installer, List, Toggle)
 from mcp.installer import router as mcp_installer_router
 app.include_router(mcp_installer_router, prefix="/api/mcp")
+
+# MCP Hub Endpoint (tools/list, tools/call) - für KI Tool-Aufrufe inkl. Skill-Server
+from mcp.endpoint import router as mcp_hub_router
+app.include_router(mcp_hub_router)  # Exposes /mcp, /mcp/status, /mcp/tools
+
+# Daily Protocol (Tagesprotokoll)
+from protocol_routes import router as protocol_router
+
+# Container Commander
+from commander_routes import router as commander_router
+app.include_router(protocol_router, prefix="/api/protocol")
+app.include_router(commander_router, prefix="/api/commander")
+
+
+# ============================================================
+# WORKSPACE ENDPOINTS (Agent Workspace CRUD)
+# ============================================================
+
+@app.get("/api/workspace")
+async def workspace_list(conversation_id: str = None, limit: int = 50):
+    """List workspace entries, optionally filtered by conversation."""
+    from mcp.hub import get_hub
+    try:
+        hub = get_hub()
+        hub.initialize()
+        args = {"limit": limit}
+        if conversation_id:
+            args["conversation_id"] = conversation_id
+        result = hub.call_tool("workspace_list", args)
+        return JSONResponse(result if isinstance(result, dict) else {"entries": [], "count": 0})
+    except Exception as e:
+        log_error(f"[Workspace] List error: {e}")
+        return JSONResponse({"error": str(e), "entries": [], "count": 0}, status_code=500)
+
+
+@app.get("/api/workspace/{entry_id}")
+async def workspace_get(entry_id: int):
+    """Get a single workspace entry."""
+    from mcp.hub import get_hub
+    try:
+        hub = get_hub()
+        hub.initialize()
+        result = hub.call_tool("workspace_get", {"entry_id": entry_id})
+        if isinstance(result, dict) and result.get("error"):
+            return JSONResponse(result, status_code=404)
+        return JSONResponse(result if isinstance(result, dict) else {"error": "Not found"})
+    except Exception as e:
+        log_error(f"[Workspace] Get error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.put("/api/workspace/{entry_id}")
+async def workspace_update(entry_id: int, request: Request):
+    """Update a workspace entry's content."""
+    from mcp.hub import get_hub
+    try:
+        data = await request.json()
+        content = data.get("content", "")
+        if not content:
+            return JSONResponse({"error": "content is required"}, status_code=400)
+        hub = get_hub()
+        hub.initialize()
+        result = hub.call_tool("workspace_update", {"entry_id": entry_id, "content": content})
+        return JSONResponse(result if isinstance(result, dict) else {"updated": False})
+    except Exception as e:
+        log_error(f"[Workspace] Update error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/workspace/{entry_id}")
+async def workspace_delete(entry_id: int):
+    """Delete a workspace entry."""
+    from mcp.hub import get_hub
+    try:
+        hub = get_hub()
+        hub.initialize()
+        result = hub.call_tool("workspace_delete", {"entry_id": entry_id})
+        return JSONResponse(result if isinstance(result, dict) else {"deleted": False})
+    except Exception as e:
+        log_error(f"[Workspace] Delete error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # ============================================================
@@ -249,14 +330,22 @@ async def root():
     """Root endpoint"""
     return {
         "service": "Jarvis Admin API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "docs": "/docs",
         "health": "/health",
         "endpoints": {
             "personas": "/api/personas",
             "maintenance": "/api/maintenance",
             "chat": "/api/chat",
-            "models": "/api/tags"
+            "models": "/api/tags",
+            "mcp_hub": {
+                "tools_call": "/mcp (POST tools/call)",
+                "tools_list": "/mcp (POST tools/list)",
+                "status": "/mcp/status",
+                "tools": "/mcp/tools",
+                "refresh": "/mcp/refresh"
+            },
+            "mcp_installer": "/api/mcp"
         }
     }
 
@@ -272,7 +361,8 @@ async def startup_event():
     logger.info("=" * 60)
     logger.info("Service: jarvis-admin-api")
     logger.info("Port: 8200")
-    logger.info("Features: Personas, Maintenance, Chat")
+    logger.info("Features: Personas, Maintenance, Chat, MCP Hub, Skill-Server")
+    logger.info("MCP Hub: /mcp (tools/list, tools/call)")
     logger.info("Docs: http://localhost:8200/docs")
     logger.info("=" * 60)
 

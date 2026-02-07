@@ -1,0 +1,10 @@
+intent_pattern,category,confidence,template_ref,semantic_description,fallback_template
+"(fakultät|factorial|!)",math,0.95,TMPL-MATH-01,"Calculate the factorial of a number.",TMPL-TEXT-01
+"(fibonacci|fib sequence)",math,0.90,TMPL-MATH-02,"Generate a Fibonacci sequence up to N.",TMPL-MATH-01
+"(text|string|parse|extract)",text,0.85,TMPL-TEXT-01,"Extract substrings or parse text data.",TMPL-CONVERT-01
+"(json|yaml|xml|convert)",convert,0.90,TMPL-CONVERT-01,"Convert between data formats.",TMPL-TEXT-01
+"(list|array|filter|sort)",data,0.85,TMPL-DATA-01,"Sort or filter lists of data.",TMPL-MATH-01
+"(image|resize|crop|filter|rotate|picture)",image,0.90,TMPL-IMG-01,"Process images (resize, crop, filter).",TMPL-TEXT-01
+"(predict|classify|cluster|train|model|ml|machine learning)",ml,0.88,TMPL-ML-01,"Train or use ML models.",TMPL-DATA-01
+"(plot|chart|graph|visualize|draw)",visualization,0.87,TMPL-VIS-01,"Create charts and visualizations.",TMPL-TEXT-01
+"(check|exists|delete|cleanup|file|directory|path)",utility,0.80,TMPL-UTIL-01,"File system operations.",TMPL-TEXT-01

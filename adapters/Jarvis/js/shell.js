@@ -11,7 +11,9 @@ const state = {
     activeApp: 'chat',
     debugOpen: false,
     maintenanceOpen: false,
-    toolsLoaded: false
+    toolsLoaded: false,
+    protocolLoaded: false,
+    terminalLoaded: false
 };
 
 // DOM Elements
@@ -21,7 +23,9 @@ const els = {
     windows: {
         chat: document.getElementById('app-chat'),
         tools: document.getElementById('app-tools'),
-        settings: document.getElementById('app-settings')
+        settings: document.getElementById('app-settings'),
+        protocol: document.getElementById('app-protocol'),
+        terminal: document.getElementById('app-terminal')
     },
     debugBtn: document.getElementById('debug-toggle-btn'),
     maintenanceBtn: document.getElementById('maintenance-trigger'),
@@ -53,6 +57,9 @@ function initShell() {
 
         // Show Boot Toast
         showToast("System Online", "success");
+
+        // Protocol badge polling (every 60s)
+        startProtocolBadgePolling();
 
     } catch (e) {
         console.error("CRITICAL SHELL ERROR:", e);
@@ -168,6 +175,17 @@ function setupLaunchpad() {
                             }
                         })
                         .catch(err => console.error("Failed to load Maintenance App:", err));
+                } else if (target === 'skills') {
+                    const modal = document.getElementById('skills-modal');
+                    modal.classList.remove('hidden');
+                    // Dynamic Import to load Skills App
+                    import('./apps/skills.js')
+                        .then(module => {
+                            if (module.initSkillsApp) {
+                                module.initSkillsApp();
+                            }
+                        })
+                        .catch(err => console.error("Failed to load Skills App:", err));
                 }
             } else if (type === 'toggle') {
                 if (target === 'debug') {
@@ -225,6 +243,14 @@ function setupOverlays() {
     if (closeMaint) {
         closeMaint.addEventListener('click', () => {
             document.getElementById('maintenance-modal').classList.add('hidden');
+        });
+    }
+
+    // Wire up Skills Panel Close
+    const closeSkills = document.getElementById('close-skills-btn');
+    if (closeSkills) {
+        closeSkills.addEventListener('click', () => {
+            document.getElementById('skills-modal').classList.add('hidden');
         });
     }
 }
@@ -304,18 +330,101 @@ function switchApp(appName) {
         }
     }
 
+    if (appName === 'protocol') {
+        if (!state.protocolLoaded) {
+            import('./apps/protocol.js')
+                .then(module => {
+                    if (module.initProtocolApp) {
+                        module.initProtocolApp();
+                    }
+                    state.protocolLoaded = true;
+                })
+                .catch(err => console.error("Failed to load Protocol App:", err));
+        } else {
+            // Refresh on re-visit
+            import('./apps/protocol.js')
+                .then(module => {
+                    if (module.initProtocolApp) module.initProtocolApp();
+                })
+                .catch(() => {});
+        }
+    }
+
     if (appName === 'settings') {
-        document.getElementById('app-settings').innerHTML = `
-            <div class="flex items-center justify-center h-full text-accent-primary/50 text-xl font-mono">
-                <i data-lucide="settings" class="mr-4 w-12 h-12"></i>
-                SETTINGS APP REDESIGNING...
-            </div>
-         `;
-        lucide.createIcons();
+        // Instead of showing placeholder, open the modal
+        document.getElementById('settings-panel').classList.remove('hidden');
+
+        // Lazy Load Settings App
+        import('./apps/settings.js')
+            .then(module => {
+                if (module.initSettingsApp) {
+                    module.initSettingsApp();
+                }
+            })
+            .catch(err => console.error("Failed to load Settings App:", err));
+
+        // Reset sidebar active state since settings is a modal
+        els.launcher.querySelectorAll('.launcher-icon').forEach(btn => btn.classList.remove('active'));
+    }
+
+    if (appName === 'terminal') {
+        if (!state.terminalLoaded) {
+            import('./apps/terminal.js')
+                .then(module => {
+                    if (module.init) {
+                        module.init();
+                    }
+                    state.terminalLoaded = true;
+                })
+                .catch(err => console.error("Failed to load Terminal App:", err));
+        }
     }
 }
 
 
+
+
+/**
+ * Protocol Badge Polling
+ */
+function startProtocolBadgePolling() {
+    // Initial check
+    pollProtocolBadge();
+    // Poll every 60 seconds
+    setInterval(pollProtocolBadge, 60000);
+}
+
+async function pollProtocolBadge() {
+    try {
+        const resp = await fetch(`http://${window.location.hostname}:8200/api/protocol/unmerged-count`);
+        const data = await resp.json();
+        const count = data.unmerged_count || 0;
+
+        // Update launchpad badge
+        const badge = document.getElementById("proto-badge");
+        if (badge) {
+            if (count > 0) {
+                badge.textContent = count;
+                badge.classList.remove("hidden");
+            } else {
+                badge.classList.add("hidden");
+            }
+        }
+
+        // Update sidebar badge
+        const sidebarBadge = document.getElementById("proto-sidebar-badge");
+        if (sidebarBadge) {
+            if (count > 0) {
+                sidebarBadge.textContent = count;
+                sidebarBadge.classList.remove("hidden");
+            } else {
+                sidebarBadge.classList.add("hidden");
+            }
+        }
+    } catch {
+        // silent
+    }
+}
 
 
 // Start Shell (Handle Race Condition)

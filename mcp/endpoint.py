@@ -184,3 +184,11 @@ async def mcp_tools():
         "total": len(tools),
         "by_mcp": by_mcp
     })
+
+
+# ═══════════════════════════════════════════════════════════════
+# INCLUDE INSTALLER ROUTER (for ZIP uploads)
+# ═══════════════════════════════════════════════════════════════
+
+from mcp.installer import router as installer_router
+router.include_router(installer_router, prefix="/mcp")

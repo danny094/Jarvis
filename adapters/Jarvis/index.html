@@ -17,6 +17,9 @@
 
     <!-- TR/ON Styles -->
     <link rel="stylesheet" href="./static/css/trion-panel.css">
+    <link rel="stylesheet" href="./static/css/workspace.css?v=2">
+    <link rel="stylesheet" href="./static/css/protocol.css?v=1">
+    <link rel="stylesheet" href="./static/css/code-blocks.css?v=1769799786">
     <link rel="stylesheet" href="./style.css"> <!-- New Shell Styles -->
 
     <script>
@@ -43,6 +46,17 @@
             }
         }
     </script>
+    <!-- Prism.js Syntax Highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script>Prism.plugins.autoloader.languages_path = "https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/";</script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+    <!-- Markdown Parser -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <link rel="stylesheet" href="./static/css/terminal.css">
 </head>
 
 <body class="bg-dark-bg text-gray-100 h-screen w-screen overflow-hidden flex selection:bg-accent-primary/20">
@@ -82,6 +96,15 @@
             <!-- Settings App -->
             <button class="launcher-icon" data-app="settings" title="Settings">
                 <i data-lucide="settings" class="w-6 h-6"></i>
+            </button>
+
+            <!-- Protocol App -->
+            <button class="launcher-icon relative" data-app="protocol" title="Protokoll">
+                <i data-lucide="book-open" class="w-6 h-6"></i>
+                <span id="proto-sidebar-badge" class="proto-badge hidden"></span>
+            </button>
+            <button class="launcher-icon" data-app="terminal" title="Container Commander">
+                <i data-lucide="terminal" class="w-4 h-4"></i>
             </button>
 
             <!-- Maintenance (Overlay, not full app) -->
@@ -196,6 +219,14 @@
             </div>
         </div>
 
+        <!-- APP: PROTOCOL (Daily Protocol / Agenten Arbeitsbereich) -->
+        <div id="app-protocol" class="app-window flex flex-col h-full hidden">
+            <!-- Populated by protocol.js -->
+        </div>
+        <!-- Container Commander Terminal -->
+        <div id="app-terminal" class="app-window flex flex-col h-full hidden">
+        </div>
+
     </main>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -238,7 +269,7 @@
                 <span class="app-name">Memory</span>
             </div>
 
-            <div class="launchpad-app group" data-action="toggle:debug">
+            <div class="launchpad-app group" data-action="app:terminal">
                 <div class="app-icon bg-black border border-gray-700">
                     <i data-lucide="terminal" class="w-10 h-10 text-gray-300"></i>
                 </div>
@@ -253,11 +284,12 @@
                 <span class="app-name">Logs</span>
             </div>
 
-            <div class="launchpad-app group" data-action="toast:Coming Soon">
-                <div class="app-icon bg-gradient-to-br from-pink-600 to-rose-800">
-                    <i data-lucide="book" class="w-10 h-10 text-white"></i>
+            <div class="launchpad-app group" data-action="app:protocol">
+                <div class="app-icon bg-gradient-to-br from-pink-600 to-rose-800 relative">
+                    <i data-lucide="book-open" class="w-10 h-10 text-white"></i>
+                    <span id="proto-badge" class="proto-badge hidden"></span>
                 </div>
-                <span class="app-name">Notes</span>
+                <span class="app-name">Protokoll</span>
             </div>
 
             <div class="launchpad-app group" data-action="toast:Coming Soon">
@@ -265,6 +297,14 @@
                     <i data-lucide="target" class="w-10 h-10 text-white"></i>
                 </div>
                 <span class="app-name">Goals</span>
+            </div>
+
+            <!-- Skills App -->
+            <div class="launchpad-app group" data-action="modal:skills">
+                <div class="app-icon bg-gradient-to-br from-cyan-500 to-blue-600">
+                    <i data-lucide="puzzle" class="w-10 h-10 text-white"></i>
+                </div>
+                <span class="app-name">Skills</span>
             </div>
 
         </div>
@@ -456,6 +496,126 @@
         </div>
     </div>
 
+    <!-- Skills Modal -->
+    <div id="skills-modal"
+        class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[120]">
+        <div class="bg-dark-card border border-dark-border rounded-xl w-full max-w-4xl max-h-[80vh] shadow-2xl relative flex flex-col">
+            <!-- Header -->
+            <div class="p-6 border-b border-dark-border flex items-center justify-between">
+                <h2 class="text-xl font-bold flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
+                        <i data-lucide="puzzle" class="w-5 h-5 text-white"></i>
+                    </div>
+                    <span>Skills Manager</span>
+                </h2>
+                <button id="close-skills-btn" class="text-gray-400 hover:text-white p-2 hover:bg-white/10 rounded-lg">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <!-- Content -->
+            <div class="flex-1 overflow-y-auto p-6" id="skills-content">
+                <!-- Tabs -->
+                    <button class="skill-tab active px-4 py-2 rounded-lg bg-accent-primary/20 text-accent-primary font-medium" data-tab="studio">
+                        AI Studio
+                    </button>
+                    <button class="skill-tab px-4 py-2 rounded-lg bg-dark-hover text-gray-400 hover:text-white" data-tab="installed">
+                        Installed
+                    </button>
+                    <button class="skill-tab px-4 py-2 rounded-lg bg-dark-hover text-gray-400 hover:text-white" data-tab="available">
+                        Available
+                    </button>
+                    <button class="skill-tab px-4 py-2 rounded-lg bg-dark-hover text-gray-400 hover:text-white" data-tab="drafts">
+                        Drafts
+                    </button>
+                </div>
+
+                <!-- Studio Tab -->
+                <div id="skills-tab-studio" class="skills-panel h-full flex flex-col">
+                    <div class="grid grid-cols-12 gap-6 h-full">
+                        <!-- Left: Controls -->
+                        <div class="col-span-4 flex flex-col gap-4">
+                            <div class="bg-dark-hover rounded-xl p-4 border border-dark-border">
+                                <label class="text-xs text-gray-500 uppercase font-mono">Skill Name</label>
+                                <input type="text" id="studio-skill-name" placeholder="my_new_skill" 
+                                    class="w-full bg-dark-bg border border-dark-border rounded-lg p-2 mt-1 text-white focus:border-accent-primary outline-none">
+                            </div>
+                            
+                            <div class="bg-dark-hover rounded-xl p-4 border border-dark-border">
+                                <label class="text-xs text-gray-500 uppercase font-mono">Description</label>
+                                <textarea id="studio-skill-desc" rows="3" placeholder="What does this skill do?" 
+                                    class="w-full bg-dark-bg border border-dark-border rounded-lg p-2 mt-1 text-white focus:border-accent-primary outline-none resize-none"></textarea>
+                            </div>
+
+                            <div class="bg-dark-hover rounded-xl p-4 border border-dark-border flex-1 flex flex-col">
+                                <h4 class="text-xs text-gray-500 uppercase font-mono mb-2">Validation Result</h4>
+                                <div id="studio-validation-output" class="flex-1 bg-black/50 rounded-lg p-3 font-mono text-xs overflow-y-auto text-gray-400">
+                                    Ready to validate...
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right: Editor -->
+                        <div class="col-span-8 flex flex-col gap-4">
+                            <div class="bg-dark-bg border border-dark-border rounded-xl flex-1 flex flex-col relative overflow-hidden group">
+                                <div class="absolute top-2 right-2 z-10 opacity-50 group-hover:opacity-100 transition-opacity flex gap-2">
+                                     <button id="studio-help-btn" class="p-1.5 bg-dark-card border border-dark-border rounded hover:text-white text-gray-400" title="Get Safety Tips">
+                                        <i data-lucide="shield-check" class="w-4 h-4"></i>
+                                     </button>
+                                </div>
+                                <textarea id="studio-code-editor" class="flex-1 bg-transparent p-4 font-mono text-sm text-gray-300 outline-none resize-none" 
+                                    spellcheck="false" placeholder="# Write your python code here..."></textarea>
+                            </div>
+
+                            <!-- Actions -->
+                            <div class="flex gap-3">
+                                <button id="studio-validate-btn" class="flex-1 py-3 bg-dark-hover border border-dark-border rounded-xl text-gray-300 hover:text-white font-medium flex items-center justify-center gap-2 transition-colors">
+                                    <i data-lucide="check-circle" class="w-4 h-4"></i> Validate Code
+                                </button>
+                                <button id="studio-save-btn" class="flex-1 py-3 bg-accent-primary text-black rounded-xl font-bold hover:bg-orange-500 flex items-center justify-center gap-2 transition-colors">
+                                    <i data-lucide="save" class="w-4 h-4"></i> Save Draft
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Installed Skills (Hidden by default now) -->
+                <div id="skills-tab-installed" class="skills-panel hidden">
+                    <div id="installed-skills-list" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="text-gray-500 text-center py-12">
+                            <i data-lucide="loader" class="w-8 h-8 animate-spin mx-auto mb-4"></i>
+                            Loading skills...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Available Skills -->
+                <div id="skills-tab-available" class="skills-panel hidden">
+                    <div id="available-skills-list" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Drafts -->
+                <div id="skills-tab-drafts" class="skills-panel hidden">
+                    <div id="drafts-skills-list" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <!-- Drafts will be rendered here by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="p-4 border-t border-dark-border flex items-center justify-between text-sm text-gray-500">
+                <span id="skills-status">Ready</span>
+                <button id="refresh-skills-btn" class="flex items-center gap-2 px-3 py-1.5 bg-dark-hover rounded-lg hover:bg-dark-border transition-colors">
+                    <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                    Refresh
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Debug Panel Overlay (Slide-in from right) -->
     <aside id="debug-panel"
         class="fixed top-0 right-0 h-full w-96 bg-dark-card/95 backdrop-blur-xl border-l border-dark-border transform translate-x-full transition-transform duration-300 z-50 flex flex-col shadow-2xl">
@@ -487,27 +647,34 @@
     </div>
 
     <!-- SCRIPTS -->
-    <!-- Plugin System -->
-    <script src="./static/js/trion-panel.js?v=1"></script>
-    <script src="./static/js/plugin-manager.js?v=1"></script>
-    <script src="./static/js/plugin-settings.js?v=1"></script>
-    <script src="./static/js/plugins/sequential-thinking.js?v=1"></script>
-    <script src="./static/js/plugins/code-beautifier.js?v=1"></script>
+    <!-- TRION Plugin System -->
+    <script src="./static/js/trion-panel.js?v=2"></script>
+    <script src="./static/js/trion-bridge.js?v=3"></script>
+    <script src="./static/js/workspace.js?v=2"></script>
     <script>
-        // Initialize plugins after DOM ready
+        // Initialize TRION Bridge after DOM ready
         document.addEventListener("DOMContentLoaded", () => {
-            if (window.TRIONPanel && window.PluginManager) {
-                window.PluginManager.initAll();
-                if (window.PluginSettingsUI) window.PluginSettingsUI.init();
+            if (window.TRIONBridge) {
+                window.TRIONBridge.on("connected", () => {
+                    console.log("[Jarvis] TRION connected!");
+                });
+                window.TRIONBridge.on("plugins:updated", (plugins) => {
+                    console.log("[Jarvis] Plugins loaded:", plugins.length);
+                });
             }
         });
     </script>
 
-    <script type="module" src="js/shell.js?v=5"></script>
+    <script type="module" src="js/shell.js?v=999"></script>
     <script>
         // Temporary: Lucide auto-icon
         lucide.createIcons();
     </script>
+    <!-- xterm.js for Container Commander -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script src="./js/apps/terminal.js" type="module"></script>
 </body>
 
 </html>

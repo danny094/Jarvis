@@ -85,12 +85,12 @@ async def chat(request: Request):
     
     if core_request.stream:
         async def stream():
-            async for chunk in bridge.stream_chat(core_request):
+            async for chunk in bridge.process_stream(core_request):
                 response = adapter.transform_response(chunk)
                 yield f"data: {json.dumps(response)}\n\n"
         return StreamingResponse(stream(), media_type="text/event-stream")
     else:
-        response = await bridge.chat(core_request)
+        response = await bridge.process(core_request)
         return adapter.transform_response(response)
 
 

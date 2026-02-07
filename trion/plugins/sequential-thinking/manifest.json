@@ -1,0 +1,11 @@
+{
+  "id": "sequential-thinking",
+  "name": "Sequential Thinking",
+  "version": "7.0.0",
+  "description": "Visualize AI reasoning steps in real-time",
+  "author": "Danny",
+  "icon": "🧠",
+  "tier": 1,
+  "main": "plugin.ts",
+  "trionVersion": "1.0.0"
+}

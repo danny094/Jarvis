@@ -155,3 +155,192 @@
 ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 179, 2, 0.5);
 }
+/* ============================================
+   CODE BLOCKS - Clean & Compact Style
+   ============================================ */
+
+.code-block-interactive {
+    background: #1e1e2e !important;
+    border-radius: 8px !important;
+    overflow: hidden;
+    margin: 12px 0;
+    border: 1px solid #313244 !important;
+}
+
+/* Header - Compact */
+.code-block-interactive > .flex:first-child {
+    background: #181825 !important;
+    padding: 6px 12px !important;
+    border-bottom: 1px solid #313244 !important;
+}
+
+.code-block-interactive > .flex:first-child .text-sm {
+    font-size: 11px !important;
+}
+
+/* Code Area */
+.code-editor-container {
+    position: relative;
+}
+
+.code-editor-container pre {
+    margin: 0 !important;
+    padding: 16px !important;
+    background: #1e1e2e !important;
+    overflow-x: auto;
+}
+
+.code-editor-container code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace !important;
+    font-size: 13px !important;
+    line-height: 1.6 !important;
+    white-space: pre !important;
+    display: block !important;
+    color: #cdd6f4 !important;
+    background: transparent !important;
+}
+
+/* Hide the Editierbar label */
+.code-editor-container .absolute {
+    display: none !important;
+}
+
+/* Copy button styling */
+.code-copy-btn, .code-format-btn {
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.code-block-interactive:hover .code-copy-btn,
+.code-block-interactive:hover .code-format-btn {
+    opacity: 1;
+}
+
+/* Prism Override for Dark Theme */
+.code-editor-container pre[class*=language-],
+.code-editor-container code[class*=language-] {
+    background: #1e1e2e !important;
+    color: #cdd6f4 !important;
+    text-shadow: none !important;
+}
+
+/* Inline Code (not in blocks) */
+p code, li code {
+    background: #313244;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    color: #f5c2e7;
+}
+
+/* Simple code blocks without the interactive wrapper */
+pre:not(.code-editor-container pre) {
+    background: #1e1e2e !important;
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 12px 0;
+}
+
+pre:not(.code-editor-container pre) code {
+    white-space: pre !important;
+    display: block !important;
+}
+
+/* ============================================
+   CODE BLOCKS v2 - Minimal Clean Design
+   ============================================ */
+
+.code-block-interactive {
+    background: #0d0d0d !important;
+    border-radius: 8px !important;
+    overflow: hidden;
+    margin: 12px 0;
+    border: 1px solid #2a2a2a !important;
+    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+
+.code-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: #161616;
+    border-bottom: 1px solid #2a2a2a;
+}
+
+.code-lang {
+    font-size: 11px;
+    color: #888;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+}
+
+.code-copy-btn {
+    background: none;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    transition: all 0.2s;
+}
+
+.code-copy-btn:hover {
+    color: #fff;
+    background: #333;
+}
+
+.code-copy-btn.copied {
+    color: #4ade80;
+}
+
+.code-copy-btn i, .code-copy-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+.code-content {
+    margin: 0 !important;
+    padding: 16px !important;
+    background: #0d0d0d !important;
+    overflow-x: auto;
+}
+
+.code-content code {
+    font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace !important;
+    font-size: 13px !important;
+    line-height: 1.5 !important;
+    white-space: pre !important;
+    display: block !important;
+    color: #e0e0e0 !important;
+    background: transparent !important;
+    tab-size: 4;
+}
+
+/* Scrollbar for code */
+.code-content::-webkit-scrollbar {
+    height: 6px;
+}
+
+.code-content::-webkit-scrollbar-track {
+    background: #1a1a1a;
+}
+
+.code-content::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 3px;
+}
+
+/* Prism token colors (Catppuccin-inspired) */
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #6c7086; }
+.token.punctuation { color: #89b4fa; }
+.token.property, .token.tag, .token.constant, .token.symbol, .token.deleted { color: #f38ba8; }
+.token.boolean, .token.number { color: #fab387; }
+.token.selector, .token.attr-name, .token.string, .token.char, .token.builtin, .token.inserted { color: #a6e3a1; }
+.token.operator, .token.entity, .token.url { color: #89dceb; }
+.token.atrule, .token.attr-value, .token.keyword { color: #cba6f7; }
+.token.function, .token.class-name { color: #89b4fa; }
+.token.regex, .token.important, .token.variable { color: #f9e2af; }

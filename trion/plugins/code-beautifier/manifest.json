@@ -1,0 +1,11 @@
+{
+    "id": "code-beautifier",
+    "name": "Code Beautifier",
+    "version": "1.0.0",
+    "description": "Formats code using built-in formatters",
+    "author": "System",
+    "icon": "💅",
+    "tier": 1,
+    "main": "plugin.ts",
+    "trionVersion": "1.0.0"
+}

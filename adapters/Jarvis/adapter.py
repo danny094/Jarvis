@@ -74,22 +74,32 @@ class JarvisAdapter(BaseAdapter):
             raw_request=raw_request,
         )
     
-    def transform_response(self, response: CoreChatResponse) -> Dict[str, Any]:
+    def transform_response(self, response) -> Dict[str, Any]:
         """
-        Transformiert CoreChatResponse ins Jarvis-Format:
-        {
-            "response": "Dein Name ist Danny.",
-            "done": true,
-            "metadata": {
-                "model": "llama3.1:8b",
-                "timestamp": "2024-...",
-                "conversation_id": "user_123",
-                "memory_used": true
-            }
-        }
+        Transforms response to Jarvis format.
+        
+        Handles both:
+        - CoreChatResponse objects (non-streaming)
+        - Tuples (chunk, is_done, metadata) for streaming with events
         """
         timestamp = datetime.utcnow().isoformat() + "Z"
         
+        # Streaming tuple format: (chunk, is_done, metadata)
+        if isinstance(response, tuple):
+            chunk, is_done, metadata = response
+            
+            # Pass through event metadata if present
+            result = {
+                "response": chunk,
+                "done": is_done,
+                "metadata": {
+                    "timestamp": timestamp,
+                    **metadata  # Include all metadata from orchestrator
+                }
+            }
+            return result
+        
+        # Non-streaming CoreChatResponse
         return {
             "response": response.content,
             "done": response.done,
