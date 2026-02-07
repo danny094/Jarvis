@@ -8,6 +8,11 @@
 <img width="1866" height="913" alt="Bildschirmfoto 2026-01-27 um 02 50 07" src="https://github.com/user-attachments/assets/aa1cd753-9d8a-4257-91b7-c0d80e51f77e" />
 
 
+<img width="900" height="690" alt="Bildschirmfoto 2026-02-02 um 13 51 30" src="https://github.com/user-attachments/assets/ec34be86-f630-412a-9f97-83fd3a68df2f" />
+
+<img width="839" height="465" alt="Bildschirmfoto 2026-02-01 um 23 51 47" src="https://github.com/user-attachments/assets/d866b987-bc97-4b55-9399-b1a41ebd90f4" />
+
+<img width="690" height="656" alt="Bildschirmfoto 2026-02-02 um 23 49 16" src="https://github.com/user-attachments/assets/7cfe7d51-dd81-47ce-86f8-c977da1a2025" />
 
 </div>
 
