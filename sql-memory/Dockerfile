@@ -11,7 +11,7 @@ COPY embedding.py ./embedding.py
 COPY vector_store.py ./vector_store.py
 COPY graph ./graph
 
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chown 1000:1000 /app/data
 
 ENV DB_PATH=/app/data/memory.db
 
