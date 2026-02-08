@@ -120,10 +120,6 @@ services:
     - ./container_commander:/app/container_commander:ro
     - /var/run/docker.sock:/var/run/docker.sock
     - commander-data:/app/data
-    - ./adapters/admin-api/commander_routes.py:/app/commander_routes.py:ro
-    - ./container_commander:/app/container_commander:ro
-    - /var/run/docker.sock:/var/run/docker.sock
-    - commander-data:/app/data
     - ./memory:/app/memory
     networks:
     - big-bear-lobe-chat_default
@@ -147,7 +143,7 @@ services:
     - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
     volumes:
     - ./sql-memory:/app
-    - ./sql-memory/data:/app/data
+    - memory-data:/app/data
     ports:
     - 8082:8081
     networks:
@@ -275,6 +271,7 @@ services:
 
 volumes:
   commander-data:
+  memory-data:
 
 networks:
   default:
