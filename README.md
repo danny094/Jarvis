@@ -218,3 +218,13 @@ Detailed technical documentation is available in the `Dokumentation/` directory:
 ---
 
 
+
+## 💖 Support my work
+
+If you'd like to support my development, thank you so much!
+
+### What I do with the donations:
+* 🤖 **AI Subscriptions:** Funding Claude Max to help me architect better solutions.
+* 💻 **Hardware:** Saving up for better dev gear to handle heavier workloads.
+
+[![Sponsor danny094](https://img.shields.io/badge/Sponsor-danny094-ea4aaa?style=for-the-badge&logo=github-sponsors)](https://github.com/sponsors/danny094)
