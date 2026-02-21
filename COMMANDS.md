@@ -6,6 +6,7 @@ This file lists the available commands for:
 - `scripts/ops/trion_restore.sh` (restore/clean-install)
 - `scripts/ops/trion_live_restore.sh` (live-operation restore/clean-install)
 - `scripts/ops/trion_permissions_doctor.sh` (permissions diagnostics/fix)
+- `scripts/ops/trion_diagnose.sh` (runtime diagnostics + safe fix plan)
 
 ## 1) `scripts/ops/trion_reset.sh`
 
@@ -202,4 +203,37 @@ bash scripts/ops/trion_permissions_doctor.sh --fix-safe --fix-docker
 
 # Preview fixes without writing
 bash scripts/ops/trion_permissions_doctor.sh --fix-safe --fix-docker --dry-run
+```
+
+## 6) `scripts/ops/trion_diagnose.sh`
+
+### Help
+```bash
+bash scripts/ops/trion_diagnose.sh --help
+```
+
+### Options
+- `--quick` fast core checks (default)
+- `--full` deeper diagnostics including log sampling
+- `--fix-safe` apply low-risk service/network/volume fixes only
+- `--export` write machine-readable JSON report to `logs/diagnose_report_*.json`
+- `--no-logs` skip log sampling
+- `--since=<window>` log time window for `--full` (default `2h`)
+- `--redact` redact basic IP/email patterns in sampled logs
+- `--yes` skip fix confirmation
+- `-h`, `--help` show usage
+
+### Common Commands
+```bash
+# Fast diagnosis
+bash scripts/ops/trion_diagnose.sh --quick
+
+# Full diagnosis + export report
+bash scripts/ops/trion_diagnose.sh --full --export
+
+# Full diagnosis with safe auto-fixes
+bash scripts/ops/trion_diagnose.sh --full --fix-safe --export --since=4h
+
+# Privacy-oriented diagnosis
+bash scripts/ops/trion_diagnose.sh --full --no-logs --export
 ```
