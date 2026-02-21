@@ -171,3 +171,5 @@ surface
 If this project helps you, consider supporting development:
 
 [![Sponsor danny094](https://img.shields.io/badge/Sponsor-danny094-ea4aaa?style=for-the-badge&logo=github-sponsors)](https://github.com/sponsors/danny094)
+
+Kontakt: trlon.devs.dk@gmail.com
