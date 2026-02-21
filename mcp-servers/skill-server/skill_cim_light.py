@@ -299,9 +299,14 @@ class SkillCIMLight:
             return any(r in code for r in random_calls)
         
         # PRIOR-003: No Implicit Side-Effects
+        # Netzwerk-Calls (requests, urllib) sind für Data-Fetching-Skills erlaubt.
+        # Nur lokale Filesystem-Writes gelten als unerwartete Side-Effects.
         if prior_id == "PRIOR-003":
-            side_effects = ["open(", "write(", "requests.", "urllib."]
-            return any(s in code for s in side_effects)
+            import re
+            # Flag: open() im Write/Append Modus
+            if re.search(r'open\s*\([^)]*["\'][wa]["\']', code):
+                return True
+            return False
         
         # PRIOR-004: Input Sanitization
         if prior_id == "PRIOR-004":

@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TRION Test Case",
+  "description": "Schema for a single TRION AI pipeline test case.",
+  "type": "object",
+  "required": ["id", "phase", "title", "mode", "input", "expected", "tags"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]+$",
+      "description": "Unique, slug-style identifier. Example: p0_basic_hello"
+    },
+    "phase": {
+      "oneOf": [{"type": "integer"}, {"type": "string"}],
+      "description": "Phase number (0-5) or cross-phase label (e.g. 'cross')."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable test title."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["sync", "stream", "both"],
+      "description": "Test execution mode. 'both' runs sync AND stream."
+    },
+    "input": {
+      "type": "object",
+      "required": ["prompt"],
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 2,
+          "description": "User prompt sent to the AI provider."
+        },
+        "conversation_id": {
+          "type": "string",
+          "description": "Optional conversation context ID."
+        },
+        "extra": {
+          "type": "object",
+          "description": "Extra key-value pairs forwarded to the provider."
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contains": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Substrings that must appear in response_text."
+        },
+        "not_contains": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Substrings that must NOT appear in response_text."
+        },
+        "markers": {
+          "type": "object",
+          "description": "Expected context marker values (exact match)."
+        },
+        "golden_key": {
+          "type": "string",
+          "description": "Base filename (no extension) of the golden JSON snapshot."
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "description": "List of tags for filtering (e.g. smoke, phase2, stream)."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional longer description of what this case tests."
+    },
+    "skip_reason": {
+      "type": "string",
+      "description": "If set, the test is skipped with this reason string."
+    }
+  }
+}

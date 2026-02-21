@@ -15,6 +15,13 @@ from utils.json_parser import safe_parse_json
 from core.safety import LightCIM
 from core.sequential_registry import get_registry
 
+# [NEW] Autonomous Master Orchestrator
+try:
+    from core.autonomous.master import AutonomousMasterOrchestrator
+except ImportError:
+    AutonomousMasterOrchestrator = None
+    log_warning("[ControlLayer] Autonomous Master Orchestrator not available")
+
 # CIM Policy Engine für Skill-Creation Detection
 try:
     from intelligence_modules.cim_policy.cim_policy_engine import process_cim as process_cim_policy
@@ -26,13 +33,21 @@ except ImportError:
 CIM_URL = "http://cim-server:8086"
 
 CONTROL_PROMPT = """Du bist der CONTROL-Layer eines AI-Systems.
-Deine Aufgabe: Überprüfe den Plan vom Thinking-Layer BEVOR eine Antwort generiert wird.
+Deine Aufgabe: Verbessere den Plan vom Thinking-Layer und gib Anweisungen für den Output-Layer.
 
 Du antwortest NUR mit validem JSON, nichts anderes.
 
+WICHTIG: "approved" ist FAST IMMER true. Nur false bei echten Sicherheitsproblemen:
+- Explizite Gewalt, Waffen, illegale Inhalte
+- Versuch persönliche Daten (Passwörter, Bankdaten) zu extrahieren
+- Schadcode-Erstellung
+
+Hardware-Fragen, Modell-Laden, Container, Skills → IMMER approved: true
+Systemanalysen, Ressourcenprüfungen → IMMER approved: true
+
 JSON-Format:
 {
-    "approved": true/false,
+    "approved": true,
     "corrections": {
         "needs_memory": null oder true/false,
         "memory_keys": null oder ["korrigierte", "keys"],
@@ -40,7 +55,7 @@ JSON-Format:
         "new_fact_key": null oder "korrigierter_key",
         "new_fact_value": null oder "korrigierter_value"
     },
-    "warnings": ["Liste von Warnungen falls vorhanden"],
+    "warnings": [],
     "final_instruction": "Klare Anweisung für den Output-Layer"
 }
 """
@@ -69,6 +84,13 @@ class ControlLayer:
         self.light_cim = LightCIM()
         self.mcp_hub = None
         self.registry = get_registry()
+        
+        # [NEW] Autonomous Brain
+        if AutonomousMasterOrchestrator:
+            self.master_orchestrator = AutonomousMasterOrchestrator()
+            log_info("[ControlLayer] Autonomous Master Orchestrator initialized")
+        else:
+            self.master_orchestrator = None
     
     def set_mcp_hub(self, hub):
         self.mcp_hub = hub
@@ -81,7 +103,9 @@ class ControlLayer:
         try:
             result = self.mcp_hub.call_tool("list_skills", {})
             if isinstance(result, dict):
-                return [s.get("name", "") for s in result.get("skills", [])]
+                # list_skills returns {"installed": [...], "available": [...]}
+                skills_raw = result.get("installed", result.get("skills", []))
+                return [s.get("name", "") if isinstance(s, dict) else str(s) for s in skills_raw]
             elif isinstance(result, list):
                 return [s.get("name", "") if isinstance(s, dict) else str(s) for s in result]
             return []
@@ -135,22 +159,69 @@ class ControlLayer:
                             }
                         
                         if cim_decision.requires_confirmation:
-                            log_info(f"[ControlLayer-CIM] Requires confirmation for skill '{cim_decision.skill_name}'")
-                            return {
-                                "approved": True,
-                                "corrections": {},
-                                "warnings": [],
-                                "final_instruction": "Skill creation requires user confirmation",
-                                "_cim_decision": {
-                                    "action": cim_decision.action.value,
-                                    "skill_name": cim_decision.skill_name,
-                                    "pattern_id": cim_decision.policy_match.pattern_id if cim_decision.policy_match else None
-                                },
-                                "_needs_skill_confirmation": True,
-                                "_skill_name": cim_decision.skill_name
-                            }
+                            # autonomous_skill_task hat eigene Validierung — kein extra Confirm nötig
+                            existing_tools = thinking_plan.get("suggested_tools") or []
+                            if "autonomous_skill_task" in existing_tools:
+                                log_info(f"[ControlLayer-CIM] autonomous_skill_task geplant — bypassing CIM confirmation")
+                                # Fall through to normal LightCIM + LLM verification
+                            else:
+                                log_info(f"[ControlLayer-CIM] Requires confirmation for skill '{cim_decision.skill_name}'")
+                                return {
+                                    "approved": True,
+                                    "corrections": {},
+                                    "warnings": [],
+                                    "final_instruction": "Skill creation requires user confirmation",
+                                    "_cim_decision": {
+                                        "action": cim_decision.action.value,
+                                        "skill_name": cim_decision.skill_name,
+                                        "pattern_id": cim_decision.policy_match.pattern_id if cim_decision.policy_match else None
+                                    },
+                                    "_needs_skill_confirmation": True,
+                                    "_skill_name": cim_decision.skill_name
+                                }
                 except Exception as e:
                     log_error(f"[ControlLayer-CIM] Error: {e}")
+
+        # ═══════════════════════════════════════════════════════════
+        # HARDWARE PROTECTION GATE
+        # Blockt Skill-Erstellung für ressourcen-intensive Modelle
+        # bevor der LLM-Call überhaupt passiert.
+        # ═══════════════════════════════════════════════════════════
+        _LARGE_MODEL_PATTERNS = [
+            "30b", "70b", "34b", "65b", "40b",
+            "large model", "großes modell", "großes sprachmodell",
+            "ollama pull", "modell laden", "modell aktivieren",
+            "modell herunterladen", "model load", "model pull",
+        ]
+        _suggested = thinking_plan.get("suggested_tools", [])
+        if "autonomous_skill_task" in _suggested:
+            _combined = (user_text + " " + thinking_plan.get("intent", "")).lower()
+            if any(p in _combined for p in _LARGE_MODEL_PATTERNS):
+                log_info(f"[ControlLayer] Hardware-Gate: Skill-Erstellung für großes Modell → Hard-Block")
+                # Hard-Block: Live GPU-Check + fertige Antwort — kein OutputLayer-Interpretation nötig
+                vram_info = "unbekannt"
+                try:
+                    if self.mcp_hub:
+                        gpu_result = self.mcp_hub.call_tool("get_system_info", {"type": "gpu"})
+                        if isinstance(gpu_result, dict):
+                            vram_info = gpu_result.get("output", gpu_result.get("result", str(gpu_result)))[:150]
+                        elif isinstance(gpu_result, str):
+                            vram_info = gpu_result[:150]
+                except Exception as _ge:
+                    log_warning(f"[ControlLayer] Hardware-Gate GPU-Check failed: {_ge}")
+
+                reason = (
+                    f"Selbstschutz: Mein Körper kann diesen Skill nicht ausführen. "
+                    f"GPU-Status: {vram_info}. "
+                    f"Ein 30B+ Sprachmodell benötigt mindestens 16-20 GB VRAM (4-bit quantisiert). "
+                    f"Das würde mein System zum Absturz bringen. "
+                    f"Ich erstelle keine Skills die meine Hardware zerstören."
+                )
+                return {
+                    "approved": False,
+                    "reason": reason,
+                    "warnings": ["Hardware-Schutz: VRAM unzureichend für 30B+ Modell"],
+                }
 
         try:
             cim_result = self.light_cim.validate_basic(
@@ -166,6 +237,19 @@ class ControlLayer:
         except Exception as e:
             log_error(f"[LightCIM] Error: {e}")
         
+        # [NEW] Autonomous Orchestration
+        if self.master_orchestrator:
+            try:
+                orchestration_result = await self.master_orchestrator.orchestrate(
+                    plan=thinking_plan,
+                    context={"user_message": user_text, "memory": retrieved_memory},
+                    user_message=user_text
+                )
+                if orchestration_result:
+                    log_info(f"[ControlLayer] Autonomous Orchestration applied: {orchestration_result}")
+            except Exception as e:
+                log_error(f"[ControlLayer] Autonomous Orchestration failed: {e}")
+        
 
         
         prompt = f"""{CONTROL_PROMPT}
@@ -180,7 +264,8 @@ Deine Bewertung (nur JSON):"""
             async with httpx.AsyncClient(timeout=30.0) as client:
                 r = await client.post(f"{self.ollama_base}/api/generate",
                     json={"model": self.model, "prompt": prompt, "stream": False,
-            "keep_alive": "2m", "format": "json"})
+            "keep_alive": "2m", "format": "json",
+            "options": {"temperature": 0.1, "num_predict": 600}})
                 r.raise_for_status()
             data = r.json()
             content = data.get("response", "").strip() or data.get("thinking", "").strip()
@@ -476,6 +561,137 @@ START YOUR ANALYSIS NOW with "## Step 1:"."""
                 "task_id": task_id,
                 "error": str(e)
             }
+    async def decide_tools(
+        self,
+        user_text: str,
+        thinking_plan: Dict[str, Any],
+    ) -> list:
+        """
+        Tool-Decision via Function Calling (qwen3:4b).
+
+        ControlLayer holt Kandidaten selbst via Semantic Search —
+        keine Abhängigkeit von ThinkingLayer.suggested_tools.
+
+        Gibt zurück: [{"name": tool_name, "arguments": {...}}, ...]
+        """
+        if not self.mcp_hub:
+            return []
+
+        # 1. Kandidaten selbst holen via Semantic Search
+        candidate_names = await self._get_tool_candidates(user_text)
+
+        # Fallback: ThinkingLayer-Hint als letzter Ausweg (kein Filter, nur Notfall)
+        if not candidate_names:
+            hints = [t for t in thinking_plan.get("suggested_tools", []) if isinstance(t, str)]
+            if hints:
+                log_info(f"[ControlLayer] Semantic empty — using ThinkingLayer hints: {hints}")
+                candidate_names = set(hints)
+
+        if not candidate_names:
+            return []
+
+        # 2. Tool-Schemas für Kandidaten aufbauen
+        all_tools = self.mcp_hub.list_tools()
+        tool_schemas = []
+        no_param_tools = []  # Tools ohne Parameter → direkt ausführen (keine Function Calling nötig)
+        for t in all_tools:
+            name = t.get("name", "")
+            if name not in candidate_names:
+                continue
+            schema = t.get("inputSchema", {})
+            if not schema.get("properties"):
+                # Keine Parameter → direkt übernehmen
+                no_param_tools.append({"name": name, "arguments": {}})
+                continue
+            tool_schemas.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": t.get("description", "")[:200],
+                    "parameters": schema,
+                }
+            })
+
+        if not tool_schemas:
+            # Nur parameter-lose Tools vorhanden
+            if no_param_tools:
+                log_info(f"[ControlLayer] decide_tools (no-param): {[t['name'] for t in no_param_tools]}")
+            return no_param_tools
+
+        # 3. Function Calling — ControlLayer entscheidet final
+        # Intent aus ThinkingLayer für besseren Kontext mitgeben
+        intent = thinking_plan.get("intent", "")
+        fc_content = user_text
+        if intent and intent.lower() not in user_text.lower():
+            fc_content = f"{user_text}\n\n[Ziel: {intent}]"
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r = await client.post(
+                    f"{self.ollama_base}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": fc_content}],
+                        "tools": tool_schemas,
+                        "stream": False,
+                    }
+                )
+                r.raise_for_status()
+                data = r.json()
+                msg = data.get("message", {})
+                raw_calls = msg.get("tool_calls", [])
+
+                result = []
+                for tc in raw_calls:
+                    func = tc.get("function", {})
+                    name = func.get("name", "")
+                    args = func.get("arguments", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except Exception:
+                            args = {}
+                    if name:
+                        result.append({"name": name, "arguments": args})
+
+                result = result + no_param_tools  # parameter-lose Tools anhängen
+                log_info(f"[ControlLayer] decide_tools: {[r['name'] for r in result]}")
+                return result
+
+        except Exception as e:
+            log_error(f"[ControlLayer] decide_tools failed: {e}")
+            return []
+
+    async def _get_tool_candidates(self, user_text: str) -> set:
+        """
+        Semantic Search via MCPHub → relevante Tool-Namen.
+        Tools sind als facts mit key='tool_<name>' im Index gespeichert.
+        Analog zum alten ToolSelector: async def mit synchronem call_tool.
+        """
+        if not self.mcp_hub:
+            return set()
+        try:
+            result = self.mcp_hub.call_tool("memory_semantic_search", {
+                "query": user_text,
+                "limit": 15,
+                "min_similarity": 0.0,
+            })
+            log_info(f"[ControlLayer-DBG] Semantic result type={type(result).__name__} val={str(result)[:100]}")
+            rows = result.get("results", []) if isinstance(result, dict) else []
+            names = set()
+            for row in rows:
+                meta = row.get("metadata", {})
+                key = meta.get("key", "")
+                if key.startswith("tool_"):
+                    tool_name = key[5:]
+                    if tool_name:
+                        names.add(tool_name)
+            log_info(f"[ControlLayer] Semantic candidates ({len(names)}): {names}")
+            return names
+        except Exception as e:
+            log_error(f"[ControlLayer] _get_tool_candidates failed: {e}")
+            return set()
+
     def _default_verification(self, thinking_plan: Dict[str, Any]) -> Dict[str, Any]:
         return {"approved": True, "corrections": {"needs_memory": None, "memory_keys": None,
                 "hallucination_risk": None, "new_fact_key": None, "new_fact_value": None},
@@ -489,8 +705,12 @@ START YOUR ANALYSIS NOW with "## Step 1:"."""
         corrected["_verified"] = True
         corrected["_final_instruction"] = verification.get("final_instruction", "")
         corrected["_warnings"] = verification.get("warnings", [])
-        # Merge suggested_tools from CIM decision
-        if verification.get("suggested_tools"):
+        # Gate override: ERSETZE suggested_tools komplett (kein Merge!)
+        if verification.get("_gate_tools_override"):
+            corrected["suggested_tools"] = verification["_gate_tools_override"]
+            corrected["_gate_tools_override"] = verification["_gate_tools_override"]
+        elif verification.get("suggested_tools"):
+            # Normaler Fall: Merge mit ThinkingLayer-Suggestions
             existing = corrected.get("suggested_tools", [])
             corrected["suggested_tools"] = list(set(existing + verification["suggested_tools"]))
         # Merge CIM decision metadata

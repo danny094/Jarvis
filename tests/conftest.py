@@ -10,6 +10,15 @@ from pathlib import Path
 # Add parent dir to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Standalone runner scripts that are not proper pytest files (use exit() at module level).
+# These cause INTERNALERROR during pytest collection because sys.exit() fires on import.
+collect_ignore = [
+    "integration/test_light_cim.py",
+]
+collect_ignore_glob = [
+    "reliability/test_*.py",  # all reliability/ files are standalone runners
+]
+
 
 # ═══════════════════════════════════════════════════════════
 # SAMPLE DATA FIXTURES

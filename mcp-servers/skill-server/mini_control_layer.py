@@ -35,6 +35,34 @@ from datetime import datetime
 from skill_cim_light import SkillCIMLight, ValidationResult, get_skill_cim
 
 
+# === PACKAGE ALLOWLIST ===
+
+# Python Standard Library — immer verfügbar, kein Check nötig
+_STDLIB_MODULES = {
+    'json', 'math', 'datetime', 're', 'collections', 'itertools',
+    'hashlib', 'base64', 'os', 'sys', 'subprocess', 'socket',
+    'time', 'random', 'string', 'pathlib', 'urllib', 'http',
+    'io', 'struct', 'functools', 'operator', 'copy', 'pprint',
+    'traceback', 'logging', 'threading', 'queue', 'decimal',
+    'fractions', 'statistics', 'csv', 'html', 'xml', 'enum',
+    'typing', 'dataclasses', 'abc', 'contextlib', 'weakref',
+    'gc', 'inspect', 'ast', 'platform', 'shutil', 'tempfile',
+    'glob', 'fnmatch', 'pickle', 'sqlite3', 'zipfile', 'tarfile',
+    'gzip', 'bz2', 'zlib', 'uuid', 'secrets', 'hmac', 'binascii',
+    'codecs', 'unittest', 'timeit', 'email', 'ipaddress', 'ssl',
+    'asyncio', 'concurrent', 'multiprocessing', 'bisect', 'heapq',
+    'calendar', 'argparse', 'configparser', 'textwrap', 'difflib',
+    'builtins', 'types', 'numbers', 'cmath', 'array',
+}
+
+# Fallback: Pakete die im tool-executor immer installiert sind
+# (wenn der /v1/packages/installed Endpoint nicht antwortet)
+_KNOWN_INSTALLED = {
+    'requests', 'httpx', 'pydantic', 'fastapi', 'uvicorn',
+    'yaml', 'pyyaml', 'aiohttp',
+}
+
+
 # === CONFIGURATION ===
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
@@ -93,7 +121,7 @@ class AutonomousTaskResult:
     message: str = ""
     
     def to_dict(self) -> Dict:
-        return {
+        result = {
             "success": self.success,
             "action_taken": self.action_taken,
             "skill_name": self.skill_name,
@@ -101,8 +129,15 @@ class AutonomousTaskResult:
             "execution_result": self.execution_result,
             "error": self.error,
             "validation_score": self.validation_score,
-            "message": self.message
+            "message": self.message,
         }
+        # Package-Install-Signal für Frontend
+        if self.action_taken == "needs_package_install" and self.error:
+            if self.error.startswith("missing_packages:"):
+                pkgs = self.error.split(":", 1)[1].split(",")
+                result["needs_package_install"] = True
+                result["missing_packages"] = [p.strip() for p in pkgs if p.strip()]
+        return result
 
 
 @dataclass
@@ -203,7 +238,18 @@ class SkillMiniControl:
                     message=f"Found matching skill '{matching_skill['name']}' - ready to run"
                 )
         
-        # 2. AUTO-CREATE POLICY
+        # 2. GAP DETECTION — vor Code-Generierung nachfragen wenn Infos fehlen
+        gap_question = self._detect_gaps(task.intent, task.user_text)
+        if gap_question:
+            print(f"[MiniControl] Gap detected — needs clarification")
+            return AutonomousTaskResult(
+                success=False,
+                action_taken="needs_clarification",
+                message=gap_question,
+                skill_name=None,
+            )
+
+        # 3. AUTO-CREATE POLICY
         should_auto = self._should_auto_create(task.complexity, task.allow_auto_create)
         
         if not should_auto:
@@ -229,6 +275,24 @@ class SkillMiniControl:
                 message="Could not generate skill code"
             )
         
+        # 3.5. PACKAGE CHECK — vor Validation, nach Code-Generierung
+        missing_pkgs = await self._check_missing_packages(generated_code)
+        if missing_pkgs:
+            pkg_list = ", ".join(f"`{p}`" for p in missing_pkgs)
+            print(f"[MiniControl] Missing packages: {missing_pkgs}")
+            return AutonomousTaskResult(
+                success=False,
+                action_taken="needs_package_install",
+                skill_name=skill_name,
+                error=f"missing_packages:{','.join(missing_pkgs)}",
+                message=(
+                    f"Der Skill benötigt folgende Pakete die noch nicht installiert sind: "
+                    f"{pkg_list}\n\n"
+                    f"Bitte installiere {'sie' if len(missing_pkgs) > 1 else 'es'} zuerst, "
+                    f"dann kann ich den Skill erstellen."
+                ),
+            )
+
         # 4. VALIDATION
         print(f"[MiniControl] Validating generated code")
         validation = self.cim.validate_code(generated_code)
@@ -244,11 +308,15 @@ class SkillMiniControl:
         
         # 5. INSTALLATION
         print(f"[MiniControl] Installing skill '{skill_name}'")
+        # Derive gap_patterns + gap_question from intent for dynamic gap detection
+        gap_meta = self._derive_gap_metadata(task.intent, task.intent)
         install_result = await self._install_skill(
-            skill_name, 
-            generated_code, 
+            skill_name,
+            generated_code,
             task.intent,
-            auto_promote=True
+            auto_promote=True,
+            gap_patterns=gap_meta.get("gap_patterns"),
+            gap_question=gap_meta.get("gap_question"),
         )
         
         # Check both "passed" and "installation.success" 
@@ -374,7 +442,7 @@ class SkillMiniControl:
         """Extract meaningful keywords from text."""
         # Remove common words
         stopwords = {
-            'ich', 'du', 'er', 'sie', 'es', 'wir', 'ihr', 'sie', 
+            'ich', 'du', 'er', 'sie', 'es', 'wir', 'ihr', 'sie',
             'ein', 'eine', 'einen', 'der', 'die', 'das', 'den', 'dem',
             'und', 'oder', 'aber', 'wenn', 'dann', 'dass', 'wie',
             'ist', 'sind', 'war', 'waren', 'wird', 'werden',
@@ -385,7 +453,11 @@ class SkillMiniControl:
             'can', 'could', 'should', 'may', 'might', 'must',
             'i', 'you', 'he', 'she', 'it', 'we', 'they',
             'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her',
-            'for', 'to', 'of', 'in', 'on', 'at', 'with', 'from', 'by'
+            'for', 'to', 'of', 'in', 'on', 'at', 'with', 'from', 'by',
+            # Skill-Creation Meta-Wörter — kein Domain-Keyword
+            'skill', 'erstelle', 'erstellen', 'create', 'neuen', 'neuer',
+            'baue', 'bau', 'mach', 'mache', 'schreibe', 'schreib',
+            'new', 'make', 'build', 'write', 'generate',
         }
         
         # Extract words
@@ -447,6 +519,68 @@ class SkillMiniControl:
         
         return complexity <= self.auto_create_threshold
     
+    def _detect_gaps(self, intent: str, user_text: str) -> Optional[str]:
+        """
+        Erkennt fehlende Infos vor der Code-Generierung (rule-based, kein LLM-Call).
+        Liest gap_patterns + gap_question dynamisch aus installierten Skill-Manifesten.
+        Returns: Frage-String wenn Klärung nötig, None wenn OK zum Weitermachen.
+        """
+        combined = (intent + " " + user_text).lower()
+
+        # Skip wenn User bereits Klarheit gegeben hat oder wiederholter Versuch
+        skip_hints = [
+            "coingecko", "kein api", "no api", "ohne key", "free api",
+            "hinweis vom user", "user note:", "standard", "default",
+            "öffentliche api", "kein schlüssel", "public api",
+        ]
+        if any(h in combined for h in skip_hints):
+            return None
+
+        # --- DYNAMISCHE REGELN: Aus installierten Skill-Manifesten ---
+        # Skills können gap_patterns + gap_question in manifest.yaml definieren.
+        # Wenn ein Pattern matcht und der Skill bereits existiert → Frage stellen.
+        installed = self._load_installed_skills()
+        for skill_name, info in installed.items():
+            gap_patterns = info.get("gap_patterns", [])
+            gap_question = info.get("gap_question", "")
+            if gap_patterns and gap_question:
+                if any(p.lower() in combined for p in gap_patterns):
+                    print(f"[MiniControl] Dynamic gap match from skill '{skill_name}'")
+                    return gap_question
+
+        # --- STATISCHE REGELN (Fallback) ---
+
+        # Regel 1: Bekannte Dienste die typisch einen Key brauchen
+        paid_services = {
+            "coinmarketcap": "CoinMarketCap benötigt einen API-Key.",
+            "openai":        "Die OpenAI API benötigt einen API-Key.",
+            "openweather":   "OpenWeatherMap benötigt einen API-Key (Free-Tier verfügbar).",
+            "binance":       "Die Binance API benötigt einen Key für die meisten Endpunkte.",
+            "stripe":        "Stripe benötigt einen API-Key.",
+            "twilio":        "Twilio benötigt Account-Credentials (Account SID + Auth Token).",
+            "google maps":   "Google Maps API benötigt einen API-Key.",
+            "mapbox":        "Mapbox benötigt einen API-Key.",
+        }
+        for service, note in paid_services.items():
+            if service in combined:
+                return (
+                    f"⚠️ {note}\n"
+                    f"Hast du bereits einen Key, oder soll ich eine kostenlose "
+                    f"Alternative nutzen?"
+                )
+
+        # Regel 2: Krypto ohne API-Spezifikation → Default anbieten
+        crypto_kw = ["krypto", "crypto", "bitcoin", "ethereum", "coin",
+                     "preis", "price", "kurs", "cryptocurrency"]
+        if any(k in combined for k in crypto_kw):
+            return (
+                "Ich kann Krypto-Preise mit **CoinGecko** abrufen (kostenlos, kein API-Key nötig).\n"
+                "Standard: Bitcoin, Ethereum, Solana in EUR.\n\n"
+                "Soll ich das so umsetzen, oder andere Coins / Währung / API?"
+            )
+
+        return None
+
     def _generate_skill_name(self, intent: str) -> str:
         """Generate a valid skill name from intent."""
         # Extract key words
@@ -658,19 +792,111 @@ Generiere NUR den Python-Code, keine Erklärungen:
         return args
     
     # ================================================================
+    # PACKAGE CHECK
+    # ================================================================
+
+    def _extract_package_names(self, code: str) -> List[str]:
+        """Extrahiert Top-Level Paketnamen aus Import-Statements."""
+        packages: set = set()
+        for line in code.split('\n'):
+            line = line.strip()
+            # import X  /  import X.Y.Z
+            m = re.match(r'^import\s+([\w\.]+)', line)
+            if m:
+                packages.add(m.group(1).split('.')[0])
+            # from X import Y
+            m = re.match(r'^from\s+([\w\.]+)\s+import', line)
+            if m:
+                packages.add(m.group(1).split('.')[0])
+        return list(packages)
+
+    async def _get_installed_packages(self) -> set:
+        """
+        Fragt den tool-executor nach installierten Paketen.
+        Fallback: _KNOWN_INSTALLED wenn Endpoint nicht erreichbar.
+        """
+        executor_url = os.getenv("EXECUTOR_URL", "http://tool-executor:8000")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{executor_url}/v1/packages/installed")
+                if r.status_code == 200:
+                    data = r.json()
+                    return {p.lower() for p in data.get("packages", [])}
+        except Exception:
+            pass
+        return set(_KNOWN_INSTALLED)
+
+    async def _check_missing_packages(self, code: str) -> List[str]:
+        """
+        Prüft ob alle im Code verwendeten Pakete verfügbar sind.
+        Gibt Liste der fehlenden Drittanbieter-Pakete zurück.
+        """
+        all_imports = self._extract_package_names(code)
+        # stdlib rausfiltern — immer verfügbar
+        third_party = [p for p in all_imports if p not in _STDLIB_MODULES]
+        if not third_party:
+            return []
+        installed = await self._get_installed_packages()
+        return [p for p in third_party if p.lower() not in installed]
+
+    # ================================================================
     # SKILL INSTALLATION & EXECUTION
     # ================================================================
-    
+
+    def _derive_gap_metadata(self, intent: str, description: str) -> Dict[str, Any]:
+        """
+        Leitet gap_patterns + gap_question heuristisch aus dem Intent ab.
+        Wird für auto-erstellte Skills genutzt (kein extra LLM-Call).
+        """
+        combined = (intent + " " + description).lower()
+
+        # Crypto-Domain
+        crypto_kw = ["krypto", "crypto", "bitcoin", "ethereum", "coin",
+                     "preis", "price", "kurs", "cryptocurrency"]
+        if any(k in combined for k in crypto_kw):
+            return {
+                "gap_patterns": ["krypto", "crypto", "bitcoin", "ethereum", "coin",
+                                 "preis", "price", "kurs"],
+                "gap_question": (
+                    "Ein Krypto-Skill ist bereits verfügbar. "
+                    "Soll ich ihn erneut ausführen (Standard: BTC, ETH, SOL in EUR), "
+                    "oder andere Coins / Währung?"
+                ),
+            }
+
+        # Weather-Domain
+        weather_kw = ["wetter", "weather", "temperatur", "temperature",
+                      "regen", "rain", "forecast", "vorhersage"]
+        if any(k in combined for k in weather_kw):
+            return {
+                "gap_patterns": ["wetter", "weather", "temperatur", "temperature",
+                                 "regen", "forecast"],
+                "gap_question": (
+                    "Ein Wetter-Skill ist bereits verfügbar. "
+                    "Für welche Stadt? (Standard: Berlin)"
+                ),
+            }
+
+        # Extract domain keywords as gap_patterns (generic fallback)
+        domain_keywords = self._extract_keywords(intent)[:6]
+        return {
+            "gap_patterns": domain_keywords,
+            "gap_question": None,  # Kein Default-Hinweis nötig
+        }
+
     async def _install_skill(
-        self, 
-        name: str, 
-        code: str, 
+        self,
+        name: str,
+        code: str,
         description: str,
-        auto_promote: bool = True
+        auto_promote: bool = True,
+        gap_patterns: Optional[List[str]] = None,
+        gap_question: Optional[str] = None,
+        default_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Install a skill via HTTP call to Tool Executor."""
         executor_url = os.getenv("EXECUTOR_URL", "http://tool-executor:8000")
-        
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -680,7 +906,10 @@ Generiere NUR den Python-Code, keine Erklärungen:
                         "code": code,
                         "description": description,
                         "triggers": self._extract_keywords(description),
-                        "auto_promote": auto_promote
+                        "auto_promote": auto_promote,
+                        "gap_patterns": gap_patterns or [],
+                        "gap_question": gap_question,
+                        "default_params": default_params or {},
                     }
                 )
                 return response.json()

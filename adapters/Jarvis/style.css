@@ -1,5 +1,53 @@
 /* TR/ON Shell Styles */
 
+/* ═══════════════════════════════════════════════════════
+   CONTEXT COMPRESSION — Triangle Loading Indicator
+   ═══════════════════════════════════════════════════════ */
+
+.compression-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    margin: 6px 0;
+    background: rgba(137, 180, 250, 0.08);
+    border: 1px solid rgba(137, 180, 250, 0.25);
+    border-radius: 8px;
+    font-size: 12px;
+    color: #89b4fa;
+    transition: opacity 0.5s ease;
+}
+
+.compression-triangle {
+    font-size: 16px;
+    animation: trion-pulse 1.2s ease-in-out infinite;
+    display: inline-block;
+    color: #89b4fa;
+}
+
+.compression-done .compression-triangle {
+    animation: none;
+    color: #a6e3a1;
+}
+
+.compression-done .compression-text {
+    color: #a6e3a1;
+}
+
+.compression-done {
+    border-color: rgba(166, 227, 161, 0.25);
+    background: rgba(166, 227, 161, 0.06);
+    opacity: 0.7;
+}
+
+@keyframes trion-pulse {
+    0%   { opacity: 1;   transform: scale(1)    rotate(0deg);   }
+    33%  { opacity: 0.5; transform: scale(1.15) rotate(10deg);  }
+    66%  { opacity: 0.8; transform: scale(0.95) rotate(-5deg);  }
+    100% { opacity: 1;   transform: scale(1)    rotate(0deg);   }
+}
+/* ═══════════════════════════════════════════════════════ */
+
 /* Glassmorphism Utilities */
 .glass-panel {
     background: rgba(10, 10, 10, 0.85);

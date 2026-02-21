@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "core_dirs": [
+    "memory",
+    "memory_speicher",
+    "logs",
+    "scripts/ops"
+  ],
+  "trion_home_dirs": [
+    "workspace",
+    "state",
+    "logs"
+  ],
+  "core_skills": [
+    {
+      "name": "current_weather",
+      "version": "1.0.0",
+      "description": "Core weather lookup skill"
+    },
+    {
+      "name": "temperature_berlin",
+      "version": "1.0.0",
+      "description": "Core Berlin weather skill"
+    },
+    {
+      "name": "system_hardware_info",
+      "version": "1.0.0",
+      "description": "Core system diagnostics skill"
+    }
+  ]
+}

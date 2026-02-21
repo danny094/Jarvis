@@ -20,9 +20,119 @@ from pathlib import Path
 
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TOOL KEYWORDS: Enriched Keywords für bessere Semantic-Search-Treffsicherheit.
+# Jede Eintragung erweitert den gespeicherten Content beim Auto-Registration.
+# ─────────────────────────────────────────────────────────────────────────────
+TOOL_KEYWORDS: Dict[str, List[str]] = {
+    # SysInfo
+    "get_system_info": [
+        "GPU", "VRAM", "CPU", "RAM", "Arbeitsspeicher", "Disk", "Festplatte",
+        "Temperatur", "Hardware", "nvidia", "Prozessor", "Auslastung",
+        "Netzwerk", "Ports", "Docker-Status", "Uptime", "Kernel", "dmesg",
+    ],
+    "get_system_overview": [
+        "System", "Übersicht", "Hardware", "Status", "GPU", "CPU", "RAM", "Disk",
+        "alle Infos", "Zusammenfassung",
+    ],
+    # Container Commander
+    "request_container": [
+        "Container", "starten", "erstellen", "Python", "Code ausführen",
+        "Sandbox", "deployen", "aufsetzen", "neuen Container",
+    ],
+    "stop_container": [
+        "Container", "stoppen", "beenden", "löschen", "herunterfahren",
+    ],
+    "exec_in_container": [
+        "Code", "ausführen", "Container", "Python", "Script", "Command",
+        "Bash", "Shell", "Terminal", "run",
+    ],
+    "container_logs": [
+        "Logs", "Container", "Ausgabe", "Output", "Fehler", "Error", "Log",
+    ],
+    "container_stats": [
+        "Container", "Stats", "Status", "läuft", "aktiv", "Ressourcen",
+    ],
+    "container_list": [
+        "Container", "auflisten", "alle Container", "welche Container", "laufende Container", "list containers",
+    ],
+    "container_inspect": [
+        "Container", "inspizieren", "Details", "Konfiguration", "Container-Info", "inspect",
+    ],
+    "blueprint_list": [
+        "Blueprint", "Container-Typen", "verfügbare Typen", "Vorlagen",
+    ],
+    "blueprint_get": ["Blueprint", "Details", "Konfiguration"],
+    "blueprint_create": ["Blueprint", "erstellen", "neue Vorlage"],
+    "snapshot_list": ["Snapshot", "Backup", "Versionen", "gespeichert"],
+    "snapshot_restore": ["Snapshot", "wiederherstellen", "zurücksetzen"],
+    "optimize_container": ["Container", "optimieren", "Performance", "tuning"],
+    # Skills
+    "list_skills": [
+        "Skills", "auflisten", "installiert", "verfügbar", "was kann ich",
+        "Fähigkeiten",
+    ],
+    "run_skill": [
+        "Skill", "ausführen", "starten", "verwenden", "benutzen",
+    ],
+    "create_skill": [
+        "Skill", "erstellen", "bauen", "programmieren", "neu schreiben",
+        "implementieren",
+    ],
+    "autonomous_skill_task": [
+        "Skill", "automatisch", "eigenständig", "selbst erstellen",
+        "Aufgabe erledigen", "reparieren", "verbessern",
+    ],
+    "promote_skill_draft": [
+        "Skill", "veröffentlichen", "promoten", "Draft aktivieren",
+    ],
+    # Home / Dateien (Fast Lane)
+    "home_read": [
+        "Datei", "lesen", "öffnen", "Inhalt anzeigen", "Notiz lesen", "was steht",
+    ],
+    "home_write": [
+        "Datei", "schreiben", "speichern", "Notiz", "erstellen", "notieren",
+        "aufschreiben", "festhalten",
+    ],
+    "home_list": [
+        "Dateien", "auflisten", "Verzeichnis", "Ordner", "welche Dateien",
+    ],
+    # Memory / Knowledge
+    "memory_save": [
+        "merken", "speichern", "Fakt", "Notiz", "wissen", "nicht vergessen",
+    ],
+    "memory_search": [
+        "suchen", "finden", "erinnern", "Erinnerung", "was weiß ich",
+        "gespeichert", "Fakten",
+    ],
+    "memory_graph_search": [
+        "Graph", "Wissen", "Zusammenhang", "verbunden", "Beziehung",
+    ],
+    # Workspace — editierbare Einträge (sql-memory)
+    "workspace_save": [
+        "Workspace", "Notiz", "Task", "Aufgabe merken", "Plan speichern", "Eintrag erstellen",
+    ],
+    "workspace_list": [
+        "Workspace", "Einträge anzeigen", "offene Aufgaben", "Was habe ich geplant",
+    ],
+    # Workspace Events — interne Telemetrie (Fast-Lane, read-only)
+    "workspace_event_save": [
+        "Workspace-Event", "Telemetrie", "Container-Event speichern", "internes Ereignis",
+    ],
+    "workspace_event_list": [
+        "Workspace-Events", "Container-Status", "aktive Container", "Event-Log lesen",
+    ],
+    # Skill-Metriken
+    "skill_metric_record": ["Skill", "Metriken", "Statistik", "aufzeichnen"],
+    "skill_metrics_list": ["Skill", "Statistiken", "Übersicht", "Metriken"],
+    # Graph
+    "graph_add_node": ["Graph", "Knoten", "Wissen", "speichern", "Relation"],
+}
+
+
 class MCPHub:
     """Zentraler Hub für alle MCPs."""
-    
+
     # System conversation_id für Tool-Wissen
     SYSTEM_CONV_ID = "system"
     
@@ -32,6 +142,78 @@ class MCPHub:
         self._tool_definitions: Dict[str, Dict] = {}  # tool_name → tool_def
         self._initialized = False
         self._tools_registered = False
+
+
+    def _register_fast_lane_tools(self):
+        """
+        Register Fast Lane Tools in Knowledge Graph
+        
+        CRITICAL: Without this, Tool Selector cannot find Fast Lane tools!
+        """
+        try:
+            from core.tools.fast_lane.definitions import get_fast_lane_tools_summary
+            
+            fast_lane_tools = get_fast_lane_tools_summary()
+            
+            log_info(f"[MCPHub] Registering {len(fast_lane_tools)} Fast Lane tools...")
+            
+            for tool in fast_lane_tools:
+                # Add execution metadata
+                tool["execution"] = "direct"  # Mark as direct execution
+                tool["mcp"] = "fast-lane"     # Pseudo-MCP name
+                
+                # Register in tool registry
+                self._tool_definitions[tool["name"]] = tool
+                self._tools_cache[tool["name"]] = "fast-lane"
+                
+                # Register in Knowledge Graph (for Tool Selector semantic search)
+                self._register_tool_in_graph(tool)
+                
+                log_info(f"[MCPHub] ✓ Registered Fast Lane tool: {tool['name']}")
+            
+            log_info(f"[MCPHub] Fast Lane tools registered successfully!")
+            
+        except Exception as e:
+            log_error(f"[MCPHub] Failed to register Fast Lane tools: {e}")
+
+
+    def _register_tool_in_graph(self, tool: dict):
+        """
+        Register tool in Knowledge Graph for Tool Selector
+        
+        This makes tools searchable via semantic search!
+        """
+        try:
+            # Prepare tool documentation
+            tool_doc = {
+                "tool_name": tool["name"],
+                "description": tool.get("description", ""),
+                "parameters": tool.get("parameters", {}),
+                "execution": tool.get("execution", "mcp"),
+                "mcp": tool.get("mcp", "unknown"),
+            }
+            
+            # Convert to searchable text (for embeddings)
+            searchable_text = f"{tool['name']}: {tool.get('description', '')}"
+            
+            # Store in Knowledge Graph via memory_mcp
+            # This enables Tool Selector's semantic search!
+            # Using call_tool self-reference might be tricky if not initialized, 
+            # but memory_mcp should be there.
+            if "sql-memory" in self._transports:
+                 self._transports["sql-memory"].call_tool("memory_graph_save", {
+                    "node_type": "tool",
+                    "node_id": tool["name"],
+                    "properties": tool_doc,
+                    "searchable_text": searchable_text,
+                    "content_type": "tool",  # CRITICAL: Tool Selector filters by this!
+                })
+                
+            log_info(f"[MCPHub] Tool registered in Knowledge Graph: {tool['name']}")
+            
+        except Exception as e:
+            # Don't fail if graph registration fails
+            log_warning(f"[MCPHub] Could not register tool in graph (non-critical): {e}")
     
     def initialize(self):
         """Initialisiert alle aktiven MCPs."""
@@ -57,11 +239,21 @@ class MCPHub:
             register_commander_tools(self)
         except Exception as e:
             log_warning(f"[MCPHub] Container Commander not available: {e}")
+
+        # Register SysInfo tools (read-only system diagnostics, allowlist-based)
+        try:
+            from sysinfo.mcp_bridge import register_sysinfo_tools
+            register_sysinfo_tools(self)
+        except Exception as e:
+            log_warning(f"[MCPHub] SysInfo not available: {e}")
         self._initialized = True
         log_info(f"[MCPHub] Ready with {len(self._tools_cache)} tools from {len(self._transports)} MCPs")
         
         # Auto-Registration im Graph (nach Initialisierung)
         self._auto_register_tools()
+        
+        # Register Fast Lane tools (AFTER MCPs are connected)
+        self._register_fast_lane_tools()
     
     def _init_transport(self, mcp_name: str, config: Dict):
         """Erstellt Transport für ein MCP."""
@@ -216,6 +408,18 @@ Keywords: container stats, container status, auslastung, efficiency, resource us
 Triggers: wie läuft der container, container auslastung, zeig container stats
 Examples: User: Wie ist die Container-Auslastung? -> container_stats
 
+TOOL: container_list (MCP: container-commander)
+Priority: medium
+Keywords: alle container, laufende container, welche container laufen, container auflisten, list containers
+Triggers: zeig alle container, welche container sind aktiv, liste container auf
+Examples: User: Welche Container laufen gerade? -> container_list; User: Liste alle aktiven Container -> container_list
+
+TOOL: container_inspect (MCP: container-commander)
+Priority: medium
+Keywords: container details, container info, container konfiguration, inspiziere container, inspect container
+Triggers: zeig container details, was ist die konfiguration des containers, inspect container
+Examples: User: Zeig mir die Details von Container abc123 -> container_inspect
+
 TOOL: container_logs (MCP: container-commander)
 Priority: medium
 Keywords: container logs, container ausgabe, log output
@@ -264,54 +468,85 @@ Examples: {"; ".join(examples[:2])}
         return "No MCP detection rules available."
 
 
+    def _get_tool_registry_version(self) -> str:
+        """Erstellt einen Versions-Hash aus der aktuellen Tool-Liste."""
+        import hashlib
+        tool_names = sorted(self._tool_definitions.keys())
+        version_str = f"{len(tool_names)}:{','.join(tool_names)}"
+        return hashlib.md5(version_str.encode()).hexdigest()[:12]
+
     def _auto_register_tools(self):
         """
         Registriert alle Tools automatisch im Knowledge Graph.
-        
+        Nutzt einen Versions-Hash: Re-Registrierung nur wenn sich Tools geändert haben.
+        Verhindert so Duplikate bei Container-Neustarts.
+
         Speichert:
         - available_mcp_tools: Liste aller verfügbaren Tools
-        - tool_<name>: Detaillierte Info pro Tool
+        - tool_<name>: Detaillierte Info pro Tool (mit enriched Keywords)
         - tool_usage_guide: Allgemeine Nutzungsanleitung
         """
         if self._tools_registered:
             return
-        
+
         # Brauchen sql-memory für Graph-Speicherung
         if "sql-memory" not in self._transports:
             log_warning("[MCPHub] sql-memory not available, skipping auto-registration")
             return
-        
+
         memory_transport = self._transports["sql-memory"]
-        
+        current_version = self._get_tool_registry_version()
+
+        # Version-Check: bereits mit dieser Tool-Konfiguration registriert?
+        try:
+            stored = memory_transport.call_tool("memory_fact_load", {
+                "conversation_id": self.SYSTEM_CONV_ID,
+                "key": "tool_registry_version",
+            })
+            if isinstance(stored, dict):
+                stored_version = (
+                    stored.get("result") or
+                    stored.get("value") or
+                    stored.get("structuredContent", {}).get("value", "")
+                )
+            else:
+                stored_version = ""
+            if stored_version == current_version:
+                log_info(f"[MCPHub] Tool-Registry aktuell (v{current_version}) — keine Re-Registrierung")
+                self._tools_registered = True
+                return
+            log_info(f"[MCPHub] Tool-Registry veraltet ({stored_version} → {current_version}) — aktualisiere...")
+        except Exception:
+            log_info("[MCPHub] Kein gespeicherter Registry-Stand — Erstregistrierung...")
+
         try:
             log_info("[MCPHub] Auto-registering tools in Knowledge Graph...")
-            
+
             # 1. Tool-Übersicht speichern
             tools_overview = self._generate_tools_overview()
             self._save_system_fact(memory_transport, "available_mcp_tools", tools_overview)
-            
-            # 2. Detaillierte Tool-Infos speichern (nur für Nicht-Memory-Tools)
+
+            # 2. Detaillierte Tool-Infos mit enriched Keywords (nur Nicht-Memory-Tools)
             for tool_name, tool_def in self._tool_definitions.items():
-                # Memory-Tools nicht extra registrieren (sind immer da)
                 if tool_name.startswith("memory_"):
                     continue
-                
                 tool_info = self._generate_tool_info(tool_name, tool_def)
                 self._save_system_fact(memory_transport, f"tool_{tool_name}", tool_info)
-            
+
             # 3. Allgemeine Nutzungsanleitung
             usage_guide = self._generate_usage_guide()
             self._save_system_fact(memory_transport, "tool_usage_guide", usage_guide)
-            
+
             # 4. Detection Rules für Custom MCPs
             detection_rules = self._generate_detection_rules()
             self._save_system_fact(memory_transport, "mcp_detection_rules", detection_rules)
-            log_info("[MCPHub] Detection rules registered in Knowledge Graph")
 
-            
+            # 5. Version persistieren — verhindert Re-Registrierung beim nächsten Start
+            self._save_system_fact(memory_transport, "tool_registry_version", current_version)
+
             self._tools_registered = True
-            log_info(f"[MCPHub] Auto-registration complete: {len(self._tool_definitions)} tools registered")
-            
+            log_info(f"[MCPHub] Auto-registration complete: {len(self._tool_definitions)} tools (v{current_version})")
+
         except Exception as e:
             log_error(f"[MCPHub] Auto-registration failed: {e}")
     
@@ -362,8 +597,15 @@ Examples: {"; ".join(examples[:2])}
                 params.append(f"{param_name} ({param_type}, {req_str})")
         
         params_str = "; ".join(params) if params else "keine Parameter"
-        
-        return f"Tool '{tool_name}' von MCP '{mcp_name}': {description}. Parameter: {params_str}"
+
+        base = f"Tool '{tool_name}' von MCP '{mcp_name}': {description}. Parameter: {params_str}"
+
+        # Enriched Keywords für bessere Semantic-Search-Treffsicherheit
+        keywords = TOOL_KEYWORDS.get(tool_name)
+        if keywords:
+            base += f". Keywords: {', '.join(keywords)}"
+
+        return base
     
     def _generate_usage_guide(self) -> str:
         """Generiert allgemeine Tool-Nutzungsanleitung."""
@@ -485,9 +727,24 @@ Examples: {"; ".join(examples[:2])}
         """
         Ruft ein Tool auf.
         Findet automatisch das richtige MCP und übersetzt das Protokoll.
+        Unterstützt auch Fast Lane direct execution.
         """
         self.initialize()
         
+        # Check if it's a Fast Lane tool (direct execution)
+        tool_def = self._tool_definitions.get(tool_name)
+        if tool_def and tool_def.get("execution") == "direct":
+            log_info(f"[MCPHub] Calling Fast Lane tool: {tool_name}")
+            try:
+                from core.tools.fast_lane.executor import FastLaneExecutor
+                executor = FastLaneExecutor()
+                result = executor.execute(tool_name, arguments)
+                return result
+            except Exception as e:
+                log_error(f"[MCPHub] Fast Lane execution failed: {e}")
+                return {"error": f"Fast Lane execution failed: {e}"}
+        
+        # Regular MCP tool execution
         mcp_name = self._tools_cache.get(tool_name)
         if not mcp_name:
             log_error(f"[MCPHub] Tool not found: {tool_name}")

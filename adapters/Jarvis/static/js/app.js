@@ -6,7 +6,8 @@ import { getModels, checkHealth, setApiBase, getApiBase } from "./api.js";
 window.getApiBase = getApiBase;
 import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount, initChatFromStorage } from "./chat.js?v=1770329526";
 import { log, clearLogs, setVerbose } from "./debug.js";
-import { initSettings } from "./settings.js";
+// NOTE: Settings UI is handled exclusively by js/apps/settings.js (lazy-loaded by shell.js).
+// Do NOT call initSettings() from static/js/settings.js here — it would create a second controller.
 import { initMaintenance } from "./maintenance.js";
 
 // ═══════════════════════════════════════════════════════════
@@ -14,7 +15,7 @@ import { initMaintenance } from "./maintenance.js";
 // ═══════════════════════════════════════════════════════════
 const DEFAULT_SETTINGS = {
     historyLength: 10,
-    apiBase: "http://" + window.location.hostname + ":8200",  // Updated: admin-api port
+    apiBase: window.location.protocol + "//" + window.location.hostname + ":8200",  // Updated: admin-api port
     verbose: false
 };
 
@@ -105,8 +106,7 @@ export async function initApp() {
     // Check connection FIRST (before anything needs API)
     await checkConnection();
 
-    // NOW initialize settings UI (can safely call API for models)
-    initSettings();
+    // Settings UI is initialized by shell.js via js/apps/settings.js (lazy-loaded on panel open).
 
     // Load models (now connection is verified)
     await loadModels();

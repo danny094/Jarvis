@@ -13,6 +13,12 @@ let state = {
     historyLimit: 10
 };
 
+function syncGlobalConversationId() {
+    if (typeof window !== "undefined") {
+        window.currentConversationId = state.conversationId;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // GETTERS & SETTERS
 // ═══════════════════════════════════════════════════════════
@@ -61,6 +67,7 @@ export function getConversationId() {
 
 export function setConversationId(id) {
     state.conversationId = id;
+    syncGlobalConversationId();
 }
 
 export function getMessageCount() {
@@ -93,6 +100,7 @@ export function loadChatFromStorage() {
         if (savedConvId) {
             state.conversationId = savedConvId;
         }
+        syncGlobalConversationId();
         return true;
     } catch (e) {
         log("error", `Failed to load chat: ${e.message}`);
@@ -106,6 +114,7 @@ export function clearStorage() {
     state.conversationId = `webui-${Date.now()}`;
     localStorage.removeItem(CHAT_STORAGE_KEY);
     localStorage.removeItem(CONV_STORAGE_KEY);
+    syncGlobalConversationId();
     log("info", "Storage cleared");
 }
 
@@ -122,3 +131,5 @@ export function getMessagesForBackend() {
 
     return toSend;
 }
+
+syncGlobalConversationId();

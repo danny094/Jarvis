@@ -55,7 +55,9 @@ class PendingApproval:
                  network_mode: NetworkMode,
                  override_resources: Optional[ResourceLimits] = None,
                  extra_env: Optional[Dict[str, str]] = None,
-                 resume_volume: Optional[str] = None):
+                 resume_volume: Optional[str] = None,
+                 session_id: str = "",
+                 conversation_id: str = ""):
         self.id = str(uuid.uuid4())[:8]
         self.blueprint_id = blueprint_id
         self.reason = reason
@@ -63,6 +65,8 @@ class PendingApproval:
         self.override_resources = override_resources
         self.extra_env = extra_env
         self.resume_volume = resume_volume
+        self.session_id = session_id
+        self.conversation_id = conversation_id
         self.status = ApprovalStatus.PENDING
         self.created_at = datetime.utcnow().isoformat()
         self.expires_at = time.time() + APPROVAL_TTL
@@ -101,6 +105,8 @@ def request_approval(
     override_resources: Optional[ResourceLimits] = None,
     extra_env: Optional[Dict[str, str]] = None,
     resume_volume: Optional[str] = None,
+    session_id: str = "",
+    conversation_id: str = "",
 ) -> PendingApproval:
     """
     Create a new pending approval request.
@@ -117,6 +123,8 @@ def request_approval(
             override_resources=override_resources,
             extra_env=extra_env,
             resume_volume=resume_volume,
+            session_id=session_id,
+            conversation_id=conversation_id,
         )
         _pending[approval.id] = approval
         _callbacks[approval.id] = threading.Event()
@@ -159,6 +167,8 @@ def approve(approval_id: str, approved_by: str = "user") -> Optional[Dict]:
             extra_env=approval.extra_env,
             resume_volume=approval.resume_volume,
             _skip_approval=True,  # Don't re-trigger approval check
+            session_id=approval.session_id,
+            conversation_id=approval.conversation_id,
         )
 
         from .blueprint_store import log_action

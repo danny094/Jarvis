@@ -23,6 +23,8 @@ Tool List:
   - home_write           → Write file to TRION home container
   - home_read            → Read file from TRION home container
   - home_list            → List directory in TRION home container
+  - container_list       → List all active TRION containers (discovery)
+  - container_inspect    → Detailed info about a specific container
 """
 
 import logging
@@ -70,7 +72,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "exec_in_container",
-        "description": "Execute a shell command inside a running container. Returns stdout/stderr and exit code.",
+        "description": "Execute a shell command inside a running container. Returns {exit_code, stdout, stderr, truncated}. Only commands in the blueprint's allowed_exec list are permitted.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -172,7 +174,12 @@ TOOL_DEFINITIONS = [
                 "description": {"type": "string", "description": "What this blueprint is for"},
                 "memory_limit": {"type": "string", "description": "Memory limit (e.g. '512m')", "default": "512m"},
                 "cpu_limit": {"type": "string", "description": "CPU limit (e.g. '0.5')", "default": "0.5"},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for filtering"}
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for filtering"},
+                "allowed_exec": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Allowed command prefixes for exec_in_container (e.g. ['python', 'sh']). Empty = no restriction."
+                }
             },
             "required": ["id", "image", "name"]
         }
@@ -208,6 +215,31 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "path": {"type": "string", "description": "Path relative to /home/trion (default: root)", "default": "."}
             }
+        }
+    },
+    {
+        "name": "container_list",
+        "description": "List all active TRION-managed containers with their status, blueprint, and TTL. Use this to discover running containers before exec or stats.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status_filter": {
+                    "type": "string",
+                    "description": "Filter by status: 'running', 'stopped', or 'all' (default: 'all')",
+                    "enum": ["running", "stopped", "all"]
+                }
+            }
+        }
+    },
+    {
+        "name": "container_inspect",
+        "description": "Get detailed information about a specific container: image, network, resource limits, mounts, TTL remaining. Use after container_list to get the container_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "container_id": {"type": "string", "description": "Container ID (from container_list or request_container)"}
+            },
+            "required": ["container_id"]
         }
     },
 ]
@@ -247,6 +279,10 @@ def call_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
             return _tool_home_read(arguments)
         elif tool_name == "home_list":
             return _tool_home_list(arguments)
+        elif tool_name == "container_list":
+            return _tool_container_list(arguments)
+        elif tool_name == "container_inspect":
+            return _tool_container_inspect(arguments)
         else:
             return {"error": f"Unknown tool: {tool_name}"}
     except Exception as e:
@@ -262,6 +298,8 @@ def _tool_request_container(args: dict) -> dict:
         instance = start_container(
             blueprint_id=args["blueprint_id"],
             resume_volume=args.get("resume_volume"),
+            session_id=args.get("session_id", ""),
+            conversation_id=args.get("conversation_id", ""),
         )
         return {
             "status": "running",
@@ -284,26 +322,50 @@ def _tool_request_container(args: dict) -> dict:
 
 
 def _tool_stop_container(args: dict) -> dict:
-    from .engine import stop_container
-    stopped = stop_container(args["container_id"])
+    from .engine import stop_container, get_client
+    container_id = args["container_id"]
+    # Read blueprint_id from Docker labels BEFORE stopping (labels lost after remove)
+    blueprint_id = "unknown"
+    try:
+        _c = get_client().containers.get(container_id)
+        blueprint_id = _c.labels.get("trion.blueprint", "unknown")
+    except Exception:
+        pass
+    stopped = stop_container(container_id)
     return {
         "stopped": stopped,
-        "container_id": args["container_id"],
+        "container_id": container_id,
+        "blueprint_id": blueprint_id,
     }
 
 
 def _tool_exec(args: dict) -> dict:
-    from .engine import exec_in_container
-    exit_code, output = exec_in_container(
-        args["container_id"],
-        args["command"],
-        args.get("timeout", 30),
-    )
-    return {
-        "exit_code": exit_code,
-        "output": output,
-        "container_id": args["container_id"],
-    }
+    """
+    Execute a command in a container.
+    Returns structured output: {exit_code, stdout, stderr, truncated, container_id}
+    On policy violation: {error: policy_denied, reason, allowed_exec, hint}
+    """
+    from .engine import exec_in_container_detailed, PolicyViolationError
+    try:
+        result = exec_in_container_detailed(
+            args["container_id"],
+            args["command"],
+            args.get("timeout", 30),
+        )
+        # Add truncation notice to stderr if output was cut
+        if result.get("truncated"):
+            result["stderr"] = (result["stderr"] + "\n[OUTPUT TRUNCATED — max 8000 chars per stream]").strip()
+        return result
+    except PolicyViolationError as e:
+        return {
+            "error": "policy_denied",
+            "reason": str(e),
+            "command": args.get("command", ""),
+            "allowed_exec": e.allowed,
+            "container_id": args.get("container_id", ""),
+            "hint": f"Dieser Befehl ist für Blueprint '{e.blueprint_id}' nicht erlaubt. "
+                    f"Erlaubt: {', '.join(e.allowed)}",
+        }
 
 
 def _tool_logs(args: dict) -> dict:
@@ -522,12 +584,28 @@ def _tool_blueprint_create(args: dict) -> dict:
         ),
         network=NetworkMode.INTERNAL,
         tags=args.get("tags", []),
+        allowed_exec=args.get("allowed_exec", []),
         icon="📦",
     )
-    
+
+    # Determine trust level via trust.py (single source of truth)
+    try:
+        from .trust import evaluate_blueprint_trust
+        _trust_decision = evaluate_blueprint_trust(bp)
+        _trust_level = _trust_decision["level"] if _trust_decision["level"] in ("verified", "unverified") else "unverified"
+    except Exception:
+        _trust_level = "unverified"
+
     created = create_blueprint(bp)
-    logger.info(f"[Blueprint] Created: {created.id} (image={image})")
-    
+    logger.info(f"[Blueprint] Created: {created.id} (image={image}, trust={_trust_level})")
+
+    # Sync new blueprint to graph immediately
+    try:
+        from .blueprint_store import _sync_single_blueprint_to_graph
+        _sync_single_blueprint_to_graph(created, trust_level=_trust_level)
+    except Exception as _e:
+        logger.warning(f"[Blueprint] Graph sync failed for {created.id}: {_e}")
+
     return {
         "created": True,
         "blueprint_id": created.id,
@@ -630,6 +708,46 @@ def _tool_home_list(args: dict) -> dict:
         "path": path,
         "container_id": container_id,
     }
+
+
+# ── Discovery Tools ───────────────────────────────────────
+
+def _tool_container_list(args: dict) -> dict:
+    """List all TRION-managed containers with status + blueprint info."""
+    from .engine import list_containers
+    status_filter = args.get("status_filter", "all")
+
+    instances = list_containers()
+    containers = []
+    for inst in instances:
+        if status_filter == "running" and inst.status.value != "running":
+            continue
+        if status_filter == "stopped" and inst.status.value not in ("stopped", "exited"):
+            continue
+        containers.append({
+            "container_id": inst.container_id,
+            "name": inst.name,
+            "blueprint_id": inst.blueprint_id,
+            "status": inst.status.value,
+            "started_at": inst.started_at or "",
+            "ttl_remaining_seconds": int(inst.ttl_remaining) if inst.ttl_remaining else None,
+            "volume": inst.volume_name or "",
+        })
+
+    return {
+        "containers": containers,
+        "count": len(containers),
+        "filter": status_filter,
+    }
+
+
+def _tool_container_inspect(args: dict) -> dict:
+    """Get detailed info about a specific container."""
+    from .engine import inspect_container
+    container_id = args.get("container_id", "").strip()
+    if not container_id:
+        return {"error": "Missing required parameter 'container_id'"}
+    return inspect_container(container_id)
 
 
 # ── Registration Helper ───────────────────────────────────

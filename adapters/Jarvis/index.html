@@ -466,13 +466,235 @@
                 <!-- Page: API Keys -->
                 <div id="page-api" class="settings-page hidden">
                     <h2 class="text-3xl font-light mb-8 border-b border-[#333] pb-4">API Keys</h2>
-                    <p class="text-gray-400">Manage external API integrations.</p>
+                    <p class="text-gray-400 mb-6">Schlüssel werden verschlüsselt gespeichert und sind im Skill-Code über <code class="bg-[#333] px-1 rounded text-accent-primary">get_secret("NAME")</code> abrufbar.</p>
+
+                    <!-- Add new key -->
+                    <div class="bg-[#222] rounded-xl p-4 border border-[#333] mb-6">
+                        <h3 class="font-semibold text-white mb-3">Neuen Key hinzufügen</h3>
+                        <div class="flex gap-3">
+                            <input id="secret-new-name" type="text" placeholder="NAME (z.B. OPENAI_KEY)"
+                                class="w-48 bg-[#111] border border-[#444] rounded-lg px-3 py-2 text-white text-sm uppercase focus:outline-none focus:border-accent-primary" />
+                            <input id="secret-new-value" type="password" placeholder="sk-..."
+                                class="flex-1 bg-[#111] border border-[#444] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-accent-primary" />
+                            <button onclick="window.SecretsApp.addSecret()"
+                                class="px-4 py-2 bg-accent-primary/20 text-accent-primary rounded-lg hover:bg-accent-primary/30 text-sm font-medium flex items-center gap-2">
+                                <i data-lucide="plus" class="w-4 h-4"></i>
+                                Hinzufügen
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Keys table -->
+                    <div class="bg-[#222] rounded-xl border border-[#333] overflow-hidden">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b border-[#333] text-gray-500 text-xs uppercase">
+                                    <th class="text-left px-4 py-3">Name</th>
+                                    <th class="text-left px-4 py-3">Schlüssel</th>
+                                    <th class="text-left px-4 py-3">Zuletzt geändert</th>
+                                    <th class="px-4 py-3"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="secrets-table-body">
+                                <tr><td colspan="4" class="px-4 py-6 text-center text-gray-500">Lade...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Edit modal -->
+                    <div id="secret-edit-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-[200]">
+                        <div class="bg-[#1a1a1a] border border-[#444] rounded-xl p-6 w-96 shadow-2xl">
+                            <h3 class="font-semibold text-white mb-4">Key bearbeiten</h3>
+                            <p id="secret-edit-name" class="text-accent-primary font-mono mb-3"></p>
+                            <input id="secret-edit-value" type="password" placeholder="Neuer Wert..."
+                                class="w-full bg-[#111] border border-[#444] rounded-lg px-3 py-2 text-white text-sm mb-4 focus:outline-none focus:border-accent-primary" />
+                            <div class="flex gap-3 justify-end">
+                                <button onclick="document.getElementById('secret-edit-modal').classList.add('hidden')"
+                                    class="px-4 py-2 bg-[#333] text-gray-300 rounded-lg text-sm hover:bg-[#444]">Abbrechen</button>
+                                <button onclick="window.SecretsApp.saveEdit()"
+                                    class="px-4 py-2 bg-accent-primary/20 text-accent-primary rounded-lg text-sm hover:bg-accent-primary/30">Speichern</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Page: Advanced -->
                 <div id="page-advanced" class="settings-page hidden">
                     <h2 class="text-3xl font-light mb-8 border-b border-[#333] pb-4">Advanced</h2>
                     <p class="text-gray-400">Debug options and system configuration.</p>
+
+                    <!-- Digest Pipeline Status (Phase 8 — hidden unless DIGEST_UI_ENABLE) -->
+                    <div id="digest-status-panel" class="hidden mb-6">
+                        <div class="bg-dark-hover rounded-xl p-6 border border-dark-border">
+                            <div class="flex items-center justify-between mb-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center">
+                                        <i data-lucide="database" class="w-5 h-5 text-white"></i>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-semibold">Digest Pipeline</h3>
+                                        <p class="text-sm text-gray-500">Daily / Weekly / Archive Compression</p>
+                                    </div>
+                                </div>
+                                <button onclick="window.DigestUI && window.DigestUI.refresh()"
+                                    class="px-3 py-1 text-xs bg-[#333] hover:bg-[#444] text-gray-300 rounded-lg">
+                                    Refresh
+                                </button>
+                            </div>
+                            <!-- Flags row -->
+                            <div id="digest-flags-row" class="flex flex-wrap gap-2 mb-4 text-xs"></div>
+                            <!-- Cycle cards -->
+                            <div class="grid grid-cols-3 gap-3 mb-4" id="digest-cycle-cards">
+                                <div class="bg-[#1a1a1a] rounded-lg p-3 border border-dark-border">
+                                    <p class="text-xs text-gray-500 mb-1">Daily</p>
+                                    <p id="digest-daily-status" class="text-sm font-medium text-gray-400">—</p>
+                                    <p id="digest-daily-meta" class="text-xs text-gray-600 mt-1"></p>
+                                </div>
+                                <div class="bg-[#1a1a1a] rounded-lg p-3 border border-dark-border">
+                                    <p class="text-xs text-gray-500 mb-1">Weekly</p>
+                                    <p id="digest-weekly-status" class="text-sm font-medium text-gray-400">—</p>
+                                    <p id="digest-weekly-meta" class="text-xs text-gray-600 mt-1"></p>
+                                </div>
+                                <div class="bg-[#1a1a1a] rounded-lg p-3 border border-dark-border">
+                                    <p class="text-xs text-gray-500 mb-1">Archive</p>
+                                    <p id="digest-archive-status" class="text-sm font-medium text-gray-400">—</p>
+                                    <p id="digest-archive-meta" class="text-xs text-gray-600 mt-1"></p>
+                                </div>
+                            </div>
+                            <!-- Lock + JIT row -->
+                            <div class="grid grid-cols-2 gap-3 text-xs">
+                                <div id="digest-locking-card" class="bg-[#1a1a1a] rounded-lg p-3 border border-dark-border">
+                                    <p class="text-gray-500 mb-1">Lock</p>
+                                    <p id="digest-lock-status" class="text-sm font-medium text-green-400">FREE</p>
+                                    <p id="digest-lock-info" class="text-gray-400 mt-1"></p>
+                                </div>
+                                <div class="bg-[#1a1a1a] rounded-lg p-3 border border-dark-border">
+                                    <p class="text-gray-500 mb-1">JIT Last Trigger</p>
+                                    <p id="digest-jit-info" class="text-gray-400">—</p>
+                                </div>
+                            </div>
+                            <!-- Catch-up -->
+                            <div class="mt-3 bg-[#1a1a1a] rounded-lg p-3 border border-dark-border text-xs">
+                                <p class="text-gray-500 mb-1">Catch-up</p>
+                                <p id="digest-catchup-info" class="text-gray-400">—</p>
+                                <div id="digest-catchup-detail" class="mt-1 flex gap-3 text-gray-600"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Master Orchestrator Settings -->
+                    <div class="space-y-6">
+                        <div class="bg-dark-hover rounded-xl p-6 border border-dark-border">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center">
+                                    <i data-lucide="cpu" class="w-5 h-5 text-white"></i>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">Master Orchestrator</h3>
+                                    <p class="text-sm text-gray-500">Autonomous execution settings</p>
+                                </div>
+                            </div>
+
+                            <!-- Enable Master -->
+                            <div class="flex items-center justify-between py-3 border-b border-dark-border">
+                                <div>
+                                    <label class="text-sm font-medium">Enable Master Orchestrator</label>
+                                    <p class="text-xs text-gray-500">Allow autonomous multi-step execution</p>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" id="master-enabled" class="sr-only peer" checked>
+                                    <div class="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent-primary"></div>
+                                </label>
+                            </div>
+
+                            <!-- Use ThinkingLayer -->
+                            <div class="flex items-center justify-between py-3 border-b border-dark-border">
+                                <div>
+                                    <label class="text-sm font-medium">Use ThinkingLayer</label>
+                                    <p class="text-xs text-gray-500">Enable reasoning analysis (slower but more thorough)</p>
+                                    <p class="text-xs text-yellow-500 mt-1">⚡ Turning OFF = 8x faster execution</p>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" id="master-thinking" class="sr-only peer">
+                                    <div class="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent-primary"></div>
+                                </label>
+                            </div>
+
+                            <!-- Max Loops -->
+                            <div class="py-3 border-b border-dark-border">
+                                <label class="text-sm font-medium block mb-2">Max Loops</label>
+                                <p class="text-xs text-gray-500 mb-3">Maximum autonomous iterations (safety limit)</p>
+                                <div class="flex items-center gap-4">
+                                    <input type="range" id="master-max-loops" min="3" max="20" value="10" 
+                                        class="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-accent-primary">
+                                    <span id="master-max-loops-value" class="text-sm font-mono bg-dark-bg px-3 py-1 rounded border border-dark-border min-w-[3rem] text-center">10</span>
+                                </div>
+                            </div>
+
+                            <!-- Completion Threshold -->
+                            <div class="py-3">
+                                <label class="text-sm font-medium block mb-2">Completion Threshold</label>
+                                <p class="text-xs text-gray-500 mb-3">Number of successful steps before objective is considered complete</p>
+                                <div class="flex items-center gap-4">
+                                    <input type="range" id="master-threshold" min="1" max="5" value="2" 
+                                        class="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-accent-primary">
+                                    <span id="master-threshold-value" class="text-sm font-mono bg-dark-bg px-3 py-1 rounded border border-dark-border min-w-[3rem] text-center">2</span>
+                                </div>
+                            </div>
+
+                            <!-- Save Button -->
+                            <div class="mt-6 pt-4 border-t border-dark-border">
+                                <button id="save-master-settings" class="w-full bg-accent-primary hover:bg-accent-primary/80 text-white font-medium py-2 px-4 rounded-lg transition flex items-center justify-center gap-2">
+                                    <i data-lucide="save" class="w-4 h-4"></i>
+                                    Save Master Settings
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Context Compression Settings -->
+                    <div class="glass-card p-6 mt-4">
+                        <div class="space-y-4">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-8 h-8 rounded-lg bg-accent-primary/20 flex items-center justify-center text-sm">▲</div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">Context Compression</h3>
+                                    <p class="text-xs text-text-secondary">Rolling Summary — Keeps context under 256K tokens</p>
+                                </div>
+                            </div>
+
+                            <!-- Enable Toggle -->
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <label class="text-sm font-medium">Enable Compression</label>
+                                    <p class="text-xs text-text-secondary">Compresses old messages when context exceeds 100K tokens</p>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" id="compression-enabled" class="sr-only peer" checked>
+                                    <div class="w-11 h-6 bg-dark-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent-primary"></div>
+                                </label>
+                            </div>
+
+                            <!-- Mode Select -->
+                            <div>
+                                <label class="text-sm font-medium block mb-1">Compression Mode</label>
+                                <p class="text-xs text-text-secondary mb-2">Sync: waits for compression before responding · Async: compresses in background</p>
+                                <select id="compression-mode" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <option value="sync">Sync (default) — Show triangle, then respond</option>
+                                    <option value="async">Async — Respond immediately, compress in background</option>
+                                </select>
+                            </div>
+
+                            <!-- Save Button -->
+                            <div class="mt-4 pt-4 border-t border-dark-border">
+                                <button id="save-compression-settings" class="w-full bg-accent-primary hover:bg-accent-primary/80 text-white font-medium py-2 px-4 rounded-lg transition flex items-center justify-center gap-2">
+                                    <i data-lucide="save" class="w-4 h-4"></i>
+                                    Save Compression Settings
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
 
             </div>
@@ -527,6 +749,9 @@
                     </button>
                     <button class="skill-tab px-4 py-2 rounded-lg bg-dark-hover text-gray-400 hover:text-white" data-tab="drafts">
                         Drafts
+                    </button>
+                    <button class="skill-tab px-4 py-2 rounded-lg bg-dark-hover text-gray-400 hover:text-white" data-tab="packages">
+                        Packages
                     </button>
                 </div>
 
@@ -603,6 +828,51 @@
                         <!-- Drafts will be rendered here by JS -->
                     </div>
                 </div>
+
+                <!-- Packages -->
+                <div id="skills-tab-packages" class="skills-panel hidden">
+                    <div class="flex flex-col gap-6">
+                        <!-- Install new package -->
+                        <div class="bg-dark-hover rounded-xl p-4 border border-dark-border">
+                            <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
+                                <i data-lucide="package-plus" class="w-4 h-4 text-accent-primary"></i>
+                                Paket installieren
+                            </h3>
+                            <p class="text-xs text-gray-500 mb-3">Nur Pakete aus der Allowlist können installiert werden. Neue Pakete erfordern Admin-Freigabe.</p>
+                            <div class="flex gap-2">
+                                <input type="text" id="pkg-install-input"
+                                    placeholder="z.B. numpy, pandas, pillow..."
+                                    class="flex-1 bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-accent-primary" />
+                                <button onclick="window.SkillsApp.installPackage()"
+                                    class="px-4 py-2 bg-accent-primary/20 text-accent-primary rounded-lg hover:bg-accent-primary/30 text-sm font-medium flex items-center gap-2">
+                                    <i data-lucide="download" class="w-4 h-4"></i>
+                                    Installieren
+                                </button>
+                            </div>
+                            <div id="pkg-install-result" class="mt-2 text-xs hidden"></div>
+                        </div>
+
+                        <!-- Allowlist -->
+                        <div class="bg-dark-hover rounded-xl p-4 border border-dark-border">
+                            <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
+                                <i data-lucide="shield-check" class="w-4 h-4 text-green-400"></i>
+                                Erlaubte Pakete (Allowlist)
+                            </h3>
+                            <div id="pkg-allowlist" class="flex flex-wrap gap-2">
+                                <span class="text-gray-500 text-sm">Lade...</span>
+                            </div>
+                        </div>
+
+                        <!-- Installed packages -->
+                        <div class="bg-dark-hover rounded-xl p-4 border border-dark-border">
+                            <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
+                                <i data-lucide="package" class="w-4 h-4 text-blue-400"></i>
+                                Installierte Pakete
+                            </h3>
+                            <div id="pkg-installed-list" class="text-sm text-gray-500 max-h-64 overflow-y-auto">Lade...</div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Footer -->
@@ -675,6 +945,13 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
     <script src="./js/apps/terminal.js" type="module"></script>
+    <script src="./js/apps/secrets.js"></script>
+    <script>
+        // Load secrets when API Keys category is clicked in settings
+        document.querySelectorAll('.settings-category[data-category="api"]').forEach(el => {
+            el.addEventListener('click', () => window.SecretsApp?.loadSecrets());
+        });
+    </script>
 </body>
 
 </html>

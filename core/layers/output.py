@@ -16,6 +16,15 @@ from core.persona import get_persona
 from mcp_registry import get_enabled_tools
 from mcp.hub import get_hub
 
+
+def _is_small_model_mode() -> bool:
+    """Lazy import to avoid circular imports at module load."""
+    try:
+        from config import get_small_model_mode
+        return get_small_model_mode()
+    except Exception:
+        return False
+
 MAX_TOOL_ITERATIONS = 5
 
 
@@ -72,8 +81,13 @@ class OutputLayer:
         dynamic_context = {"tools": available_tools} if available_tools else None
         prompt_parts.append(persona.build_system_prompt(dynamic_context=dynamic_context))
         
-        # Anti-Halluzination
-        if memory_required_but_missing:
+        # Tool-Confidence: echte Daten verfügbar → positive Instruktion
+        if verified_plan.get("_tool_confidence") == "high":
+            prompt_parts.append("\n### ECHTE DATEN VERFÜGBAR:")
+            prompt_parts.append("Du hast ECHTE Tool-Ergebnisse (siehe TOOL-ERGEBNISSE unten).")
+            prompt_parts.append("Gib die Daten direkt und natürlich aus. Kein Zögern, keine Ausreden.")
+        # Anti-Halluzination (nur wenn wirklich keine Daten vorliegen)
+        elif memory_required_but_missing:
             prompt_parts.append("\n### ANTI-HALLUZINATION:")
             prompt_parts.append("Diese Info ist NICHT gespeichert. ERFINDE NICHTS.")
             prompt_parts.append("Sage: 'Das habe ich leider nicht gespeichert.'")
@@ -89,9 +103,17 @@ class OutputLayer:
             prompt_parts.append(f"\n### ANWEISUNG:\n{instruction}")
         
         # Memory-Daten
+        # In small mode: inject once here (capped orchestrator context_text).
+        # The temporal-protocol re-extraction into the user message is suppressed
+        # separately in _build_messages to prevent the duplicate.
         if memory_data:
-            prompt_parts.append(f"\n### FAKTEN AUS DEM GEDÄCHTNIS:\n{memory_data}")
-            prompt_parts.append("NUTZE diese Fakten!")
+            is_temporal = bool(verified_plan.get("time_reference"))
+            if is_temporal:
+                prompt_parts.append(f"\n### TAGESPROTOKOLL (PFLICHT-QUELLE):\n{memory_data}")
+                prompt_parts.append("Dies ist das vollständige Tagesprotokoll. Du MUSST deine Antwort AUSSCHLIEßLICH darauf stützen. ERFINDE NICHTS.")
+            else:
+                prompt_parts.append(f"\n### FAKTEN AUS DEM GEDÄCHTNIS:\n{memory_data}")
+                prompt_parts.append("NUTZE diese Fakten!")
         
         # Warnungen
         warnings = verified_plan.get("_warnings", [])
@@ -117,16 +139,10 @@ class OutputLayer:
                     prompt_parts.append(thought)
             prompt_parts.append("\nFASSE diese Analyse zusammen und formuliere eine klare Antwort.")
         
-        # Tool-Ergebnisse (vom Orchestrator ausgeführt)
-        tool_results = verified_plan.get("_tool_results", "")
-        if tool_results:
-            prompt_parts.append("\n### PFLICHT — TOOL-ERGEBNISSE:")
-            prompt_parts.append("Die folgenden Daten sind ECHTE Ergebnisse aus einem Tool-Aufruf.")
-            prompt_parts.append("Du MUSST deine Antwort AUSSCHLIEßLICH auf diese Daten stützen!")
-            prompt_parts.append("ERFINDE NICHTS dazu. Halluziniere NICHT.")
-            prompt_parts.append(tool_results)
-            prompt_parts.append("Formuliere das Ergebnis natürlich, aber sage NICHT 'Ich habe X aufgerufen'.")
-        
+        # ── Commit 1: Tool-Ergebnisse kommen ausschließlich über memory_data (single channel). ──
+        # _tool_results wird NICHT separat in den System-Prompt injiziert, um Dreifach-Injektion
+        # zu vermeiden. tool_context ist bereits über _append_context_block in memory_data enthalten.
+
         # Stil
         style = verified_plan.get("suggested_response_style", "")
         if style:
@@ -163,19 +179,10 @@ class OutputLayer:
                 elif role == "assistant":
                     messages.append({"role": "assistant", "content": content})
         
-        # Aktuelle User-Nachricht — mit Tool-Ergebnissen inline wenn vorhanden
-        tool_results = verified_plan.get("_tool_results", "")
-        if tool_results:
-            augmented_text = (
-                f"{user_text}\n\n"
-                f"--- DATEN AUS TOOL-ABFRAGE (nutze NUR diese!) ---\n"
-                f"{tool_results}\n"
-                f"--- ENDE DER DATEN ---\n"
-                f"Antworte basierend auf den obigen Daten."
-            )
-            messages.append({"role": "user", "content": augmented_text})
-        else:
-            messages.append({"role": "user", "content": user_text})
+        # ── Commit 1: User-Message enthält nur den reinen User-Text (single channel). ──
+        # Tool-Ergebnisse und Protokoll-Kontext kommen ausschließlich über den System-Prompt
+        # (via memory_data → ### FAKTEN / ### TAGESPROTOKOLL). Keine Doppel-Injektion mehr.
+        messages.append({"role": "user", "content": user_text})
 
         return messages
     
@@ -206,10 +213,20 @@ class OutputLayer:
             user_text, verified_plan, memory_data,
             memory_required_but_missing, chat_history
         )
-        
+
+        # === [CTX-FINAL]: real provider payload size, after persona/instructions/history are added ===
+        _ctx_trace = verified_plan.get("_ctx_trace", {})
+        _payload_chars = sum(len(m.get("content") or "") for m in messages)
+        log_info(
+            f"[CTX-FINAL] mode={_ctx_trace.get('mode', 'unknown')} "
+            f"context_sources={','.join(_ctx_trace.get('context_sources', []))} "
+            f"payload_chars={_payload_chars} "
+            f"retrieval_count={_ctx_trace.get('retrieval_count', 0)}"
+        )
+
         # === Tool-Ergebnisse sind bereits im memory_data/verified_plan vom Orchestrator ===
         # === Kein Tool Loop nötig — Orchestrator hat Tools schon ausgeführt ===
-        
+
         try:
             # === STREAMING RESPONSE via /api/chat ===
             log_debug(f"[OutputLayer] Streaming response with {model}...")
@@ -332,14 +349,9 @@ class OutputLayer:
                 elif role == "assistant":
                     prompt_parts.append(f"ASSISTANT: {msg.content}")
         
-        tool_results = verified_plan.get("_tool_results", "")
-        if tool_results:
-            prompt_parts.append(f"\n\n### USER:\n{user_text}")
-            prompt_parts.append(f"\n--- DATEN AUS TOOL-ABFRAGE (nutze NUR diese!) ---\n{tool_results}\n--- ENDE DER DATEN ---")
-            prompt_parts.append("\n\n### DEINE ANTWORT (basierend auf den Daten):")
-        else:
-            prompt_parts.append(f"\n\n### USER:\n{user_text}")
-            prompt_parts.append("\n\n### DEINE ANTWORT:")
+        # ── Commit 1: Kein separater _tool_results-Block — bereits in memory_data (System-Prompt). ──
+        prompt_parts.append(f"\n\n### USER:\n{user_text}")
+        prompt_parts.append("\n\n### DEINE ANTWORT:")
         return "\n".join(prompt_parts)
     
     # ═══════════════════════════════════════════════════════════
@@ -360,7 +372,17 @@ class OutputLayer:
             user_text, verified_plan, memory_data,
             memory_required_but_missing, chat_history
         )
-        
+
+        # ── Commit 5: [CTX-FINAL] parity — same marker in sync and stream paths ──
+        _ctx_trace = verified_plan.get("_ctx_trace", {})
+        _payload_chars = len(full_prompt)
+        log_info(
+            f"[CTX-FINAL] mode={_ctx_trace.get('mode', 'unknown')} "
+            f"context_sources={','.join(_ctx_trace.get('context_sources', []))} "
+            f"payload_chars={_payload_chars} "
+            f"retrieval_count={_ctx_trace.get('retrieval_count', 0)}"
+        )
+
         payload = {
             "model": model,
             "prompt": full_prompt,

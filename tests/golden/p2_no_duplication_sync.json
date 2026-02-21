@@ -1,0 +1,11 @@
+{
+  "mode": "sync",
+  "provider": "mock",
+  "normalized": "Kein Duplikat im Kontext gefunden.",
+  "markers_keys": [
+    "context_chars_final",
+    "context_sources",
+    "mode",
+    "retrieval_count"
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "trion.small-model-context.schema.json",
+  "title": "TRION Small-Model Context",
+  "anyOf": [
+    { "$ref": "#/$defs/EventRecord" },
+    { "$ref": "#/$defs/TypedState" },
+    { "$ref": "#/$defs/CompactContext" }
+  ],
+  "$defs": {
+    "EventRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id", "conversation_id", "timestamp", "source_type", "source_reliability",
+        "entity_ids", "entity_match_type", "action", "raw_text", "fact_type", "confidence_overall"
+      ],
+      "properties": {
+        "event_id": { "type": "string", "minLength": 3 },
+        "conversation_id": { "type": "string", "minLength": 1 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "source_type": { "type": "string", "enum": ["system", "tool", "user", "signed", "external"] },
+        "source_reliability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "entity_ids": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "entity_match_type": { "type": "string", "enum": ["exact", "same_name", "semantic_alias", "none"] },
+        "action": { "type": "string", "minLength": 1 },
+        "raw_text": { "type": "string" },
+        "parameters": { "type": ["object", "null"], "default": null },
+        "fact_type": { "type": "string", "minLength": 1 },
+        "fact_attributes": { "type": ["object", "null"], "default": null },
+        "confidence_overall": { "type": "string", "enum": ["high", "medium", "low"] },
+        "confidence_numeric": { "type": "number", "minimum": 0, "maximum": 1 },
+        "confidence_breakdown": { "type": ["object", "null"], "default": null },
+        "scenario_type": { "type": "string" }
+      }
+    },
+    "EntityState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "state", "last_action", "last_change_ts", "confidence"],
+      "properties": {
+        "type": { "type": "string", "enum": ["container", "blueprint", "deployment", "user", "memory"] },
+        "id": { "type": "string" },
+        "state": { "type": "string" },
+        "runtime": { "type": ["string", "null"] },
+        "image": { "type": ["string", "null"] },
+        "blueprint_id": { "type": ["string", "null"] },
+        "last_action": { "type": "string" },
+        "last_exit_code": { "type": ["integer", "null"] },
+        "last_error": { "type": ["string", "null"] },
+        "last_change_ts": { "type": "string", "format": "date-time" },
+        "stability_score": { "type": "string", "enum": ["high", "medium", "low"] },
+        "session_id": { "type": ["string", "null"] },
+        "conversation_id": { "type": ["string", "null"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "source_event_ids": { "type": "array", "maxItems": 20, "items": { "type": "string" } }
+      }
+    },
+    "TypedState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entities", "focus_entity", "active_gates", "open_issues", "user_constraints", "last_error", "updated_at", "source_event_ids"],
+      "properties": {
+        "entities": { "type": "object", "additionalProperties": { "$ref": "#/$defs/EntityState" } },
+        "focus_entity": { "type": ["string", "null"] },
+        "active_gates": { "type": "array", "maxItems": 10, "items": { "type": "string" } },
+        "open_issues": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
+        "user_constraints": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
+        "last_error": { "type": ["string", "null"] },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "source_event_ids": { "type": "array", "maxItems": 100, "items": { "type": "string" } }
+      }
+    },
+    "CompactMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["small_model_mode", "retrieval_used", "retrieval_count", "confidence", "generated_at"],
+      "properties": {
+        "small_model_mode": { "type": "boolean" },
+        "retrieval_used": { "type": "boolean" },
+        "retrieval_count": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "source_event_ids": { "type": "array", "maxItems": 50, "items": { "type": "string" } }
+      }
+    },
+    "CompactContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["now", "rules", "next", "meta"],
+      "properties": {
+        "now": { "type": "array", "maxItems": 5, "items": { "type": "string", "minLength": 1 } },
+        "rules": { "type": "array", "maxItems": 3, "items": { "type": "string", "minLength": 1 } },
+        "next": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "type": "string", "minLength": 1 } },
+        "snippets": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["title", "lines", "source_event_ids"],
+            "properties": {
+              "title": { "type": "string" },
+              "lines": { "type": "array", "minItems": 1, "maxItems": 6, "items": { "type": "string" } },
+              "source_event_ids": { "type": "array", "maxItems": 10, "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "meta": { "$ref": "#/$defs/CompactMeta" }
+      }
+    }
+  }
+}

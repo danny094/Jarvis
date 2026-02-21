@@ -11,7 +11,7 @@ function detectApiBase() {
         return '';  // Relative - nginx will proxy
     }
     // Otherwise use the same host but port 8200 (admin-api)
-    return `http://${window.location.hostname}:8200`;
+    return `${window.location.protocol}//${window.location.hostname}:8200`;
 }
 
 let API_BASE = detectApiBase();

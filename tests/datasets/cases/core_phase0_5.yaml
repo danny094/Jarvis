@@ -1,0 +1,227 @@
+# TRION Core Test Cases — Phase 0 through Phase 5
+# Schema: tests/datasets/schema/test_case.schema.json
+# Loaded by: tools/validate_test_dataset.py
+# Used by:   tests/e2e/test_phase*.py, tests/e2e/test_ai_pipeline_sync_stream.py
+
+cases:
+
+  # ─── Phase 0: Basic sanity / smoke ────────────────────────────────────────
+
+  - id: p0_basic_hello
+    phase: 0
+    title: "Basic greeting returns TRION identity"
+    mode: both
+    input:
+      prompt: "hello"
+    expected:
+      contains: ["TRION"]
+      golden_key: p0_basic_hello_sync
+    tags: [basic, smoke, phase0]
+
+  - id: p0_basic_ping
+    phase: 0
+    title: "Ping returns pong (liveness check)"
+    mode: sync
+    input:
+      prompt: "ping"
+    expected:
+      contains: ["pong"]
+      golden_key: p0_basic_ping_sync
+    tags: [basic, smoke, liveness, phase0]
+
+  - id: p0_stream_events
+    phase: 0
+    title: "Stream mode delivers chunk + done events for non-empty response"
+    mode: stream
+    input:
+      prompt: "ping"
+    expected:
+      contains: ["pong"]
+    tags: [stream, basic, phase0]
+
+  - id: p0_error_fallback
+    phase: 0
+    title: "Unknown prompt returns a non-empty fallback response"
+    mode: sync
+    input:
+      prompt: "zzz_unknown_xqz"
+    expected:
+      not_contains: ["ERROR", "Traceback"]
+    tags: [basic, error_handling, phase0]
+
+  # ─── Phase 2: Single Truth Channel / Dedup ────────────────────────────────
+
+  - id: p2_single_truth_channel
+    phase: 2
+    title: "Single Truth Channel prevents double context injection"
+    mode: sync
+    input:
+      prompt: "single truth"
+    expected:
+      contains: ["Single Truth Channel"]
+      not_contains: ["ERROR"]
+    tags: [phase2, dedup, single_truth]
+    description: "Verifies that the context injection path fires exactly once per request."
+
+  - id: p2_no_duplication
+    phase: 2
+    title: "Context injected exactly once — no duplication in output"
+    mode: sync
+    input:
+      prompt: "no duplication"
+    expected:
+      contains: ["Duplikat"]
+    tags: [phase2, dedup]
+
+  - id: p2_dedup_invariant
+    phase: 2
+    title: "Deduplicate: same source appears at most once in context"
+    mode: both
+    input:
+      prompt: "dedup"
+    expected:
+      contains: ["einmal"]
+    tags: [phase2, dedup, invariant]
+
+  # ─── Phase 3: TypedState V1 / CompactContext ──────────────────────────────
+
+  - id: p3_compact_context_now
+    phase: 3
+    title: "CompactContext NOW-block is injected in output"
+    mode: sync
+    input:
+      prompt: "compact context"
+    expected:
+      contains: ["NOW"]
+    tags: [phase3, typedstate, compact_context]
+
+  - id: p3_typedstate_active
+    phase: 3
+    title: "TypedState V1 renders without crash (both modes)"
+    mode: both
+    input:
+      prompt: "typedstate"
+    expected:
+      contains: ["TypedState"]
+    tags: [phase3, typedstate]
+
+  - id: p3_fail_closed_empty
+    phase: 3
+    title: "Fail-closed: empty event list returns minimal NOW block"
+    mode: sync
+    input:
+      prompt: "fail-closed"
+    expected:
+      contains: ["Fail-Closed"]
+    tags: [phase3, typedstate, fail_closed]
+
+  - id: p3_now_block_present
+    phase: 3
+    title: "NOW block always present in TypedState output"
+    mode: sync
+    input:
+      prompt: "now block"
+    expected:
+      contains: ["NOW"]
+    tags: [phase3, typedstate, now_block]
+
+  # ─── Phase 4: Container Restart Recovery ──────────────────────────────────
+
+  - id: p4_restart_recovery
+    phase: 4
+    title: "Restart-recovery message is produced after container restart"
+    mode: sync
+    input:
+      prompt: "restart recovery"
+    expected:
+      contains: ["Restart"]
+    tags: [phase4, recovery]
+
+  - id: p4_ttl_rearm
+    phase: 4
+    title: "TTL-Rearm succeeds after container restart"
+    mode: sync
+    input:
+      prompt: "ttl rearm"
+    expected:
+      contains: ["TTL"]
+      not_contains: ["ERROR"]
+    tags: [phase4, recovery, ttl]
+
+  - id: p4_ttl_label_set
+    phase: 4
+    title: "TTL label is set and validated in recovery path"
+    mode: sync
+    input:
+      prompt: "ttl"
+    expected:
+      contains: ["TTL"]
+    tags: [phase4, ttl]
+
+  # ─── Phase 5: Graph Hygiene ───────────────────────────────────────────────
+
+  - id: p5_graph_hygiene_clean
+    phase: 5
+    title: "Graph hygiene removes stale nodes via SQLite truth"
+    mode: sync
+    input:
+      prompt: "graph hygiene"
+    expected:
+      contains: ["Graph"]
+      not_contains: ["ERROR"]
+      golden_key: p5_graph_hygiene_sync
+    tags: [phase5, graph_hygiene, smoke]
+
+  - id: p5_blueprint_dedup
+    phase: 5
+    title: "Blueprint dedupe keeps latest revision (updated_at + node_id)"
+    mode: sync
+    input:
+      prompt: "dedupe blueprint"
+    expected:
+      contains: ["blueprint_id"]
+    tags: [phase5, graph_hygiene, dedup]
+
+  - id: p5_sqlite_truth
+    phase: 5
+    title: "Stale soft-deleted nodes are removed via SQLite fail-closed check"
+    mode: sync
+    input:
+      prompt: "sqlite"
+    expected:
+      contains: ["SQLite"]
+    tags: [phase5, graph_hygiene, sqlite, fail_closed]
+
+  - id: p5_stale_node_removed
+    phase: 5
+    title: "Stale node not in SQLite active set is rejected"
+    mode: sync
+    input:
+      prompt: "stale node"
+    expected:
+      contains: ["entfernt"]
+    tags: [phase5, graph_hygiene, stale]
+
+  # ─── Memory Roundtrip (cross-phase) ────────────────────────────────────────
+
+  - id: mem_roundtrip_store
+    phase: "cross"
+    title: "Memory store: context trace created by request A"
+    mode: sync
+    input:
+      prompt: "roundtrip store"
+      conversation_id: roundtrip-session-1
+    expected:
+      contains: ["gespeichert"]
+    tags: [memory, roundtrip]
+
+  - id: mem_roundtrip_recall
+    phase: "cross"
+    title: "Memory recall: request B finds context trace from A"
+    mode: sync
+    input:
+      prompt: "roundtrip recall"
+      conversation_id: roundtrip-session-1
+    expected:
+      contains: ["gefunden"]
+    tags: [memory, roundtrip]

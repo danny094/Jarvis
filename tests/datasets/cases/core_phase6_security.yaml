@@ -1,0 +1,194 @@
+# tests/datasets/cases/core_phase6_security.yaml
+# =================================================
+# Phase 6 — Security & Hardening test cases
+# Uses MockProvider: deterministic, no external deps.
+#
+# P6-A: Signature Verify (off / opt_in / strict)
+# P6-B: XSS/Markdown Sanitizing (invariants)
+# P6-C: REST Deploy Parity (session_id / conversation_id)
+
+cases:
+
+  # ── P6-A: Signature Verify ──────────────────────────────────────────────
+
+  - id: p6a_sig_off_mode_pass
+    phase: 6
+    title: "Signature verify mode=off always passes"
+    mode: sync
+    input:
+      prompt: "Signature-Verify-Mode ist off — kein subprocess Aufruf."
+    expected:
+      contains:
+        - "off"
+    tags: [smoke, security, p6a, signature]
+
+  - id: p6a_sig_opt_in_no_sig_allow
+    phase: 6
+    title: "opt_in mode: absent signature is allowed"
+    mode: sync
+    input:
+      prompt: "opt_in Modus: keine Signatur gefunden — Container wird trotzdem gestartet."
+    expected:
+      contains:
+        - "opt_in"
+    tags: [security, p6a, signature]
+
+  - id: p6a_sig_strict_no_sig_block
+    phase: 6
+    title: "strict mode: absent signature is blocked"
+    mode: sync
+    input:
+      prompt: "strict Modus: Signatur fehlt — Container-Start blockiert (fail-closed)."
+    expected:
+      contains:
+        - "strict"
+    tags: [security, p6a, signature]
+
+  - id: p6a_sig_verify_result_shape
+    phase: 6
+    title: "VerifyResult must include verified + mode + reason + tool"
+    mode: sync
+    input:
+      prompt: "VerifyResult enthält verified, mode, reason, tool — vollständige Signatur-Prüfung."
+    expected:
+      contains:
+        - "verified"
+    tags: [security, p6a, signature]
+
+  - id: p6a_sig_fail_closed_no_tool
+    phase: 6
+    title: "strict: no cosign/notation tool installed → reject (fail-closed)"
+    mode: sync
+    input:
+      prompt: "Kein Signatur-Tool installiert — strict Modus: fail-closed, Container blockiert."
+    expected:
+      contains:
+        - "fail"
+    tags: [security, p6a, signature, negative]
+
+  # ── P6-B: XSS Sanitizing ──────────────────────────────────────────────
+
+  - id: p6b_xss_script_tag_stripped
+    phase: 6
+    title: "XSS: <script> tags must be stripped from rendered Markdown"
+    mode: sync
+    input:
+      prompt: "XSS-Schutz: Script-Tags werden aus gerenderten Markdown-Inhalten entfernt."
+    expected:
+      not_contains:
+        - "<script>"
+    tags: [smoke, security, p6b, xss]
+
+  - id: p6b_xss_onerror_stripped
+    phase: 6
+    title: "XSS: onerror event attribute must be stripped"
+    mode: sync
+    input:
+      prompt: "XSS-Schutz: onerror-Attribute werden aus Markdown-Output entfernt."
+    expected:
+      not_contains:
+        - "onerror="
+    tags: [security, p6b, xss]
+
+  - id: p6b_xss_javascript_href_blocked
+    phase: 6
+    title: "XSS: javascript: href must be neutralised"
+    mode: sync
+    input:
+      prompt: "XSS-Schutz: javascript: URLs in href-Attributen werden neutralisiert."
+    expected:
+      not_contains:
+        - "javascript:"
+    tags: [security, p6b, xss]
+
+  - id: p6b_sanitize_js_present
+    phase: 6
+    title: "sanitize.js shared helper must be present and expose sanitizeHtml"
+    mode: sync
+    input:
+      prompt: "Sanitize-Modul: TRIONSanitize.sanitizeHtml ist globaler Helfer für alle Views."
+    expected:
+      contains:
+        - "sanitize"
+    tags: [smoke, security, p6b, xss]
+
+  - id: p6b_noopener_on_blank_links
+    phase: 6
+    title: "target=_blank links must get rel=noopener noreferrer"
+    mode: sync
+    input:
+      prompt: "Externe Links mit target=_blank bekommen rel=noopener noreferrer gesetzt."
+    expected:
+      contains:
+        - "noopener"
+    tags: [security, p6b, xss]
+
+  # ── P6-C: REST Deploy Parity ──────────────────────────────────────────
+
+  - id: p6c_protocol_append_conv_id
+    phase: 6
+    title: "protocol/append accepts and echoes conversation_id"
+    mode: sync
+    input:
+      prompt: "Protocol-Append: conversation_id wird entgegengenommen und nicht verworfen."
+    expected:
+      contains:
+        - "conversation_id"
+    tags: [smoke, security, p6c, parity]
+
+  - id: p6c_deploy_accepts_session_id
+    phase: 6
+    title: "commander/deploy accepts session_id without error"
+    mode: sync
+    input:
+      prompt: "Container-Deploy: session_id und conversation_id werden im Request akzeptiert."
+    expected:
+      contains:
+        - "session_id"
+    tags: [security, p6c, parity]
+
+  - id: p6c_no_silent_drop_ids
+    phase: 6
+    title: "IDs must not be silently dropped in any REST endpoint"
+    mode: sync
+    input:
+      prompt: "REST-Parity: Keine stillen Drops von session_id oder conversation_id in APIs."
+    expected:
+      contains:
+        - "Parity"
+    tags: [security, p6c, parity]
+
+  - id: p6c_chat_sends_conv_id
+    phase: 6
+    title: "chat.js sends conversation_id with every protocol/append call"
+    mode: sync
+    input:
+      prompt: "Chat-Frontend: conversation_id wird bei jedem protocol/append-Aufruf mitgesendet."
+    expected:
+      contains:
+        - "conversation_id"
+    tags: [smoke, security, p6c, parity]
+
+  # ── Cross-Phase Regression ────────────────────────────────────────────
+
+  - id: p6_regression_hello
+    phase: 6
+    title: "P6 regression: basic hello still works after security changes"
+    mode: sync
+    input:
+      prompt: "hello — Phase 6 Regression-Check nach Security-Änderungen"
+    expected:
+      contains:
+        - "TRION"
+    tags: [smoke, regression, p6]
+
+  - id: p6_regression_stream_parity
+    phase: 6
+    title: "P6 stream parity: sync and stream yield same normalized text"
+    mode: both
+    input:
+      prompt: "hello — Phase 6 stream parity nach Security-Commit"
+    expected:
+      contains:
+        - "TRION"
+    tags: [smoke, regression, p6]

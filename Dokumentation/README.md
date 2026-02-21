@@ -96,7 +96,7 @@ The **Model Context Protocol (MCP)** is the universal language of TRION. The sys
 
 * [**Admin API:**](Dokumentation/Admin%20API%20Adapter.md) Internal management interface.
 * [**Skill Servers:**](Dokumentation/skill-servers.md) Microservices that host specialised skills.
-* [**SQL Memory:**](Dokumentation/sql-memory:memory_mcp.md) Database interface for the AI.
+* [**SQL Memory:**](Dokumentation/sql-memory-memory_mcp.md) Database interface for the AI.
 
 ---
 
@@ -117,7 +117,7 @@ Beyond the core layers, TRION uses specialized modules for specific cognitive ta
 
 ### 🔒 CIM Policy (Cognitive Immune System)
 
-* [**Docs:**](Dokumentation/intelligence_modules:cim_policy.md)
+* [**Docs:**](Dokumentation/intelligence_modules-cim_policy.md)
 * **Purpose:** Advanced safety. Unlike simple filters, CIM understands *context*. It prevents the AI from being socially engineered into performing harmful actions.
 
 ---

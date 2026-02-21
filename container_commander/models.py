@@ -100,6 +100,14 @@ class Blueprint(BaseModel):
     # Container definition
     dockerfile: str = Field(default="", description="Dockerfile content or path")
     image: Optional[str] = Field(default=None, description="Pre-built image (alternative to dockerfile)")
+    image_digest: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional pinned image digest (sha256:...) for trust verification. "
+            "If set: start_container() fails if resolved digest doesn't match (fail closed). "
+            "If None: start allowed with warning (opt-in, backwards compatible)."
+        )
+    )
     
     # KI context
     system_prompt: str = Field(default="", description="System prompt for KI when using this container")
@@ -116,6 +124,15 @@ class Blueprint(BaseModel):
     # Network
     network: NetworkMode = Field(default=NetworkMode.INTERNAL)
     
+    # Exec Policy
+    allowed_exec: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Allowlist of permitted command prefixes for exec_in_container. "
+            "Empty = no restriction. E.g. ['python', 'pip', 'sh']"
+        )
+    )
+
     # Metadata
     tags: List[str] = Field(default_factory=list)
     icon: str = Field(default="📦", description="Emoji icon for UI")
@@ -153,6 +170,9 @@ class ContainerInstance(BaseModel):
     has_snapshot: bool = False
     cpu_limit_alloc: float = 1.0  # CPU cores allocated to this container
     network_info: Dict = Field(default_factory=dict)  # Network isolation details
+
+    # Session tracking (set at start, persisted in Docker labels)
+    session_id: str = ""  # conversation_id that started this container
 
 
 # ── Quota ─────────────────────────────────────────────────

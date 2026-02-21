@@ -278,6 +278,60 @@ def semantic_search(conversation_id: str, query: str, limit: int = 5) -> list:
     
     return []
 
+def skill_semantic_search(query: str, limit: int = 5, min_similarity: float = 0.0) -> list:
+    """
+    Semantische Skill-Suche MIT Similarity-Score.
+    Nutzt memory_semantic_search direkt auf conversation_id="_skills".
+
+    Returns:
+        List[Dict] mit Feldern: content, similarity (0.0-1.0), metadata
+        Sortiert nach Similarity absteigend.
+    """
+    args = {
+        "query": query,
+        "conversation_id": "_skills",
+        "limit": limit,
+        "min_similarity": min_similarity,
+    }
+    log_info(f"[SkillSearch] Embedding-Suche: '{query[:60]}'")
+    resp = call_tool("memory_semantic_search", args)
+    if not resp:
+        return []
+    result = resp.get("result", resp)
+    if isinstance(result, dict):
+        if "structuredContent" in result:
+            return result["structuredContent"].get("results", [])
+        return result.get("results", [])
+    return []
+
+
+def blueprint_semantic_search(query: str, limit: int = 5, min_similarity: float = 0.0) -> list:
+    """
+    Semantische Blueprint-Suche MIT Similarity-Score.
+    Nutzt memory_semantic_search direkt auf conversation_id="_blueprints".
+
+    Returns:
+        List[Dict] mit Feldern: content, similarity (0.0-1.0), metadata
+        Sortiert nach Similarity absteigend.
+    """
+    args = {
+        "query": query,
+        "conversation_id": "_blueprints",
+        "limit": limit,
+        "min_similarity": min_similarity,
+    }
+    log_info(f"[BlueprintSearch] Embedding-Suche: '{query[:60]}'")
+    resp = call_tool("memory_semantic_search", args)
+    if not resp:
+        return []
+    result = resp.get("result", resp)
+    if isinstance(result, dict):
+        if "structuredContent" in result:
+            return result["structuredContent"].get("results", [])
+        return result.get("results", [])
+    return []
+
+
 def graph_search(conversation_id: str, query: str, depth: int = 2, limit: int = 10) -> list:
     """
     Graph-basierte Such.

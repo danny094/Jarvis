@@ -1,0 +1,11 @@
+{
+  "mode": "sync",
+  "provider": "mock",
+  "normalized": "NOW: focus_entity=TestEntity | RULES: keine | NEXT: await",
+  "markers_keys": [
+    "context_chars_final",
+    "context_sources",
+    "mode",
+    "retrieval_count"
+  ]
+}

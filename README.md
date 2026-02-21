@@ -1,220 +1,150 @@
-# TRION: Adaptive AI System
+# TRION
 
-<div align="center">
+TRION is a local-first autonomous AI system with a real runtime stack.
+It combines chat, tools, memory, container execution, and safety controls in one platform.
 
+## What You Get
 
-**"TRION is more... alive in every thought."**
+- Local web UI for chat, tools, settings, and runtime telemetry
+- Multi-service backend with memory, control layers, and skill execution
+- Managed sandbox containers for safe task execution
+- Operational scripts for reset/restore/recovery
 
-<img width="1866" height="913" alt="Bildschirmfoto 2026-01-27 um 02 50 07" src="https://github.com/user-attachments/assets/aa1cd753-9d8a-4257-91b7-c0d80e51f77e" />
+## 5-Minute Quick Start
 
+### 1) Prerequisites
 
-<img width="900" height="690" alt="Bildschirmfoto 2026-02-02 um 13 51 30" src="https://github.com/user-attachments/assets/ec34be86-f630-412a-9f97-83fd3a68df2f" />
+- Docker + Docker Compose
+- Python 3.12+
+- Ollama running locally at `http://localhost:11434`
 
-<img width="839" height="465" alt="Bildschirmfoto 2026-02-01 um 23 51 47" src="https://github.com/user-attachments/assets/d866b987-bc97-4b55-9399-b1a41ebd90f4" />
-
-<img width="690" height="656" alt="Bildschirmfoto 2026-02-02 um 23 49 16" src="https://github.com/user-attachments/assets/7cfe7d51-dd81-47ce-86f8-c977da1a2025" />
-
-</div>
-
----
-
-## 📖 Table of Contents
-
-1. [**Philosophy & Vision**](#chapter-1-philosophy--vision)
-2. [**Core Architecture (The Brain)**](#chapter-2-core-architecture-the-brain)
-3. [**The Nervous System (MCP Hub)**](#chapter-3-the-nervous-system-mcp-hub)
-4. [**Self-Awareness & Infrastructure**](#chapter-4-self-awareness--infrastructure)
-5. [**Frontend Experience**](#chapter-5-frontend-experience)
-6. [**Installation & Setup**](#chapter-6-installation--setup)
-7. [**Documentation Map**](#chapter-7-documentation-map)
-
----
-
-## Chapter 1: Philosophy & Vision
-
-**TRION** is not just another LLM wrapper. It is a fully autonomous **Cognitive Operating System** designed to run on local hardware.
-
-Most AI agents today are "System 1" thinkers—reactive, fast, and often prone to hallucination. TRION is built for **System 2 Thinking**: it separates reasoning from execution, allowing for safer, deeper, and more complex task completion.
-
-* **Autonomy:** It creates its own tools and manages its own infrastructure.
-* **Persistence:** It has a "Home" where it keeps notes and projects.
-* **Safety:** Every action is verified by a separate control layer.
-
----
-
-## Chapter 2: Core Architecture (The Brain)
-
-TRION processes every request through a 4-Layer Cognitive Pipeline:
-
-```mermaid
-graph TD
-    User[User Input] --> L0[Layer 0: Tool Selector]
-    L0 -->|Selected Context| L1[Layer 1: Thinking]
-    L1 -->|Plan| L2[Layer 2: Control]
-    L2 -->|Verified Plan| L3[Layer 3: Output]
-    L3 -->|Action| MCP[MCP Hub & Tools]
-    MCP -->|Result| L3
-    L3 -->|Response| User
-```
-
-### Layer 0: Tool Selector (Attention Management)
-
-* **Model:** Qwen 2.5 (1.5B)
-* **Function:** Solves the "Attention Dilution" problem. Before reasoning begins, it uses semantic search to filter the 65+ available tools down to the 3-5 most relevant ones.
-
-### Layer 1: Thinking (The Strategist)
-
-* **Model:** DeepSeek-R1
-* **Function:** Pure reasoning. It analyzes the user's intent, determines if memory access is needed, and creates a structured JSON plan. It does *not* have tool execution privileges.
-* **Model:** DeepSeek-R1
-* **Function:** Pure reasoning. It analyzes the user's intent, determines if memory access is needed, and creates a structured JSON plan. It does *not* have tool execution privileges.
-
-### Layer 2: Control (The Critic)
-
-* **Model:** Qwen 2.5
-* **Function:** Verification. It checks the plan for safety risks (LightCIM), policy violations, and logic errors. For complex tasks, it engages **Sequential Thinking**—a live, step-by-step reasoning stream visible to the user.
-
-### Layer 4: Tool Execution (The Body)
-
-* **Model:** None (Deterministic)
-* **Function:** Side-effect handling. The `ToolExecutor` service manages all physical actions: writing files, installing skills, and managing containers. This isolation ensures that the core reasoning engine never directly touches the filesystem.
-
-### Layer 3: Output (The Agent)
-
-* **Model:** Llama 3
-* **Function:** Execution. It takes the verified plan, executes the necessary MCP tools (using Native Tool Calling), and generates the final response with the appropriate persona and tone.
-
----
-
-## Chapter 3: The Nervous System (MCP Hub)
-
-The **Model Context Protocol (MCP)** is the universal language of TRION. The system is built around a central **MCP Hub** that connects to over 65 tools.
-
-* **Dynamic Loading:** New tools are discovered and registered at runtime.
-* **Standardization:** Every tool follows a strict JSON schema compatible with OpenAI/Ollama specs.
-* **Isolation:** Tools run in separate processes or containers, preventing a tool crash from taking down the core system.
-
-### Key MCP Modules
-
-* [**Admin API:**](Dokumentation/Admin%20API%20Adapter.md) Internal management interface.
-* [**Skill Servers:**](Dokumentation/skill-servers.md) Microservices that host specialised skills.
-* [**SQL Memory:**](Dokumentation/sql-memory:memory_mcp.md) Database interface for the AI.
-
----
-
-## Chapter 4: Specialized Intelligence Modules
-
-Beyond the core layers, TRION uses specialized modules for specific cognitive tasks:
-
-### 🧠 Meta-Decision Module
-
-* [**Docs:**](Dokumentation/meta_decision.md)
-* **Purpose:** High-level strategy. It decides *how* to solve a problem (e.g., "Do I need to write code for this, or can I use an existing tool?").
-
-### 🛡️ Validator & Classifier
-
-* [**Docs:**](Dokumentation/validator.md) | [**Docs:**](Dokumentation/classifier.md)
-* **Validator:** Post-execution check. Did the tool output match the expectation?
-* **Classifier:** Rapidly categorizes user input to route it to the correct subsystem (e.g., "This is a Code request" vs "This is a Chat request").
-
-### 🔒 CIM Policy (Cognitive Immune System)
-
-* [**Docs:**](Dokumentation/intelligence_modules:cim_policy.md)
-* **Purpose:** Advanced safety. Unlike simple filters, CIM understands *context*. It prevents the AI from being socially engineered into performing harmful actions.
-
----
-
-## Chapter 5: Self-Awareness & Infrastructure
-
-### 🏠 TRION Home (New in v4.0)
-
-TRION is aware of its own persistent environment. It has a mounted home directory (`/home/trion`) where it can:
-
-* **Write/Read Notes:** "Remember this" automatically saves to `notes/`.
-* **Manage Projects:** Store code and documents persistently across restarts.
-* **Self-Configure:** Edit its own config files.
-
-### 🐳 Container Commander
-
-TRION acts as its own DevOps engineer. It can spawn Docker containers on-the-fly to execute code safely.
-
-* [**Deep Dive:**](Dokumentation/container-session-reuse.md)
-* **Blueprints:** Pre-configured environments (`python-sandbox`, `web-scraper`, `postgres-db`).
-* **Lifecycle Management:** Automatically monitors CPU/RAM usage and stops idle containers to save resources.
-* **Sandboxing:** No code is ever executed on the host machine.
-
----
-
-## Chapter 6: Frontend Experience
-
-The interface interacts like a modern Operating System for AI.
-
-* **Terminal App:** A full `xterm.js` console to interact with the Container Commander.
-* **Skills Studio:** An IDE (Monaco Editor) for writing and testing new AI skills.
-* **Protocol:** A chronological timeline of the AI's "thoughts" (Layers 1/2) and actions (Layer 3).
-* **Settings:** Ubuntu-style configuration panel for Persona, Models, and Memory.
-* [**Full Frontend Docs**](Dokumentation/apps.md)
-
----
-
-## Chapter 7: Installation & Setup
-
-### Prerequisites
-
-* **Docker** & Docker Compose (running)
-* **Python 3.12+**
-* **UV** (fast Python package manager)
-* **Ollama** (for local LLM inference)
-
-### 1. Clone & Setup
+### 2) Prepare external Docker resources (required by this stack)
 
 ```bash
-git clone https://github.com/danny094/Jarvis.git
-cd Jarvis
-
-# Create virtual environment
-uv venv
-source .venv/bin/activate
-
-# Install dependencies
-uv pip install -r requirements.txt
+docker network create big-bear-lobe-chat_default || true
+docker volume create trion_home_data || true
 ```
 
-### 2. Configuration
-
-Copy the example config and adjust your paths/models:
+### 3) Start the full stack
 
 ```bash
-cp config/example_config.yaml config/config.yaml
+docker compose up -d
 ```
 
-### 3. Start System
+### 4) Open TRION
+
+- Web UI: `http://localhost:8400`
+- Admin API health: `http://localhost:8200/health`
+
+### 5) Verify runtime quickly
 
 ```bash
-# Start backend services (Postgres, Qdrant, Redis)
-docker-compose up -d
-
-# Start TRION Core
-python main.py
+bash scripts/ops/trion_permissions_doctor.sh --check
+bash scripts/ops/check_digest_state.sh
 ```
 
----
+## Important Services and Ports
 
-## Chapter 8: Documentation Map
+- `jarvis-webui` -> `8400`
+- `jarvis-admin-api` -> `8200`
+- `mcp-sql-memory` -> `8082`
+- `trion-runtime` -> `8401`
+- `validator-service` -> `8300`
+- `tool-executor` -> `8000`
 
-Detailed technical documentation is available in the `Dokumentation/` directory:
+## Common Operations
 
-| Domain | Document | Description |
-|--------|----------|-------------|
-| **Core** | [core.md](Dokumentation/core.md) | Deep dive into the Cognitive Architecture. |
-| **Logic** | [meta_decision.md](Dokumentation/meta_decision.md) | Decision making strategies. |
-| **Logic** | [sequential-thinking.md](Dokumentation/sequential-thinking.md) | Complex reasoning chains. |
-| **Data** | [sql-memory.md](Dokumentation/sql-memory.md) | Graph & Vector database specs. |
-| **Tools** | [mcp.md](Dokumentation/mcp.md) | The Tool Hub. |
-| **Tools** | [tool_executor.md](Dokumentation/tool_executor.md) | Side-effect handler. |
-| **Infra** | [container-session-reuse.md](Dokumentation/container-session-reuse.md) | Docker orchestration. |
-| **UI** | [apps.md](Dokumentation/apps.md) | JS Apps architecture. |
+### Live restore to clean baseline (recommended for test resets)
 
----
+```bash
+bash scripts/ops/trion_live_restore.sh --hard --reseed-skills --pause-admin --smoke-test
+```
 
+### Factory-style reset (offline-style)
 
+```bash
+bash scripts/ops/trion_reset.sh --hard --reseed-blueprints
+```
+
+### Keep TRION home container stopped after restore
+
+```bash
+bash scripts/ops/trion_live_restore.sh --hard --reseed-skills --skip-home-start
+```
+
+### Preview any destructive operation first
+
+```bash
+bash scripts/ops/trion_live_restore.sh --dry-run --hard --reseed-skills --pause-admin --smoke-test
+```
+
+## Operations Scripts (New)
+
+See full command reference in [`COMMANDS.md`](COMMANDS.md).
+
+| Script | Purpose |
+|---|---|
+| `scripts/ops/trion_permissions_doctor.sh` | Checks/fixes common write/lock/script permission issues |
+| `scripts/ops/trion_reset.sh` | Factory reset |
+| `scripts/ops/trion_live_reset.sh` | Reset while stack stays online |
+| `scripts/ops/trion_restore.sh` | Controlled restore / clean-install |
+| `scripts/ops/trion_live_restore.sh` | Live restore with readiness + smoke checks |
+| `scripts/ops/check_digest_state.sh` | Digest runtime telemetry check |
+
+## Troubleshooting
+
+### "Permission denied" on lock files or write paths
+
+```bash
+bash scripts/ops/trion_permissions_doctor.sh --check
+bash scripts/ops/trion_permissions_doctor.sh --fix-safe --fix-docker
+```
+
+### Web UI says "No containers running"
+
+Run a live restore that ensures `trion-home`:
+
+```bash
+bash scripts/ops/trion_live_restore.sh --hard --reseed-skills --pause-admin --smoke-test
+```
+
+### Smoke checks fail because services start slowly
+
+```bash
+TRION_SMOKE_MAX_WAIT_S=60 TRION_SMOKE_RETRIES=5 TRION_SMOKE_RETRY_DELAY_S=3 \
+bash scripts/ops/trion_live_restore.sh --hard --reseed-skills --pause-admin --smoke-test
+```
+
+### Digest status check
+
+```bash
+bash scripts/ops/check_digest_state.sh
+```
+
+## Architecture (Short Version)
+
+TRION uses a layered pipeline:
+
+- Layer 0: tool selection and context narrowing
+- Layer 1: reasoning/planning
+- Layer 2: control/safety checks
+- Layer 3: output orchestration and tool execution routing
+- Deterministic executor services for side effects
+
+For deeper docs and internals, see [`docs/digest_rollout_runbook.md`](docs/digest_rollout_runbook.md), [`CLAUDE.md`](CLAUDE.md), and the `Dokumentation/` directory.
+
+## Development Notes
+
+- Use `docker compose ps` to inspect service status
+- Use `docker logs -f jarvis-admin-api` for API debugging
+- Run gate tests with:
+
+```bash
+./scripts/test_gate.sh full
+```
+
+## Support
+
+If this project helps you, consider supporting development:
+
+[![Sponsor danny094](https://img.shields.io/badge/Sponsor-danny094-ea4aaa?style=for-the-badge&logo=github-sponsors)](https://github.com/sponsors/danny094)

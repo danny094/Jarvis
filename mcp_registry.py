@@ -1,17 +1,14 @@
-# mcp_registry.py
 """
-MCP Registry - Zentrale Konfiguration aller MCPs.
-
-EINFACH: Nur URL eintragen, der Hub erkennt das Format automatisch!
-
-Transport-Types (optional, wird auto-detected):
-- http:   HTTP/Streamable HTTP (auto-detected)
+MCP Registry - Zentrale Verwaltung aller MCPs
+Definiert welche MCPs aktiv sind und wie sie erreicht werden.
+Unterstützte Transports:
 - sse:    Legacy SSE-only
 - stdio:  Stdin/Stdout (lokale Prozesse)
 """
 
 import os
 from typing import Dict, Any
+
 
 # ═══════════════════════════════════════════════════════════════
 # MCP KONFIGURATION
@@ -148,6 +145,13 @@ def get_enabled_tools() -> list:
         List of dicts with tool name and description
     """
     tools = []
+
+    # [NEW] Add Fast Lane Tools (Local Import to avoid circular dependency)
+    try:
+        from core.tools.fast_lane.definitions import get_fast_lane_tools_summary
+        tools.extend(get_fast_lane_tools_summary())
+    except ImportError:
+        pass
     
     # ─────────────────────────────────────────────────────────────
     # SKILL SERVER TOOLS (Wichtig für autonome Skill-Erstellung!)

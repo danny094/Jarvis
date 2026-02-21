@@ -4,8 +4,8 @@
  */
 
 // Use same hostname as WebUI, just different port
-const SKILL_SERVER_URL = `http://${window.location.hostname}:8088`;
-const TOOL_EXECUTOR_URL = `http://${window.location.hostname}:8000`;
+const SKILL_SERVER_URL = `${window.location.protocol}//${window.location.hostname}:8088`;
+const TOOL_EXECUTOR_URL = `${window.location.protocol}//${window.location.hostname}:8000`;
 
 let skillsInitialized = false;
 
@@ -54,6 +54,8 @@ function setupTabs() {
                 panel.classList.add('hidden');
             });
             document.getElementById(`skills-tab-${targetTab}`)?.classList.remove('hidden');
+
+            if (targetTab === 'packages') loadPackages();
         });
     });
 }
@@ -443,7 +445,7 @@ async function handleValidateCode() {
         output.innerHTML = html;
 
     } catch (e) {
-        output.innerHTML = `<span class="text-red-500">Error: ${e.message}</span>`;
+        output.innerHTML = `<span class="text-red-500">Error: ${escapeHtml(e.message)}</span>`;
     }
 }
 
@@ -471,7 +473,8 @@ async function handleSaveSkill(isDraft) {
             draft: isDraft
         });
 
-        if (result.success) {
+        const saveOk = result.success || result.installation?.success;
+        if (saveOk) {
             showToast(`Draft "${name}" saved!`, "success");
             refreshSkills();
         } else {
@@ -506,7 +509,7 @@ async function handleGetSafetyTips() {
         output.innerHTML = html;
 
     } catch (e) {
-        output.innerHTML = `<span class="text-red-500">Error: ${e.message}</span>`;
+        output.innerHTML = `<span class="text-red-500">Error: ${escapeHtml(e.message)}</span>`;
     }
 }
 
@@ -524,7 +527,7 @@ async function loadDraft(name) {
 
         // Fill fields
         document.getElementById('studio-skill-name').value = data.name;
-        document.getElementById('studio-skill-desc').value = data.manifest?.description || "";
+        document.getElementById('studio-skill-desc').value = data.description || data.manifest?.description || "";
         document.getElementById('studio-code-editor').value = data.code || "";
 
         // Trigger validation automatically
@@ -546,11 +549,12 @@ async function promoteDraft(name) {
     setStatus("Deploying...");
     try {
         const res = await callSkillTool('promote_skill_draft', { name });
-        if (res.success) {
+        const deployOk = res.success || res.installation?.success;
+        if (deployOk) {
             showToast(`Skill "${name}" deployed!`, "success");
             refreshSkills();
         } else {
-            showToast(res.error, "error");
+            showToast(res.error || "Deploy failed", "error");
         }
     } catch (e) {
         showToast("Deploy failed: " + e.message, "error");
@@ -652,6 +656,87 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// === PACKAGES TAB ===
+
+async function loadPackages() {
+    try {
+        const res = await fetch(`${TOOL_EXECUTOR_URL}/v1/packages`);
+        const data = await res.json();
+
+        // Allowlist chips
+        const allowlistEl = document.getElementById('pkg-allowlist');
+        if (allowlistEl && data.allowlist) {
+            allowlistEl.innerHTML = data.allowlist.map(pkg =>
+                `<span class="px-2 py-1 rounded-full text-xs bg-green-900/30 text-green-400 border border-green-900/50">${escapeHtml(pkg)}</span>`
+            ).join('');
+        }
+
+        // Installed packages table
+        const listEl = document.getElementById('pkg-installed-list');
+        if (listEl && data.packages) {
+            listEl.innerHTML = `
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="text-gray-500 border-b border-dark-border">
+                                <th class="text-left py-2 pr-4">Paket</th>
+                                <th class="text-left py-2">Version</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.packages.map(p => `
+                                <tr class="border-b border-dark-border/50 hover:bg-dark-bg/50">
+                                    <td class="py-1.5 pr-4 text-gray-200">${escapeHtml(p.name)}</td>
+                                    <td class="py-1.5 text-gray-500">${escapeHtml(p.version)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>`;
+        }
+    } catch (e) {
+        const listEl = document.getElementById('pkg-installed-list');
+        if (listEl) listEl.innerHTML = `<span class="text-red-400">Fehler: ${escapeHtml(e.message)}</span>`;
+    }
+}
+
+async function installPackage() {
+    const input = document.getElementById('pkg-install-input');
+    const resultEl = document.getElementById('pkg-install-result');
+    const pkg = input?.value?.trim().toLowerCase();
+
+    if (!pkg) { showToast('Paketname eingeben', 'error'); return; }
+
+    if (!confirm(`Paket "${pkg}" installieren?\n\nDies installiert ein Python-Paket in die Skill-Sandbox. Nur Pakete aus der Allowlist sind erlaubt.`)) return;
+
+    resultEl.className = 'mt-2 text-xs text-blue-400';
+    resultEl.textContent = `Installiere ${pkg}...`;
+
+    try {
+        const res = await fetch(`${TOOL_EXECUTOR_URL}/v1/packages/install`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ package: pkg })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            resultEl.className = 'mt-2 text-xs text-green-400';
+            resultEl.textContent = `✓ ${pkg} erfolgreich installiert`;
+            input.value = '';
+            showToast(`${pkg} installiert!`, 'success');
+            setTimeout(loadPackages, 500);
+        } else {
+            resultEl.className = 'mt-2 text-xs text-red-400';
+            resultEl.textContent = `✗ ${data.error}`;
+            showToast(data.error, 'error');
+        }
+    } catch (e) {
+        resultEl.className = 'mt-2 text-xs text-red-400';
+        resultEl.textContent = `✗ Fehler: ${e.message}`;
+    }
+}
+
 // Export for global access
 window.SkillsApp = {
     init: initSkillsApp,
@@ -660,5 +745,6 @@ window.SkillsApp = {
     uninstallSkill,
     runSkill,
     loadDraft,
-    promoteDraft
+    promoteDraft,
+    installPackage,
 };

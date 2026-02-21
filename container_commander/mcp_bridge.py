@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 MCP_NAME = "container-commander"
 
+# These tools are handled by Fast-Lane (direct execution, faster).
+# Do NOT register them here — Fast-Lane registers last and would overwrite anyway,
+# but filtering here makes the intent explicit and prevents ghost registrations.
+_FAST_LANE_NAMES = {"home_read", "home_write", "home_list"}
+
 
 class CommanderTransport:
     """
@@ -44,13 +49,17 @@ def register_commander_tools(hub):
         hub._transports[MCP_NAME] = transport
 
         tools = get_tool_definitions()
+        registered = 0
         for tool in tools:
             tool_name = tool["name"]
+            if tool_name in _FAST_LANE_NAMES:
+                continue  # Fast-Lane handles these — skip to avoid ghost registration
             tool["mcp"] = MCP_NAME  # So persona.py can detect Commander tools
             hub._tools_cache[tool_name] = MCP_NAME
             hub._tool_definitions[tool_name] = tool
+            registered += 1
 
-        logger.info(f"[MCP-Commander] Registered {len(tools)} tools in MCPHub")
+        logger.info(f"[MCP-Commander] Registered {registered} tools in MCPHub (skipped {len(tools) - registered} Fast-Lane duplicates)")
 
     except Exception as e:
         logger.error(f"[MCP-Commander] Registration failed: {e}")

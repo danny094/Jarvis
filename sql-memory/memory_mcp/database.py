@@ -78,7 +78,117 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_workspace_conv ON workspace_entries(conversation_id)"
         )
 
+        # ═══════════════════════════════════════════════════════════
+        # TASK LIFECYCLE TABLES (Phase 2 - Week 2)
+        # ═══════════════════════════════════════════════════════════
+
+        # Active Task Memory (high-speed, max 10 items per conversation)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_active (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                importance_score FLOAT DEFAULT 0.0,
+                UNIQUE(task_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_active_conv ON task_active(conversation_id, last_updated DESC)"
+        )
+
+        # Task Archive (long-term storage, linked to embeddings)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                embedding_id INTEGER,
+                UNIQUE(task_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_archive_conv ON task_archive(conversation_id)"
+        )
+
+        # API Secrets (verschlüsselt gespeichert)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS secrets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                encrypted_value TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            )
+            """
+        )
+
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _get_cipher():
+    """Fernet cipher mit Master-Key aus Env-Var."""
+    import base64, hashlib
+    from cryptography.fernet import Fernet
+    master = os.getenv("SECRET_MASTER_KEY", "jarvis-default-secret-key-change-me")
+    key = base64.urlsafe_b64encode(hashlib.sha256(master.encode()).digest())
+    return Fernet(key)
+
+
+def save_secret(name: str, value: str):
+    cipher = _get_cipher()
+    encrypted = cipher.encrypt(value.encode()).decode()
+    now = datetime.utcnow().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            "INSERT INTO secrets (name, encrypted_value, created_at, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET encrypted_value=excluded.encrypted_value, updated_at=excluded.updated_at",
+            (name, encrypted, now, now)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_secret_value(name: str) -> Optional[str]:
+    cipher = _get_cipher()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute("SELECT encrypted_value FROM secrets WHERE name=?", (name,)).fetchone()
+        if not row:
+            return None
+        return cipher.decrypt(row[0].encode()).decode()
+    finally:
+        conn.close()
+
+
+def list_secrets() -> List[Dict]:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute("SELECT name, created_at, updated_at FROM secrets ORDER BY name").fetchall()
+        return [{"name": r[0], "created_at": r[1], "updated_at": r[2]} for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_secret(name: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute("DELETE FROM secrets WHERE name=?", (name,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -215,6 +325,57 @@ def migrate_db():
                 DELETE FROM memory_fts WHERE rowid=old.id;
             END;
         """)
+
+    # ═══════════════════════════════════════════════════════════
+    # TASK LIFECYCLE MIGRATION (Phase 2 - Week 2)
+    # ═══════════════════════════════════════════════════════════
+
+    # task_active table
+    cur.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='task_active';
+    """)
+    if not cur.fetchone():
+        cur.execute(
+            """
+            CREATE TABLE task_active (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                importance_score FLOAT DEFAULT 0.0,
+                UNIQUE(task_id)
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_active_conv ON task_active(conversation_id, last_updated DESC)"
+        )
+
+    # task_archive table
+    cur.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='task_archive';
+    """)
+    if not cur.fetchone():
+        cur.execute(
+            """
+            CREATE TABLE task_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                embedding_id INTEGER,
+                UNIQUE(task_id)
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_archive_conv ON task_archive(conversation_id)"
+        )
 
     conn.commit()
     conn.close()

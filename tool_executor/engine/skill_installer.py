@@ -54,7 +54,11 @@ class SkillInstaller:
             "triggers": manifest_data.get("triggers", []),
             "author": "ai", # Explicitly marked
             "created_at": datetime.now().isoformat(),
-            "validation_score": manifest_data.get("validation_score", 0.0)
+            "validation_score": manifest_data.get("validation_score", 0.0),
+            "gap_patterns": manifest_data.get("gap_patterns", []),
+            "gap_question": manifest_data.get("gap_question") or None,
+            "preferred_model": manifest_data.get("preferred_model") or None,
+            "default_params": manifest_data.get("default_params", {}),
         }
         
         with open(target_dir / "manifest.yaml", "w") as f:
@@ -70,6 +74,10 @@ class SkillInstaller:
             try:
                 self._update_registry_file(safe_name, manifest)
                 EventLogger.emit("skill_installed", {"name": safe_name}, status="success")
+                # Remove draft after successful promotion
+                draft_path = self.skills_dir / "_drafts" / safe_name
+                if draft_path.exists():
+                    shutil.rmtree(draft_path)
             except Exception as e:
                 # ROLLBACK: Failed to update registry
                 EventLogger.emit("rollback_triggered", {"name": safe_name, "reason": str(e)}, status="warning")
@@ -108,7 +116,11 @@ class SkillInstaller:
             "version": manifest["version"],
             "installed_at": datetime.now().isoformat(),
             "description": manifest["description"],
-            "triggers": manifest.get("triggers", [])
+            "triggers": manifest.get("triggers", []),
+            "gap_patterns": manifest.get("gap_patterns", []),
+            "gap_question": manifest.get("gap_question"),
+            "preferred_model": manifest.get("preferred_model"),
+            "default_params": manifest.get("default_params", {}),
         }
         
         import json

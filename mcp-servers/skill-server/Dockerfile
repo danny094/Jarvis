@@ -39,6 +39,7 @@ COPY skill_cim_light.py .
 COPY mini_control_layer.py .
 COPY cim_rag.py .
 COPY skill_memory.py .
+COPY skill_knowledge.py .
 
 # Copy CSV data for Skill-CIM-Light validation
 COPY data/ ./data/

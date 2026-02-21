@@ -78,14 +78,21 @@ from commander_routes import router as commander_router
 app.include_router(protocol_router, prefix="/api/protocol")
 app.include_router(commander_router, prefix="/api/commander")
 
+from secrets_routes import router as secrets_router
+app.include_router(secrets_router, prefix="/api/secrets")
+
+# Runtime telemetry (Phase 8 Operational — digest pipeline state)
+from runtime_routes import router as runtime_router
+app.include_router(runtime_router)
+
 
 # ============================================================
-# WORKSPACE ENDPOINTS (Agent Workspace CRUD)
+# WORKSPACE ENDPOINTS — editierbare Einträge (sql-memory, workspace_entries)
 # ============================================================
 
 @app.get("/api/workspace")
 async def workspace_list(conversation_id: str = None, limit: int = 50):
-    """List workspace entries, optionally filtered by conversation."""
+    """List editable workspace entries from sql-memory (workspace_entries table)."""
     from mcp.hub import get_hub
     try:
         hub = get_hub()
@@ -93,8 +100,13 @@ async def workspace_list(conversation_id: str = None, limit: int = 50):
         args = {"limit": limit}
         if conversation_id:
             args["conversation_id"] = conversation_id
+        # workspace_list routes to sql-memory (not Fast-Lane after Commit 1)
         result = hub.call_tool("workspace_list", args)
-        return JSONResponse(result if isinstance(result, dict) else {"entries": [], "count": 0})
+        if isinstance(result, dict):
+            sc = result.get("structuredContent", result)
+            entries = sc.get("entries", [])
+            return JSONResponse({"entries": entries, "count": len(entries)})
+        return JSONResponse({"entries": [], "count": 0})
     except Exception as e:
         log_error(f"[Workspace] List error: {e}")
         return JSONResponse({"error": str(e), "entries": [], "count": 0}, status_code=500)
@@ -102,7 +114,7 @@ async def workspace_list(conversation_id: str = None, limit: int = 50):
 
 @app.get("/api/workspace/{entry_id}")
 async def workspace_get(entry_id: int):
-    """Get a single workspace entry."""
+    """Get a single workspace entry from sql-memory."""
     from mcp.hub import get_hub
     try:
         hub = get_hub()
@@ -118,7 +130,7 @@ async def workspace_get(entry_id: int):
 
 @app.put("/api/workspace/{entry_id}")
 async def workspace_update(entry_id: int, request: Request):
-    """Update a workspace entry's content."""
+    """Update a workspace entry's content in sql-memory."""
     from mcp.hub import get_hub
     try:
         data = await request.json()
@@ -128,7 +140,10 @@ async def workspace_update(entry_id: int, request: Request):
         hub = get_hub()
         hub.initialize()
         result = hub.call_tool("workspace_update", {"entry_id": entry_id, "content": content})
-        return JSONResponse(result if isinstance(result, dict) else {"updated": False})
+        if isinstance(result, dict):
+            sc = result.get("structuredContent", result)
+            return JSONResponse({"updated": bool(sc.get("updated", sc.get("success", False)))})
+        return JSONResponse({"updated": False})
     except Exception as e:
         log_error(f"[Workspace] Update error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -136,16 +151,52 @@ async def workspace_update(entry_id: int, request: Request):
 
 @app.delete("/api/workspace/{entry_id}")
 async def workspace_delete(entry_id: int):
-    """Delete a workspace entry."""
+    """Delete a workspace entry from sql-memory."""
     from mcp.hub import get_hub
     try:
         hub = get_hub()
         hub.initialize()
         result = hub.call_tool("workspace_delete", {"entry_id": entry_id})
-        return JSONResponse(result if isinstance(result, dict) else {"deleted": False})
+        if isinstance(result, dict):
+            sc = result.get("structuredContent", result)
+            return JSONResponse({"deleted": bool(sc.get("deleted", sc.get("success", False)))})
+        return JSONResponse({"deleted": False})
     except Exception as e:
         log_error(f"[Workspace] Delete error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ============================================================
+# WORKSPACE-EVENTS ENDPOINT — read-only telemetry (Fast-Lane, workspace_events)
+# ============================================================
+
+@app.get("/api/workspace-events")
+async def workspace_events_list(
+    conversation_id: str = None,
+    event_type: str = None,
+    limit: int = 50,
+):
+    """List internal workspace events (read-only telemetry from workspace_events table)."""
+    from mcp.hub import get_hub
+    try:
+        hub = get_hub()
+        hub.initialize()
+        args: dict = {"limit": limit}
+        if conversation_id:
+            args["conversation_id"] = conversation_id
+        if event_type:
+            args["event_type"] = event_type
+        result = hub.call_tool("workspace_event_list", args)
+        # Fast-Lane ToolResult: .content is the list
+        if hasattr(result, "content"):
+            events = result.content if isinstance(result.content, list) else []
+            return JSONResponse({"events": events, "count": len(events)})
+        if isinstance(result, list):
+            return JSONResponse({"events": result, "count": len(result)})
+        return JSONResponse({"events": [], "count": 0})
+    except Exception as e:
+        log_error(f"[WorkspaceEvents] List error: {e}")
+        return JSONResponse({"error": str(e), "events": [], "count": 0}, status_code=500)
 
 
 # ============================================================
@@ -354,8 +405,70 @@ async def root():
 # STARTUP & SHUTDOWN
 # ============================================================
 
+
+
+@app.post("/api/autonomous")
+async def autonomous_objective(request: Request):
+    """
+    Execute autonomous objective via Master Orchestrator
+    
+    Request body:
+    {
+        "objective": "Analyze user feedback and create summary report",
+        "conversation_id": "conv_123",
+        "max_loops": 5  // optional, default: 10
+    }
+    """
+    try:
+        data = await request.json()
+        
+        objective = data.get("objective")
+        conversation_id = data.get("conversation_id")
+        # Use stored master-settings default when caller omits max_loops
+        if "max_loops" in data:
+            max_loops = data["max_loops"]
+        else:
+            try:
+                from settings_routes import load_master_settings as _lms
+                max_loops = _lms().get("max_loops", 10)
+            except Exception:
+                max_loops = 10
+        
+        # Validation
+        if not objective:
+            return {"success": False, "error": "Missing 'objective' in request body"}
+        
+        if not conversation_id:
+            return {"success": False, "error": "Missing 'conversation_id' in request body"}
+        
+        log_info(f"[API] Autonomous objective requested: {objective}")
+        
+        # Call Master Orchestrator via Pipeline
+        bridge = get_bridge()
+        result = await bridge.orchestrator.execute_autonomous_objective(
+            objective=objective,
+            conversation_id=conversation_id,
+            max_loops=max_loops
+        )
+        
+        log_info(f"[API] Autonomous objective completed: {result['success']}")
+        
+        return result
+        
+    except Exception as e:
+        log_error(f"[API] Autonomous objective failed: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 @app.on_event("startup")
 async def startup_event():
+    import asyncio
     logger.info("=" * 60)
     logger.info("Jarvis Admin API Starting...")
     logger.info("=" * 60)
@@ -365,6 +478,81 @@ async def startup_event():
     logger.info("MCP Hub: /mcp (tools/list, tools/call)")
     logger.info("Docs: http://localhost:8200/docs")
     logger.info("=" * 60)
+
+    # Daily Auto-Summarize: läuft täglich um 04:00 Uhr
+    from core.context_compressor import run_daily_summary_loop
+    asyncio.create_task(run_daily_summary_loop())
+
+    # Digest Worker — inline mode (Finding #3: wire DIGEST_RUN_MODE=inline)
+    # Double-start guard: check for an existing digest-inline thread before spawning.
+    # Mutual exclusion between pipeline runs is enforced by DigestLock regardless.
+    # Rollback: DIGEST_RUN_MODE=off (default) → no thread started.
+    try:
+        import config as _cfg
+        if _cfg.get_digest_run_mode() == "inline":
+            import threading as _threading
+            from core.digest.worker import DigestWorker as _DigestWorker
+            _existing = [
+                _t for _t in _threading.enumerate()
+                if _t.name == "digest-inline" and _t.is_alive()
+            ]
+            if _existing:
+                logger.warning("[DigestWorker] inline already running — skip double-start")
+            else:
+                _w = _DigestWorker()
+                _t = _threading.Thread(
+                    target=_w.run_loop, daemon=True, name="digest-inline"
+                )
+                _t.start()
+                logger.info(
+                    "[DigestWorker] inline mode starting — mutual exclusion via DigestLock"
+                )
+    except Exception as _e:
+        logger.warning(f"[DigestWorker] inline startup error (fail-open): {_e}")
+
+    # JIT-only hardening: warn if active digest pipeline loads CSV on every build
+    try:
+        if _cfg.get_digest_enable() and not _cfg.get_typedstate_csv_jit_only():
+            if _cfg.get_digest_jit_warn_on_disabled():
+                logger.warning(
+                    "[DigestWorker] WARNING: TYPEDSTATE_CSV_JIT_ONLY=false with "
+                    "active digest pipeline — CSV loaded on every context build; "
+                    "set TYPEDSTATE_CSV_JIT_ONLY=true for production"
+                )
+    except Exception:
+        pass
+
+    logger.info("[Startup] Daily summary loop scheduled")
+
+    # Phase 2: Backfill exec policies for existing blueprints (idempotent)
+    try:
+        from container_commander.blueprint_store import backfill_exec_policies
+        await asyncio.to_thread(backfill_exec_policies)
+    except Exception as e:
+        logger.warning(f"[Startup] Exec policy backfill fehlgeschlagen (non-critical): {e}")
+
+    # Blueprint Graph Sync: Blueprints aus SQLite → memory graph (_blueprints conv_id)
+    async def _sync_blueprints():
+        try:
+            from container_commander.blueprint_store import sync_blueprints_to_graph
+            count = await asyncio.to_thread(sync_blueprints_to_graph)
+            logger.info(f"[Startup] {count} Blueprints in Graph gesynct")
+        except Exception as e:
+            logger.warning(f"[Startup] Blueprint-Graph-Sync fehlgeschlagen (non-critical): {e}")
+
+    asyncio.create_task(_sync_blueprints())
+
+    # Phase 4: Container Runtime Recovery — rebuild _active + rearm TTL timers
+    # Runs in a background thread so Docker unavailability doesn't block startup.
+    async def _recover_containers():
+        try:
+            from container_commander.engine import recover_runtime_state
+            result = await asyncio.to_thread(recover_runtime_state)
+            logger.info(f"[Startup] Container recovery: {result}")
+        except Exception as e:
+            logger.warning(f"[Startup] Container recovery failed (non-critical): {e}")
+
+    asyncio.create_task(_recover_containers())
 
 @app.on_event("shutdown")
 async def shutdown_event():

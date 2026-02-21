@@ -56,6 +56,10 @@ class CreateSkillRequest(BaseModel):
     description: Optional[str] = ""
     triggers: List[str] = []
     auto_promote: bool = False
+    gap_patterns: List[str] = []
+    gap_question: Optional[str] = None
+    preferred_model: Optional[str] = None
+    default_params: Dict[str, Any] = {}
 
 class RunSkillRequest(BaseModel):
     name: str
@@ -75,6 +79,26 @@ class InstallSkillRequest(BaseModel):
 
 class ContextRequest(BaseModel):
     context: str
+
+class InstallPackageRequest(BaseModel):
+    package: str
+
+# Packages that are safe for skill use and can be installed via UI
+PACKAGE_ALLOWLIST = {
+    # Data & science
+    "numpy", "pandas", "scipy", "matplotlib",
+    # HTTP & APIs
+    "httpx", "aiohttp", "beautifulsoup4", "lxml",
+    # Utilities
+    "python-dateutil", "pytz", "arrow",
+    "pillow", "qrcode",
+    # Monitoring
+    "psutil", "gputil",
+    # Text & NLP
+    "nltk", "fuzzywuzzy", "python-levenshtein",
+    # Data formats
+    "toml", "xmltodict", "python-dotenv",
+}
 
 # === ENDPOINTS ===
 
@@ -134,7 +158,11 @@ async def create_skill(request: CreateSkillRequest):
         manifest_data = {
             "description": request.description,
             "triggers": request.triggers,
-            "validation_score": decision.validation_result.score if decision.validation_result else 0.0
+            "validation_score": decision.validation_result.score if decision.validation_result else 0.0,
+            "gap_patterns": request.gap_patterns,
+            "gap_question": request.gap_question,
+            "preferred_model": request.preferred_model,
+            "default_params": request.default_params,
         }
         
         install_result = installer.save_skill(
@@ -283,6 +311,58 @@ async def list_skills():
     """List all installed skills and drafts."""
     installer = SkillInstaller(skills_dir=os.getenv("SKILLS_DIR", "/skills"))
     return installer.list_skills()
+
+
+@app.get("/v1/packages")
+async def list_packages():
+    """List all installed Python packages in the executor environment."""
+    import subprocess
+    result = subprocess.run(
+        ["pip", "list", "--format=json"],
+        capture_output=True, text=True, timeout=15
+    )
+    if result.returncode != 0:
+        return {"error": "Could not list packages"}
+    packages = json.loads(result.stdout)
+    return {
+        "packages": packages,
+        "allowlist": sorted(PACKAGE_ALLOWLIST),
+    }
+
+
+@app.post("/v1/packages/install")
+async def install_package(request: InstallPackageRequest):
+    """
+    Install a Python package into the executor environment.
+    Only packages from PACKAGE_ALLOWLIST are permitted.
+    This endpoint must only be triggered by explicit human UI action.
+    """
+    import subprocess
+
+    pkg = request.package.strip().lower()
+
+    if pkg not in PACKAGE_ALLOWLIST:
+        EventLogger.emit("package_install_rejected", {"package": pkg}, status="rejected")
+        return {
+            "success": False,
+            "error": f"Package '{pkg}' is not in the allowed list. Contact admin to add it.",
+            "allowlist": sorted(PACKAGE_ALLOWLIST),
+        }
+
+    EventLogger.emit("package_install_start", {"package": pkg}, status="received")
+
+    result = subprocess.run(
+        ["pip", "install", pkg, "--quiet"],
+        capture_output=True, text=True, timeout=120
+    )
+
+    if result.returncode != 0:
+        EventLogger.emit("package_install_failed", {"package": pkg, "error": result.stderr}, status="error")
+        return {"success": False, "error": result.stderr or "Installation failed"}
+
+    EventLogger.emit("package_installed", {"package": pkg}, status="success")
+    return {"success": True, "package": pkg, "output": result.stdout or "Installed successfully"}
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

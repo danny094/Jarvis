@@ -166,6 +166,9 @@ async def protocol_append(request: Request):
     user_msg = data.get("user_message", "").strip()
     ai_response = data.get("ai_response", "").strip()
     timestamp = data.get("timestamp", datetime.now().isoformat())
+    # P6-C: Accept tracking IDs — forwarded by chat.js, not silently dropped
+    conversation_id = data.get("conversation_id", "")
+    session_id = data.get("session_id", "")
 
     if not user_msg or not ai_response:
         return JSONResponse({"error": "user_message and ai_response required"}, status_code=400)
@@ -189,7 +192,13 @@ async def protocol_append(request: Request):
     status[date] = False
     _save_status(status)
 
-    return JSONResponse({"appended": True, "date": date, "time": time_str})
+    return JSONResponse({
+        "appended": True,
+        "date": date,
+        "time": time_str,
+        "conversation_id": conversation_id or None,
+        "session_id": session_id or None,
+    })
 
 
 # ──────────────────────────────────────────────
@@ -295,3 +304,26 @@ async def protocol_merge(date: str):
         "entries_merged": merged_count,
         "errors": errors
     })
+
+
+@router.post("/summarize-yesterday")
+async def summarize_yesterday_endpoint(request: Request):
+    """Manuell: Zusammenfassung des gestrigen Protokolls in rolling_summary.md."""
+    try:
+        from core.context_compressor import summarize_yesterday
+        body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+        force = body.get("force", False)
+        did_run = await summarize_yesterday(force=force)
+        return JSONResponse({"success": True, "ran": did_run})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/rolling-summary")
+async def get_rolling_summary():
+    """Gibt den aktuellen Inhalt der rolling_summary.md zurück."""
+    summary_file = PROTOCOL_DIR / "rolling_summary.md"
+    if not summary_file.exists():
+        return JSONResponse({"content": "", "exists": False})
+    content = summary_file.read_text(encoding="utf-8")
+    return JSONResponse({"content": content, "exists": True, "size": len(content)})

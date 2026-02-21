@@ -2,6 +2,22 @@
  * tools.js - MCP Manager UI (Tier 3 System Tools)
  */
 
+function getApiBase() {
+    if (typeof window.getApiBase === "function") {
+        return window.getApiBase();
+    }
+    if (window.location.port === "3000" || window.location.port === "80" || window.location.port === "") {
+        return "";
+    }
+    return `${window.location.protocol}//${window.location.hostname}:8200`;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text || "";
+    return div.innerHTML;
+}
+
 export function initToolsApp() {
     console.log("[ToolsApp] Initializing...");
     const container = document.getElementById("app-tools");
@@ -146,7 +162,7 @@ function bindEvents() {
             uploadBtn.disabled = true;
 
             try {
-                const res = await fetch(`http://${window.location.hostname}:8200/api/mcp/install`, {
+                const res = await fetch(`${getApiBase()}/api/mcp/install`, {
                     method: "POST",
                     body: formData
                 });
@@ -187,13 +203,13 @@ async function refreshTools() {
     if (window.lucide) window.lucide.createIcons();
     
     try {
-        const res = await fetch(`http://${window.location.hostname}:8200/api/mcp/list`);
+        const res = await fetch(`${getApiBase()}/api/mcp/list`);
         const data = await res.json();
         renderToolsList(data.mcps || []);
     } catch (e) {
         console.error("Failed to load MCPs:", e);
         tbody.innerHTML = `<tr><td colspan="3" class="p-8 text-center text-red-400">
-            Failed to load MCPs: ${e.message}
+            Failed to load MCPs: ${escapeHtml(e.message)}
         </td></tr>`;
     }
 }
@@ -214,10 +230,10 @@ function renderToolsList(mcps) {
         return `
             <tr class="hover:bg-dark-hover transition-colors group">
                 <td class="p-4 text-gray-200">
-                    <div class="font-medium">${mcp.name}</div>
-                    <div class="text-xs text-gray-500 mt-1">${mcp.description || 'No description'}</div>
+                    <div class="font-medium">${escapeHtml(mcp.name)}</div>
+                    <div class="text-xs text-gray-500 mt-1">${escapeHtml(mcp.description || 'No description')}</div>
                 </td>
-                <td class="p-4 text-gray-500 font-mono text-sm">${mcp.version || mcp.tier || 'N/A'}</td>
+                <td class="p-4 text-gray-500 font-mono text-sm">${escapeHtml(mcp.version || mcp.tier || 'N/A')}</td>
                 <td class="p-4">
                     <span class="inline-flex items-center px-2 py-1 rounded bg-${statusColor}-500/10 text-${statusColor}-400 text-xs font-medium border border-${statusColor}-500/20">
                         ${statusText}

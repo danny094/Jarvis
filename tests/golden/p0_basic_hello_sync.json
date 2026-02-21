@@ -1,0 +1,11 @@
+{
+  "mode": "sync",
+  "provider": "mock",
+  "normalized": "Hallo! Ich bin TRION. Wie kann ich dir helfen?",
+  "markers_keys": [
+    "context_chars_final",
+    "context_sources",
+    "mode",
+    "retrieval_count"
+  ]
+}

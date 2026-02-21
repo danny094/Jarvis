@@ -55,21 +55,25 @@ BLOCKED_BUILTINS = {
 
 # Allowed modules for skills
 ALLOWED_MODULES = {
-    'json', 'math', 'datetime', 'time', 're', 
+    'json', 'math', 'datetime', 'time', 're',
     'collections', 'itertools', 'functools',
     'typing', 'dataclasses', 'enum',
     'hashlib', 'base64', 'uuid',
     'logging', 'traceback',
     # Async
     'asyncio',
-    # HTTP (controlled)
-    'urllib.parse',
+    # HTTP (für API-Skills: Wetter, Daten abrufen etc.)
+    'urllib.parse', 'urllib.request', 'urllib.error',
+    'http', 'http.client',
+    'requests',  # requests library für Skills erlaubt
+    # System-Monitoring (read-only, kein Schreibzugriff)
+    'psutil', 'platform', 'GPUtil',
 }
 
-# Blocked modules
+# Blocked modules (System-Zugriff, Datei-Zugriff, Code-Ausführung)
 BLOCKED_MODULES = {
     'os', 'sys', 'subprocess', 'shutil', 'pathlib',
-    'socket', 'http', 'urllib.request', 'requests',
+    'socket',
     'pickle', 'marshal', 'shelve',
     'ctypes', 'multiprocessing',
     'importlib', 'builtins', '__builtins__'
@@ -166,12 +170,26 @@ class SkillRunner:
         with open(entrypoint, 'r') as f:
             source_code = f.read()
         
+        # Inject get_secret() — resolves encrypted API keys at runtime
+        import urllib.request as _ur
+        import json as _json
+        _secrets_url = os.getenv("SECRETS_API_URL", "http://jarvis-admin-api:8200/api/secrets/resolve")
+
+        def _get_secret(name: str) -> str:
+            try:
+                req = _ur.Request(f"{_secrets_url}/{name.upper().strip()}")
+                with _ur.urlopen(req, timeout=5) as r:
+                    return _json.loads(r.read()).get("value", "")
+            except Exception:
+                return ""
+
         # Create restricted globals
         restricted_globals = {
             '__builtins__': self.restricted_builtins,
             '__name__': f'skill_{skill_name}',
             '__file__': str(entrypoint),
             '__import__': self.restricted_import,
+            'get_secret': _get_secret,
         }
         
         # Add restricted import to builtins

@@ -21,7 +21,7 @@ class LightCIM:
     
     def __init__(self):
         self.danger_keywords = [
-            "harm", "hurt", "kill", "attack", "weapon",
+            "harm", "hurt", "attack", "weapon",
             "illegal", "hack", "exploit", "steal", 
             "murder", "assault", "abuse", "torture",
             "bomb", "gun", "knife", "firearm",

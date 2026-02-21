@@ -10,8 +10,15 @@
  *   - Approval dialog for network requests
  */
 
-const API = `http://${window.location.hostname}:8200/api/commander`;
-const WS_URL = `ws://${window.location.hostname}:8200/api/commander/ws`;
+const HTTP_BASE = (() => {
+    if (typeof window.getApiBase === "function") {
+        const b = window.getApiBase();
+        if (b) return b;
+    }
+    return `${window.location.protocol}//${window.location.host}`;
+})();
+const API = `${HTTP_BASE}/api/commander`;
+const WS_URL = `${HTTP_BASE.replace(/^http/, "ws")}/api/commander/ws`;
 
 // ── State ────────────────────────────────────────────────
 let activeTab = 'blueprints';

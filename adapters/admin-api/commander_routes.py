@@ -67,6 +67,15 @@ async def api_create_blueprint(request: Request):
         bp = Blueprint(resources=resources, secrets_required=secrets, mounts=mounts, network=network,
                        **{k: v for k, v in data.items() if k in Blueprint.model_fields})
         created = create_blueprint(bp)
+        # Sync new blueprint to graph immediately — trust via trust.py (single source of truth)
+        try:
+            import asyncio
+            from container_commander.blueprint_store import _sync_single_blueprint_to_graph
+            from container_commander.trust import evaluate_blueprint_trust
+            _trust = evaluate_blueprint_trust(created)["level"]
+            asyncio.create_task(asyncio.to_thread(_sync_single_blueprint_to_graph, created, trust_level=_trust))
+        except Exception:
+            pass  # Non-critical, will be picked up on next restart
         return {"created": True, "blueprint": created.model_dump()}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -80,6 +89,17 @@ async def api_update_blueprint(blueprint_id: str, request: Request):
         updated = update_blueprint(blueprint_id, data)
         if not updated:
             raise HTTPException(404, f"Blueprint '{blueprint_id}' not found")
+        # Sync updated blueprint to graph immediately — force_update=True overwrites stale graph data
+        try:
+            import asyncio
+            from container_commander.blueprint_store import _sync_single_blueprint_to_graph
+            from container_commander.trust import evaluate_blueprint_trust
+            _trust = evaluate_blueprint_trust(updated)["level"]
+            asyncio.create_task(asyncio.to_thread(
+                _sync_single_blueprint_to_graph, updated, _trust, True  # force_update=True
+            ))
+        except Exception:
+            pass
         return {"updated": True, "blueprint": updated.model_dump()}
     except HTTPException:
         raise
@@ -94,6 +114,20 @@ async def api_delete_blueprint(blueprint_id: str):
         deleted = delete_blueprint(blueprint_id)
         if not deleted:
             raise HTTPException(404, f"Blueprint '{blueprint_id}' not found")
+
+        # Phase 5 — Graph tombstone (non-critical, non-blocking):
+        # Primary tombstone is the SQLite cross-check in core/graph_hygiene.py (fail-closed):
+        # the deleted blueprint is immediately invisible in Router/Context.
+        # Additionally tombstone the graph node so reconcile_graph_index.py can clean it up.
+        import asyncio as _asyncio
+        async def _tombstone():
+            try:
+                from container_commander.blueprint_store import remove_blueprint_from_graph
+                await _asyncio.to_thread(remove_blueprint_from_graph, blueprint_id)
+            except Exception as _e:
+                logger.warning(f"[Blueprint] Graph tombstone failed for '{blueprint_id}' (non-critical): {_e}")
+        _asyncio.create_task(_tombstone())
+
         return {"deleted": True, "blueprint_id": blueprint_id}
     except HTTPException:
         raise
@@ -208,18 +242,36 @@ async def api_deploy_container(request: Request):
         if not blueprint_id:
             raise HTTPException(400, "'blueprint_id' is required")
 
+        # P6-C: Accept tracking IDs — not silently dropped
+        conversation_id = data.get("conversation_id", "") or ""
+        session_id = data.get("session_id", "") or ""
+        if conversation_id or session_id:
+            logger.debug(
+                "[Commander] Deploy blueprint=%s conversation_id=%s session_id=%s",
+                blueprint_id, conversation_id or "(none)", session_id or "(none)",
+            )
+
         override = None
         if data.get("override_resources"):
             override = ResourceLimits(**data["override_resources"])
 
-        instance = start_container(blueprint_id, override, data.get("environment"), data.get("resume_volume"))
+        instance = start_container(
+            blueprint_id, override, data.get("environment"), data.get("resume_volume"),
+            session_id=session_id,
+            conversation_id=conversation_id,
+        )
         return {"deployed": True, "container": instance.model_dump()}
     except HTTPException:
         raise
     except PendingApprovalError as e:
         # Human-in-the-Loop: container needs user approval
-        return JSONResponse({"deployed": False, "pending_approval": True,
-            "approval_id": e.approval_id, "reason": e.reason}, status_code=202)
+        # P6-C: Echo back tracking IDs so the frontend can correlate approval with its session
+        return JSONResponse({
+            "deployed": False, "pending_approval": True,
+            "approval_id": e.approval_id, "reason": e.reason,
+            "conversation_id": conversation_id or None,
+            "session_id": session_id or None,
+        }, status_code=202)
     except RuntimeError as e:
         # Quota exceeded or start failed
         return JSONResponse({"deployed": False, "error": str(e)}, status_code=409)

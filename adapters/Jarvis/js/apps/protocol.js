@@ -3,7 +3,13 @@
  * Launchpad full-page app for viewing/editing daily conversation logs.
  */
 
-const API_BASE = `http://${window.location.hostname}:8200/api/protocol`;
+// Dynamic base — avoids hardcoded :8200; falls back identically to api.js logic.
+function _protocolBase() {
+    const h = typeof window.getApiBase === 'function' ? window.getApiBase()
+        : (window.location.port === '3000' || window.location.port === '80' || window.location.port === ''
+            ? '' : `${window.location.protocol}//${window.location.hostname}:8200`);
+    return `${h}/api/protocol`;
+}
 
 let currentDate = null;
 let dates = [];
@@ -108,7 +114,7 @@ function bindEvents() {
 
 async function loadDates() {
     try {
-        const resp = await fetch(`${API_BASE}/list`);
+        const resp = await fetch(`${_protocolBase()}/list`);
         const data = await resp.json();
         dates = data.dates || [];
 
@@ -143,7 +149,7 @@ async function selectDate(date) {
     });
 
     try {
-        const resp = await fetch(`${API_BASE}/${date}`);
+        const resp = await fetch(`${_protocolBase()}/${date}`);
         const data = await resp.json();
         entries = data.entries || [];
         isMerged = data.merged || false;
@@ -202,7 +208,7 @@ function renderEntries() {
 
         // Render entry body as markdown (everything after the ## HH:MM line)
         const bodyMd = entry.replace(/^## \d{2}:\d{2}\s*/, "").replace(/\s*---\s*$/, "").trim();
-        const bodyHtml = window.marked ? marked.parse(bodyMd) : escapeHtml(bodyMd);
+        const bodyHtml = sanitizeHtml(window.marked ? marked.parse(bodyMd) : escapeHtml(bodyMd));
 
         return `
         <div class="proto-entry" data-index="${idx}">
@@ -260,13 +266,16 @@ async function addEntry() {
     if (!userMsg || !aiMsg) return;
 
     try {
-        const resp = await fetch(`${API_BASE}/append`, {
+        const resp = await fetch(`${_protocolBase()}/append`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 user_message: userMsg,
                 ai_response: aiMsg,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                // Manual entry: no active chat session — send null so backend logs correctly
+                conversation_id: null,
+                session_id: null,
             })
         });
 
@@ -289,12 +298,16 @@ function editEntry(index) {
     const rawEntry = entries[index];
     const bodyText = rawEntry.replace(/^## \d{2}:\d{2}\s*/, "").replace(/\s*---\s*$/, "").trim();
 
+    // Build cancel button safely (no inline event handler with untrusted content)
     bodyEl.innerHTML = `
         <textarea class="proto-edit-area">${escapeHtml(bodyText)}</textarea>
         <div class="proto-edit-actions">
-            <button class="proto-btn-cancel" onclick="this.closest('.proto-entry-body').innerHTML = window.marked ? marked.parse(\`${bodyText.replace(/`/g, "\\`").replace(/\\/g, "\\\\")}\`) : '${escapeHtml(bodyText)}'">Abbrechen</button>
+            <button class="proto-btn-cancel">Abbrechen</button>
             <button class="proto-btn-save proto-save-edit" data-index="${index}">Speichern</button>
         </div>`;
+    bodyEl.querySelector(".proto-btn-cancel").addEventListener("click", () => {
+        bodyEl.innerHTML = sanitizeHtml(window.marked ? marked.parse(bodyText) : escapeHtml(bodyText));
+    });
 
     bodyEl.querySelector(".proto-save-edit")?.addEventListener("click", async () => {
         const textarea = bodyEl.querySelector(".proto-edit-area");
@@ -310,7 +323,7 @@ function editEntry(index) {
         const fullContent = `# Tagesprotokoll ${currentDate}\n\n${entries.join("\n\n")}\n`;
 
         try {
-            const resp = await fetch(`${API_BASE}/${currentDate}`, {
+            const resp = await fetch(`${_protocolBase()}/${currentDate}`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ content: fullContent })
@@ -330,7 +343,7 @@ async function deleteEntry(index) {
     if (!confirm(`Eintrag ${index + 1} wirklich loeschen?`)) return;
 
     try {
-        const resp = await fetch(`${API_BASE}/${currentDate}/entry/${index}`, {
+        const resp = await fetch(`${_protocolBase()}/${currentDate}/entry/${index}`, {
             method: "DELETE"
         });
 
@@ -352,7 +365,7 @@ async function mergeToGraph() {
     updateStatus("Merge laeuft...");
 
     try {
-        const resp = await fetch(`${API_BASE}/${currentDate}/merge`, {
+        const resp = await fetch(`${_protocolBase()}/${currentDate}/merge`, {
             method: "POST"
         });
         const data = await resp.json();
@@ -404,7 +417,7 @@ export function updateBadge(count) {
 
 export async function pollUnmergedCount() {
     try {
-        const resp = await fetch(`${API_BASE}/unmerged-count`);
+        const resp = await fetch(`${_protocolBase()}/unmerged-count`);
         const data = await resp.json();
         updateBadge(data.unmerged_count || 0);
     } catch {
@@ -425,4 +438,46 @@ function escapeHtml(text) {
     const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
+}
+
+/**
+ * Phase 6: Sanitize HTML from marked.parse() output.
+ * Uses window.TRIONSanitize (sanitize.js) if available, else DOM fallback.
+ */
+function sanitizeHtml(html) {
+    if (!html) return "";
+    // Prefer shared sanitizer (sanitize.js loaded as script-tag)
+    if (window.TRIONSanitize) return window.TRIONSanitize.sanitizeHtml(html);
+    // DOMPurify fallback
+    if (window.DOMPurify) {
+        const clean = window.DOMPurify.sanitize(html);
+        const tmp = document.createElement("div");
+        tmp.innerHTML = clean;
+        tmp.querySelectorAll("a[target='_blank']").forEach(a => {
+            a.setAttribute("rel", "noopener noreferrer");
+        });
+        return tmp.innerHTML;
+    }
+    // DOM-based fallback
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    tmp.querySelectorAll("script,iframe,object,embed,style,form,base").forEach(el => el.remove());
+    tmp.querySelectorAll("*").forEach(el => {
+        const toRemove = [];
+        for (const attr of el.attributes) {
+            if (/^on/i.test(attr.name)) {
+                toRemove.push(attr.name);
+            } else if (/^(href|src|action|formaction|xlink:href)$/i.test(attr.name)) {
+                const val = (attr.value || "").replace(/\s/g, "").toLowerCase();
+                if (/^(javascript:|vbscript:|data:text\/html)/.test(val)) {
+                    el.setAttribute(attr.name, "#");
+                }
+            }
+        }
+        toRemove.forEach(n => el.removeAttribute(n));
+        if (el.tagName === "A" && el.getAttribute("target") === "_blank") {
+            el.setAttribute("rel", "noopener noreferrer");
+        }
+    });
+    return tmp.innerHTML;
 }

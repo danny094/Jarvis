@@ -1,0 +1,132 @@
+version: "1.0"
+description: "Rule mapping from raw events to typed runtime state for small-model context cleanup"
+
+limits:
+  now_max: 5
+  rules_max: 3
+  next_max: 2
+  snippets_max: 2
+  retrieval_default_max: 1
+  retrieval_on_failure_max: 2
+
+confidence:
+  label_thresholds:
+    high: 0.85
+    medium: 0.65
+  entity_match:
+    exact: 1.0
+    same_name: 0.8
+    semantic_alias: 0.6
+    none: 0.3
+
+rules:
+  - id: container_started
+    match:
+      action_in: ["container_started"]
+      fact_type_in: ["ACTIVE_CONTAINER"]
+    ops:
+      - op: upsert_entity
+        entity_type: container
+        entity_id_from: "fact_attributes.container_id|parameters.container_id|entity_ids[0]"
+        set:
+          state: "running"
+          last_action: "container_started"
+          runtime: "fact_attributes.runtime|parameters.runtime"
+          image: "parameters.image"
+          last_change_ts: "timestamp"
+
+  - id: container_exec_ok
+    match:
+      action_in: ["tool_executed"]
+      fact_type_in: ["TOOL_EXECUTED"]
+      where: "parameters.exit_code == 0"
+    ops:
+      - op: upsert_entity
+        entity_type: container
+        entity_id_from: "fact_attributes.container_id|parameters.container_id|entity_ids[0]"
+        set:
+          last_action: "container_exec_ok"
+          last_exit_code: 0
+          last_change_ts: "timestamp"
+
+  - id: container_exec_failed
+    match:
+      action_in: ["tool_executed"]
+      fact_type_in: ["FAILED_EXECUTION", "TOOL_EXECUTED"]
+      where: "parameters.exit_code != 0 or fact_type == 'FAILED_EXECUTION'"
+    ops:
+      - op: upsert_entity
+        entity_type: container
+        entity_id_from: "fact_attributes.entity_id|parameters.container_id|entity_ids[0]"
+        set:
+          last_action: "container_exec_fail"
+          last_exit_code: "parameters.exit_code"
+          last_error: "fact_attributes.error_message|raw_text"
+          last_change_ts: "timestamp"
+          stability_score: "low"
+      - op: add_open_issue
+        value_from: "fact_attributes.error_type|raw_text"
+
+  - id: blueprint_suggested
+    match:
+      action_in: ["blueprint_suggested"]
+      fact_type_in: ["BLUEPRINT_SUGGESTED"]
+    ops:
+      - op: set_pending_blueprint
+        blueprint_id_from: "fact_attributes.blueprint_id|parameters.blueprint_id"
+
+  - id: blueprint_selected
+    match:
+      action_in: ["blueprint_selected"]
+      fact_type_in: ["BLUEPRINT_SELECTED"]
+    ops:
+      - op: upsert_entity
+        entity_type: blueprint
+        entity_id_from: "fact_attributes.blueprint_id|parameters.blueprint_id|entity_ids[0]"
+        set:
+          state: "selected"
+          last_action: "blueprint_selected"
+          last_change_ts: "timestamp"
+
+  - id: gate_blocked
+    match:
+      action_in: ["gate_blocked"]
+      fact_type_in: ["GATE_BLOCKED"]
+    ops:
+      - op: add_active_gate
+        value_from: "fact_attributes.gate + ':' + fact_attributes.reason"
+      - op: set_last_error
+        value_from: "fact_attributes.reason|raw_text"
+
+  - id: trust_check_result
+    match:
+      action_in: ["trust_check_result"]
+      fact_type_in: ["TRUST_CHECK_RESULT"]
+    ops:
+      - op: add_active_gate_when
+        when: "fact_attributes.result != 'ok'"
+        value_from: "'trust:' + fact_attributes.result"
+
+  - id: user_constraint
+    match:
+      action_in: ["user_message"]
+      fact_type_in: ["USER_CONSTRAINT"]
+    ops:
+      - op: add_user_constraint
+        value_from: "fact_attributes.constraint|fact_attributes.preference|raw_text"
+
+output:
+  compact_context:
+    now_order:
+      - active_container
+      - focus_entity
+      - active_gates
+      - open_issues
+      - last_error
+    rules_default:
+      - "No freestyle container execution"
+      - "Verified/trust-gated actions only"
+      - "If confidence is low, ask clarification"
+    next_strategy:
+      - "goal"
+      - "single_next_step"

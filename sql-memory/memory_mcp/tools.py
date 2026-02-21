@@ -21,6 +21,10 @@ from .database import (
     get_workspace_entry,
     update_workspace_entry,
     delete_workspace_entry,
+    save_secret,
+    get_secret_value,
+    list_secrets,
+    delete_secret,
 )
 from .auto_layer import auto_assign_layer
 
@@ -429,21 +433,28 @@ def register_tools(mcp):
             return {"results": [], "count": 0}
         
         # 2. Finde Graph Nodes die zu den Seeds gehören
+        # Suche über ALLE source_types (nicht nur "fact" - würde z.B. "skill" Nodes verpassen)
         seed_node_ids = []
+        all_known_types = ["fact", "skill", "event", "note", "observation", "task"]
         for seed in seed_results:
-            # suche node mit passendem content
-            nodes = gs.get_nodes_by_type("fact", limit=50)
-            for node in nodes:
-                if seed["content"] in node["content"] or node["content"] in seed["content"]:
-                    seed_node_ids.append(node["id"])
+            seed_text = seed["content"][:80]
+            found = False
+            for t in all_known_types:
+                candidates = gs.get_nodes_by_type(t, limit=50)
+                for node in candidates:
+                    if seed_text in node["content"] or node["content"][:80] in seed_text:
+                        seed_node_ids.append(node["id"])
+                        found = True
+                        break
+                if found:
                     break
-                
+
         if not seed_node_ids:
-            # Fallback nur Seantic Results
+            # Fallback: direkt semantische Ergebnisse zurückgeben
             return {
                 "results": seed_results,
                 "count": len(seed_results),
-                "source": "sematic_only"
+                "source": "semantic_only"
             }
         
         # 3 Graph Walk
@@ -916,16 +927,51 @@ def register_tools(mcp):
         source_type: str,
         content: str,
         conversation_id: str = "daily-protocol",
-        confidence: float = 0.85
+        confidence: float = 0.85,
+        metadata: str = None,
     ) -> Dict:
-        """Creates a graph node with edges. Used by Daily Protocol merge."""
+        """Creates a graph node with embedding for semantic search. Used by Daily Protocol merge and Skill registry.
+        metadata: optional JSON string with extra fields (e.g. skill_name for SkillSemanticRouter).
+        """
+        import json as _json
+        # Embedding generieren damit memory_graph_search den Node findet
+        embedding = None
+        try:
+            from embedding import get_embedding
+            embedding = get_embedding(content)
+        except Exception as e:
+            print(f"[graph_add_node] Embedding failed (non-critical): {e}")
+
         node_id = build_node_with_edges(
             source_type=source_type,
             content=content,
+            embedding=embedding,
             conversation_id=conversation_id,
             confidence=confidence,
             weight_boost=0.5
         )
+
+        # KRITISCH: Auch in den VectorStore eintragen, damit vs.search() in
+        # memory_graph_search() den Node als Seed findet. graph_nodes und
+        # embeddings sind GETRENNTE Tabellen!
+        try:
+            vs = get_vector_store()
+            # Metadata als Dict parsen wenn übergeben (für SkillSemanticRouter: skill_name)
+            meta_dict = None
+            if metadata:
+                try:
+                    meta_dict = _json.loads(metadata)
+                except Exception:
+                    pass
+            vs.add(
+                conversation_id=conversation_id,
+                content=content,
+                content_type=source_type,
+                metadata=meta_dict,
+            )
+        except Exception as e:
+            print(f"[graph_add_node] VectorStore add failed (non-critical): {e}")
+
         return {
             "structuredContent": {
                 "node_id": node_id,
@@ -1010,3 +1056,73 @@ def register_tools(mcp):
                 "entry_id": entry_id
             }
         }
+
+    # --------------------------------------------------
+    # memory_graph_save (NEW - Tool Registration Support)
+    # --------------------------------------------------
+    @mcp.tool
+    def memory_graph_save(
+        node_type: str,
+        node_id: str,
+        properties: Dict,
+        searchable_text: str,
+        content_type: str = "tool"
+    ) -> Dict:
+        """Saves a node to the graph and vector store with specific content_type.
+        
+        This enables Tool Selector to find tools via semantic search.
+        Args:
+            node_type: Type of node (e.g., 'tool')
+            node_id: Unique identifier (e.g., tool name)
+            properties: Metadata dict
+            searchable_text: Text for semantic search
+            content_type: Filter category (default: 'tool')
+        """
+        vs = get_vector_store()
+        try:
+            vs.add(
+                conversation_id="global",  # Tools are global
+                content=searchable_text,
+                content_type=content_type,
+                metadata=properties
+            )
+            return {
+                "result": f"Saved {node_id} as {content_type}",
+                "node_id": node_id,
+                "content_type": content_type
+            }
+        except Exception as e:
+            return {"error": f"Vector save failed: {e}"}
+
+    # --------------------------------------------------
+    # Secrets (encrypted API key storage)
+    # --------------------------------------------------
+
+    @mcp.tool
+    def secret_save(name: str, value: str) -> dict:
+        """Save or update an encrypted API secret by name."""
+        try:
+            save_secret(name, value)
+            return {"success": True, "name": name}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @mcp.tool
+    def secret_get(name: str) -> dict:
+        """Retrieve the decrypted value of a secret. Internal use only."""
+        val = get_secret_value(name)
+        if val is None:
+            return {"value": None, "error": f"Secret '{name}' not found"}
+        return {"value": val}
+
+    @mcp.tool
+    def secret_list() -> dict:
+        """List all secret names (values never returned)."""
+        secrets = list_secrets()
+        return {"secrets": secrets}
+
+    @mcp.tool
+    def secret_delete(name: str) -> dict:
+        """Delete a secret by name."""
+        deleted = delete_secret(name)
+        return {"success": deleted, "name": name}

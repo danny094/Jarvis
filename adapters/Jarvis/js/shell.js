@@ -87,7 +87,10 @@ function showToast(msg, type = 'info') {
         error: 'border-red-500 text-red-400 bg-dark-card'
     };
     toast.className = `px-4 py-3 rounded-lg border-l-4 shadow-xl flex items-center gap-3 transform transition-all duration-300 translate-y-2 opacity-0 ${colors[type] || colors.info}`;
-    toast.innerHTML = `<span class="font-mono text-sm">${msg}</span>`;
+    const label = document.createElement("span");
+    label.className = "font-mono text-sm";
+    label.textContent = msg;
+    toast.appendChild(label);
     container.appendChild(toast);
     requestAnimationFrame(() => toast.classList.remove('translate-y-2', 'opacity-0'));
     setTimeout(() => {
@@ -396,7 +399,11 @@ function startProtocolBadgePolling() {
 
 async function pollProtocolBadge() {
     try {
-        const resp = await fetch(`http://${window.location.hostname}:8200/api/protocol/unmerged-count`);
+        // Use the same dynamic base as api.js (exposed on window by app.js)
+        const _base = (typeof window.getApiBase === 'function')
+            ? window.getApiBase()
+            : `${window.location.protocol}//${window.location.hostname}:8200`;
+        const resp = await fetch(`${_base}/api/protocol/unmerged-count`);
         const data = await resp.json();
         const count = data.unmerged_count || 0;
 

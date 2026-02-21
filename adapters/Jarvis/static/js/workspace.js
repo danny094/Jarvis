@@ -18,10 +18,13 @@
     // ═══════════════════════════════════════════════════════════
 
     function getApiBase() {
+        if (typeof window.getApiBase === "function") {
+            return window.getApiBase();
+        }
         if (window.location.port === "3000" || window.location.port === "80" || window.location.port === "") {
             return "";
         }
-        return `http://${window.location.hostname}:8200`;
+        return `${window.location.protocol}//${window.location.hostname}:8200`;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -30,14 +33,34 @@
 
     async function fetchEntries(conversationId) {
         const base = getApiBase();
-        let url = `${base}/api/workspace?limit=50`;
-        if (conversationId) url += `&conversation_id=${encodeURIComponent(conversationId)}`;
+        // Fetch editable entries (sql-memory workspace_entries)
+        let entryUrl = `${base}/api/workspace?limit=50`;
+        if (conversationId) entryUrl += `&conversation_id=${encodeURIComponent(conversationId)}`;
+
+        // Fetch read-only events (Fast-Lane workspace_events) for reload persistence
+        let eventUrl = `${base}/api/workspace-events?limit=50`;
+        if (conversationId) eventUrl += `&conversation_id=${encodeURIComponent(conversationId)}`;
+
         try {
-            const res = await fetch(url);
-            const data = await res.json();
-            // Handle structuredContent wrapper from MCP
-            const raw = data.structuredContent || data;
-            return raw.entries || [];
+            const [entryRes, eventRes] = await Promise.all([fetch(entryUrl), fetch(eventUrl)]);
+            const entryData = await entryRes.json();
+            const eventData = await eventRes.json();
+
+            const entryList = (entryData.entries || []).map(e => ({ ...e, _source: "entry" }));
+            const eventList = (eventData.events || []).map(e => ({
+                id: e.id,
+                conversation_id: e.conversation_id,
+                content: e.event_data?.content || "",
+                entry_type: e.event_type || "event",
+                source_layer: e.event_data?.source_layer || "",
+                created_at: e.created_at,
+                _source: "event",
+            }));
+
+            // Merge and sort newest-first
+            return [...entryList, ...eventList].sort(
+                (a, b) => new Date(b.created_at) - new Date(a.created_at)
+            );
         } catch (e) {
             console.error("[Workspace] Fetch error:", e);
             return [];
@@ -75,11 +98,50 @@
     // ═══════════════════════════════════════════════════════════
 
     function renderMarkdown(text) {
+        const raw = text || "";
         if (window.marked) {
-            return marked.parse(text || "");
+            const html = marked.parse(raw);
+            // Phase 6: use shared TRIONSanitize if loaded (sanitize.js)
+            if (window.TRIONSanitize) {
+                return window.TRIONSanitize.sanitizeHtml(html);
+            }
+            // Fallback: DOMPurify
+            if (window.DOMPurify) {
+                const clean = DOMPurify.sanitize(html);
+                // Add rel=noopener to _blank links
+                const tmp = document.createElement("div");
+                tmp.innerHTML = clean;
+                tmp.querySelectorAll("a[target='_blank']").forEach(a => {
+                    a.setAttribute("rel", "noopener noreferrer");
+                });
+                return tmp.innerHTML;
+            }
+            // DOM-based fallback: strip dangerous tags/attrs + neutralise bad URLs
+            const tmp = document.createElement("div");
+            tmp.innerHTML = html;
+            tmp.querySelectorAll("script,iframe,object,embed,style,form,base").forEach(el => el.remove());
+            tmp.querySelectorAll("*").forEach(el => {
+                const toRemove = [];
+                [...el.attributes].forEach(attr => {
+                    if (/^on/i.test(attr.name)) {
+                        toRemove.push(attr.name);
+                    } else if (/^(href|src|action|formaction|xlink:href)$/i.test(attr.name)) {
+                        const val = (attr.value || "").trim().toLowerCase().replace(/\s/g, "");
+                        if (val.startsWith("javascript:") || val.startsWith("vbscript:") || val.startsWith("data:text/html")) {
+                            el.setAttribute(attr.name, "#");
+                        }
+                    }
+                });
+                toRemove.forEach(n => el.removeAttribute(n));
+                // rel=noopener for external links
+                if (el.tagName === "A" && el.getAttribute("target") === "_blank") {
+                    el.setAttribute("rel", "noopener noreferrer");
+                }
+            });
+            return tmp.innerHTML;
         }
-        // Fallback: escape HTML and convert newlines
-        const esc = (text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        // Plain text fallback: escape HTML and convert newlines
+        const esc = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         return esc.replace(/\n/g, "<br>");
     }
 
@@ -97,38 +159,39 @@
         card.className = "ws-card";
         card.setAttribute("data-entry-id", entry.id);
 
+        const isReadOnly = entry._source === "event";
+        const actionsHtml = isReadOnly ? "" : `
+            <button class="ws-btn-edit" title="Edit"><i data-lucide="pencil" class="w-3 h-3"></i></button>
+            <button class="ws-btn-delete" title="Delete"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+        `;
         const headerHtml = `
             <div class="ws-card-header">
-                <span class="ws-badge ${typeBadgeClass(entry.entry_type)}">${entry.entry_type}</span>
+                <span class="ws-badge ${typeBadgeClass((entry.entry_type || entry.event_type))}">${(entry.entry_type || entry.event_type || "event")}</span>
                 <span class="ws-card-layer">${entry.source_layer || ""}</span>
                 <span class="ws-card-date">${formatDate(entry.created_at)}</span>
-                <div class="ws-card-actions">
-                    <button class="ws-btn-edit" title="Edit"><i data-lucide="pencil" class="w-3 h-3"></i></button>
-                    <button class="ws-btn-delete" title="Delete"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
-                </div>
+                <div class="ws-card-actions">${actionsHtml}</div>
             </div>
         `;
 
         const bodyHtml = `
-            <div class="ws-card-body">${renderMarkdown(entry.content)}</div>
+            <div class="ws-card-body">${renderMarkdown(entry.content || "")}</div>
         `;
 
         card.innerHTML = headerHtml + bodyHtml;
 
-        // Edit handler
-        card.querySelector(".ws-btn-edit").addEventListener("click", () => startEdit(card, entry));
-
-        // Delete handler
-        card.querySelector(".ws-btn-delete").addEventListener("click", async () => {
-            if (!confirm("Delete this workspace entry?")) return;
-            const result = await deleteEntry(entry.id);
-            const r = result.structuredContent || result;
-            if (r.deleted) {
-                card.remove();
-                entries = entries.filter(e => e.id !== entry.id);
-                updateEmptyState();
-            }
-        });
+        // Edit/Delete only for editable workspace_entries (not read-only events)
+        if (!isReadOnly) {
+            card.querySelector(".ws-btn-edit").addEventListener("click", () => startEdit(card, entry));
+            card.querySelector(".ws-btn-delete").addEventListener("click", async () => {
+                if (!confirm("Delete this workspace entry?")) return;
+                const result = await deleteEntry(entry.id);
+                if (result && result.deleted) {
+                    card.remove();
+                    entries = entries.filter(e => e.id !== entry.id);
+                    updateEmptyState();
+                }
+            });
+        }
 
         // Lucide icons
         if (window.lucide) lucide.createIcons({ nodes: [card] });
@@ -138,7 +201,8 @@
 
     function startEdit(card, entry) {
         const body = card.querySelector(".ws-card-body");
-        const original = entry.content;
+        // content lives in entry.content for workspace_entries (sql-memory)
+        const original = entry.content || entry.event_data?.content || "";
 
         body.innerHTML = `
             <textarea class="ws-edit-area">${escapeHtml(original)}</textarea>
@@ -162,8 +226,7 @@
                 return;
             }
             const result = await updateEntry(entry.id, newContent);
-            const r = result.structuredContent || result;
-            if (r.updated) {
+            if (result && result.updated) {
                 entry.content = newContent;
                 body.innerHTML = renderMarkdown(newContent);
             } else {
@@ -243,9 +306,10 @@
             return;
         }
 
-        // Load all entries (no conversation filter for now)
-        console.log("[Workspace] Loading entries...");
-        entries = await fetchEntries(null);
+        // Filter by active conversation if available; fall back to global view.
+        const convId = window.currentConversationId || null;
+        console.log("[Workspace] Loading entries...", convId ? `conv=${convId}` : 'global');
+        entries = await fetchEntries(convId);
         console.log(`[Workspace] Fetched ${entries.length} entries`);
 
         const list = container.querySelector(".ws-entries");
@@ -268,18 +332,24 @@
 
         ensureTab();
 
-        // Add to local cache
+        // Normalize payload: both observation events and container events
+        // share content + entry_type after Commit 2 normalization.
+        // source="event" means read-only (no Edit/Delete in UI).
         const entry = {
             id: data.entry_id,
             conversation_id: data.conversation_id,
-            content: data.content,
-            entry_type: data.entry_type || "observation",
-            source_layer: data.source_layer || "thinking",
+            content: data.content || data.event_data?.content || "",
+            entry_type: data.entry_type || data.event_type || "observation",
+            source_layer: data.source_layer || data.event_data?.source_layer || "orchestrator",
             created_at: data.timestamp || new Date().toISOString(),
-            updated_at: null,
-            promoted: false,
-            promoted_at: null
+            _source: data.source || "entry",  // "event" = read-only, "entry" = editable
         };
+
+        // Keep panel scoped to the active chat conversation.
+        const activeConv = window.currentConversationId || null;
+        if (activeConv && entry.conversation_id !== activeConv) {
+            return;
+        }
 
         // Avoid duplicates
         if (entries.find(e => e.id === entry.id)) return;

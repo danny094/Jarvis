@@ -1,5 +1,5 @@
 // chat.js - Main Controller (Fixed v3: correct box types + thought field)
-import { streamChat } from "./api.js";
+import { streamChat, getApiBase } from "./api.js";
 import { log } from "./debug.js";
 
 // Modules
@@ -108,6 +108,40 @@ export async function handleUserMessage(text) {
                     controlThinkingId = Thinking.createThinkingBox(baseMsgId, "Control", "shield-check");
                 }
                 Thinking.updateThinkingStream(controlThinkingId, chunk.chunk);
+                continue;
+            }
+
+            // ═══════════════════════════════════════════
+            // CONTEXT COMPRESSION — Triangle Loading
+            // ═══════════════════════════════════════════
+
+            if (chunk.type === "compression_start") {
+                const tokK = Math.round((chunk.token_count || 0) / 1000);
+                const modeLabel = chunk.mode === "async" ? " (async)" : "";
+                if (!botMsgId) botMsgId = Render.renderMessage("assistant", "", true);
+                const comprEl = document.createElement("div");
+                comprEl.id = `compression-${baseMsgId}`;
+                comprEl.className = "compression-indicator";
+                comprEl.innerHTML = `
+                    <div class="compression-triangle">▲</div>
+                    <span class="compression-text">Summarizing conversation${modeLabel} · ${tokK}k tokens…</span>
+                `;
+                const msgEl = document.getElementById(botMsgId);
+                if (msgEl) msgEl.parentElement.insertBefore(comprEl, msgEl);
+                continue;
+            }
+
+            if (chunk.type === "compression_done") {
+                const comprEl = document.getElementById(`compression-${baseMsgId}`);
+                if (comprEl) {
+                    const phase = chunk.phase || "";
+                    const label = phase === "phase2" ? "Deep compression done ▲" :
+                                  phase === "async_started" ? "Summarizing in background ▲" :
+                                  "Summary updated ▲";
+                    comprEl.querySelector(".compression-text").textContent = label;
+                    comprEl.classList.add("compression-done");
+                    setTimeout(() => comprEl.remove(), 3000);
+                }
                 continue;
             }
 
@@ -261,13 +295,14 @@ export async function handleUserMessage(text) {
             State.saveChatToStorage();
 
             // Auto-append to daily protocol (fire and forget)
-            fetch(`http://${window.location.hostname}:8200/api/protocol/append`, {
+            fetch(`${getApiBase()}/api/protocol/append`, {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     user_message: text,
                     ai_response: fullResponse,
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    conversation_id: conversationId,
                 })
             }).catch(err => console.warn("[Chat] Protocol append failed:", err));
         }

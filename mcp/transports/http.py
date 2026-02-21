@@ -402,7 +402,7 @@ class HTTPTransport:
         
         result = self._smart_request(payload)
         
-        if isinstance(result, dict) and "error" in result:
+        if isinstance(result, dict) and result.get("error") is not None:
             log_error(f"[HTTP] Tool error: {result['error']}")
         
         return result

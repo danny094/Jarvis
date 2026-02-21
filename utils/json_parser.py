@@ -129,7 +129,13 @@ def _extract_key_values(raw: str) -> Optional[Dict[str, Any]]:
     needs_memory: true
     """
     result = {}
-    
+
+    # Pattern für Arrays: "key": ["item1", "item2"]
+    array_pattern = r'"(\w+)"\s*:\s*\[([^\]]*)\]'
+    for key, value_str in re.findall(array_pattern, raw):
+        items = [i.strip().strip('"\'') for i in value_str.split(',') if i.strip().strip('"\'')]
+        result[key] = items
+
     # Pattern für "key": "value" oder "key": true/false/number
     patterns = [
         r'"(\w+)"\s*:\s*"([^"]*)"',           # "key": "string"
@@ -138,10 +144,12 @@ def _extract_key_values(raw: str) -> Optional[Dict[str, Any]]:
         r'(\w+)\s*:\s*"([^"]*)"',              # key: "string" (unquoted key)
         r'(\w+)\s*:\s*(true|false)',           # key: bool (unquoted)
     ]
-    
+
     for pattern in patterns:
         matches = re.findall(pattern, raw, re.IGNORECASE)
         for key, value in matches:
+            if key in result:
+                continue  # Array bereits geparst, nicht überschreiben
             # Type conversion
             if value.lower() == 'true':
                 result[key] = True
@@ -151,7 +159,7 @@ def _extract_key_values(raw: str) -> Optional[Dict[str, Any]]:
                 result[key] = float(value) if '.' in value else int(value)
             else:
                 result[key] = value
-    
+
     return result if result else None
 
 

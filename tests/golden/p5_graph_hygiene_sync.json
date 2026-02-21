@@ -1,0 +1,11 @@
+{
+  "mode": "sync",
+  "provider": "mock",
+  "normalized": "Graph-Index bereinigt. SQLite = Truth.",
+  "markers_keys": [
+    "context_chars_final",
+    "context_sources",
+    "mode",
+    "retrieval_count"
+  ]
+}

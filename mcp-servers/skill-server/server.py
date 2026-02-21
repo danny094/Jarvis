@@ -26,6 +26,7 @@ import uvicorn
 
 from skill_manager import SkillManager
 import skill_memory
+from skill_knowledge import get_categories, search as kb_search, handle_query_skill_knowledge
 
 # === CONFIGURATION ===
 
@@ -152,6 +153,21 @@ TOOLS = [
                     "type": "boolean",
                     "description": "Automatically activate (if validation passes)",
                     "default": False
+                },
+                "gap_patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Keywords that trigger gap-detection for this skill domain (e.g. ['krypto', 'bitcoin', 'ethereum']). Used to ask the user clarifying questions before re-creating this skill.",
+                    "default": []
+                },
+                "gap_question": {
+                    "type": "string",
+                    "description": "Question shown to the user when gap_patterns match. Should offer a sensible default. Example: 'Soll ich CoinGecko nutzen (kostenlos)? Standard: BTC, ETH, SOL in EUR.'"
+                },
+                "default_params": {
+                    "type": "object",
+                    "description": "Default execution parameters for this skill (e.g. {\"coins\": [\"bitcoin\", \"ethereum\"], \"currency\": \"EUR\"})",
+                    "default": {}
                 }
             },
             "required": ["name", "description", "code"]
@@ -220,6 +236,34 @@ TOOLS = [
                 }
             },
             "required": ["name"]
+        }
+    },
+    # === NEW: SkillKnowledgeBase ===
+    {
+        "name": "query_skill_knowledge",
+        "description": (
+            "Sucht in der Skill-Inspirationsdatenbank nach Templates und Paket-Infos. "
+            "Gibt code_snippet, packages und triggers zurück. "
+            "Nutze dies BEVOR du einen neuen Skill erstellst um passende Templates zu finden."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Suchbegriff (z.B. 'ping check', 'cpu überwachen', 'bitcoin kurs')"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Kategorie-Filter: Netzwerk, System, API, Daten, Berechnung, Datei"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximale Anzahl Ergebnisse (Standard: 5)",
+                    "default": 5
+                }
+            },
+            "required": []
         }
     },
     # === NEW: Autonomous Skill Task (v2) ===
@@ -320,6 +364,19 @@ async def get_skills_direct():
         "active": [s["name"] if isinstance(s, dict) else s for s in installed],
         "drafts": [s["name"] if isinstance(s, dict) else s for s in drafts]
     }
+
+@app.get("/v1/skill-knowledge/categories")
+async def get_skill_knowledge_categories():
+    """Gibt alle Kategorien der SkillKnowledgeBase zurück (für ContextManager)."""
+    return {"categories": get_categories()}
+
+
+@app.get("/v1/skill-knowledge/search")
+async def search_skill_knowledge(query: str = None, category: str = None, limit: int = 5):
+    """Direkte REST-Suche in der SkillKnowledgeBase."""
+    results = kb_search(query=query, category=category, limit=min(limit, 10))
+    return {"found": len(results), "entries": results}
+
 
 @app.post("/")
 async def handle_jsonrpc(request: Request):
@@ -456,6 +513,8 @@ async def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     elif tool_name == "autonomous_skill_task":
         return await handle_autonomous_skill_task(args)
 
+    elif tool_name == "query_skill_knowledge":
+        return handle_query_skill_knowledge(args)
 
     else:
         raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
@@ -538,17 +597,42 @@ async def handle_create_skill(args: Dict[str, Any]) -> Dict[str, Any]:
     description = args.get("description", "")
     triggers = args.get("triggers", [])
     code = args.get("code")
-    auto_promote = args.get("auto_promote", False)
+    # Default True: Skills direkt aktivieren wenn Validation OK
+    # Draft-Modus nur wenn explizit deaktiviert
+    auto_promote = args.get("auto_promote", True)
 
     if not name or not code:
         raise ValueError("Skill name and code are required")
-        
+
+    # Contract erfordert description minLength: 10 — Fallback wenn leer
+    if not description or len(description.strip()) < 10:
+        description = f"Skill {name}: Automatisch erstellter Skill."
+
+    # Package-Check: Drittanbieter-Pakete prüfen
+    from mini_control_layer import get_mini_control
+    _ctrl = get_mini_control()
+    missing_pkgs = await _ctrl._check_missing_packages(code)
+    if missing_pkgs:
+        pkg_list = ", ".join(f"`{p}`" for p in missing_pkgs)
+        return {
+            "success": False,
+            "needs_package_install": True,
+            "missing_packages": missing_pkgs,
+            "message": (
+                f"Skill '{name}' benötigt folgende Pakete die noch nicht installiert sind: "
+                f"{pkg_list}. Bitte installiere sie zuerst."
+            ),
+        }
+
     skill_data = {
         "code": code,
         "description": description,
-        "triggers": triggers
+        "triggers": triggers,
+        "gap_patterns": args.get("gap_patterns", []),
+        "gap_question": args.get("gap_question"),
+        "default_params": args.get("default_params", {}),
     }
-    
+
     # Delegate to manager -> executor
     return await skill_manager.create_skill(name, skill_data, draft=not auto_promote)
 
@@ -626,6 +710,16 @@ async def handle_autonomous_skill_task(args: Dict[str, Any]) -> Dict[str, Any]:
     start = time.monotonic()
     result = await control.process_autonomous_task(task)
     elapsed_ms = (time.monotonic() - start) * 1000
+
+    # Clarification needed — kein Fehler, Frage an User
+    if result.action_taken == "needs_clarification":
+        return {
+            "success": False,
+            "needs_clarification": True,
+            "question": result.message,
+            "original_intent": intent,
+            "original_user_text": user_text,
+        }
 
     skill_name = result.skill_name or intent[:30]
     try:
