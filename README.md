@@ -10,6 +10,10 @@ It combines chat, tools, memory, container execution, and safety controls in one
 - Managed sandbox containers for safe task execution
 - Operational scripts for reset/restore/recovery
 
+## Quick fast Auto-install:
+
+`curl -fsSL https://raw.githubusercontent.com/danny094/Jarvis/main/install.sh | bash`
+
 ## 5-Minute Quick Start
 
 ### 1) Prerequisites
