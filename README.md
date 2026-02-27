@@ -143,8 +143,33 @@ For deeper docs and internals, see [`docs/digest_rollout_runbook.md`](docs/diges
 ./scripts/test_gate.sh full
 ```
 
+### Pictures and description
+
+<img width="1855" height="870" alt="Bildschirmfoto 2026-02-21 um 19 23 36" src="https://github.com/user-attachments/assets/261cca35-c815-474a-bcda-a3c89438ae60" />
+Agents' workspace displays the daily summary.
+
+<img width="633" height="896" alt="Bildschirmfoto 2026-02-21 um 19 22 50" src="https://github.com/user-attachments/assets/e9a7242c-f9f9-4c88-abdb-fc01035ad325" />
+The backend control layer
+
+<img width="1857" height="896" alt="Bildschirmfoto 2026-02-21 um 19 22 18" src="https://github.com/user-attachments/assets/e421a6c7-4b57-4704-be23-e3d04525ecfe" />
+Plugins for the web user interface
+
+<img width="1857" height="896" alt="Bildschirmfoto 2026-02-21 um 19 22 10" src="https://github.com/user-attachments/assets/3c562338-9499-41a9-8da6-f1224a305d4b" />
+API keys are securely encrypted.
+When creating a skill that requires an API key, the key name is stored to prevent the API key from being leaked.
+
+<img width="1857" height="896" alt="Bildschirmfoto 2026-02-21 um 19 21 59" src="https://github.com/user-attachments/assets/15f48ae5-8d55-46e8-beac-e4a4f4c3a26b" />
+Container sandbox environment
+
+<img width="1857" height="896" alt="Bildschirmfoto 2026-02-21 um 18 56 15" src="https://github.com/user-attachments/assets/153f44d8-ea25-465a-8b36-8d51e1de7395" />
+surface
+
+
+
 ## Support
 
 If this project helps you, consider supporting development:
 
 [![Sponsor danny094](https://img.shields.io/badge/Sponsor-danny094-ea4aaa?style=for-the-badge&logo=github-sponsors)](https://github.com/sponsors/danny094)
+
+Kontakt: trlon.devs.dk@gmail.com
