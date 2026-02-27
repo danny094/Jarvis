@@ -16,6 +16,7 @@ from mcp.transports import HTTPTransport, SSETransport, STDIOTransport
 from utils.logger import log_info, log_error, log_debug, log_warning
 import json
 import os
+import threading
 from pathlib import Path
 
 
@@ -142,6 +143,7 @@ class MCPHub:
         self._tool_definitions: Dict[str, Dict] = {}  # tool_name → tool_def
         self._initialized = False
         self._tools_registered = False
+        self._lock = threading.RLock()
 
 
     def _register_fast_lane_tools(self):
@@ -217,43 +219,46 @@ class MCPHub:
     
     def initialize(self):
         """Initialisiert alle aktiven MCPs."""
-        if self._initialized:
-            return
-        
-        log_info("[MCPHub] Initializing...")
-        
-        enabled_mcps = get_enabled_mcps()
-        log_info(f"[MCPHub] Found {len(enabled_mcps)} enabled MCPs")
-        
-        for mcp_name, config in enabled_mcps.items():
+        with self._lock:
+            if self._initialized:
+                return
+            
+            log_info("[MCPHub] Initializing...")
+            
+            enabled_mcps = get_enabled_mcps()
+            log_info(f"[MCPHub] Found {len(enabled_mcps)} enabled MCPs")
+            
+            for mcp_name, config in enabled_mcps.items():
+                try:
+                    self._init_transport(mcp_name, config)
+                    self._discover_tools(mcp_name)
+                except Exception as e:
+                    log_error(f"[MCPHub] Failed to init {mcp_name}: {e}")
+            
+
+            # Register Container Commander tools (local, no HTTP)
             try:
-                self._init_transport(mcp_name, config)
-                self._discover_tools(mcp_name)
+                from container_commander.mcp_bridge import register_commander_tools
+                register_commander_tools(self)
             except Exception as e:
-                log_error(f"[MCPHub] Failed to init {mcp_name}: {e}")
-        
+                log_warning(f"[MCPHub] Container Commander not available: {e}")
 
-        # Register Container Commander tools (local, no HTTP)
-        try:
-            from container_commander.mcp_bridge import register_commander_tools
-            register_commander_tools(self)
-        except Exception as e:
-            log_warning(f"[MCPHub] Container Commander not available: {e}")
+            # Register SysInfo tools (read-only system diagnostics, allowlist-based)
+            try:
+                from sysinfo.mcp_bridge import register_sysinfo_tools
+                register_sysinfo_tools(self)
+            except Exception as e:
+                log_warning(f"[MCPHub] SysInfo not available: {e}")
+            self._initialized = True
+            log_info(f"[MCPHub] Ready with {len(self._tools_cache)} tools from {len(self._transports)} MCPs")
 
-        # Register SysInfo tools (read-only system diagnostics, allowlist-based)
-        try:
-            from sysinfo.mcp_bridge import register_sysinfo_tools
-            register_sysinfo_tools(self)
-        except Exception as e:
-            log_warning(f"[MCPHub] SysInfo not available: {e}")
-        self._initialized = True
-        log_info(f"[MCPHub] Ready with {len(self._tools_cache)} tools from {len(self._transports)} MCPs")
-        
-        # Auto-Registration im Graph (nach Initialisierung)
-        self._auto_register_tools()
-        
-        # Register Fast Lane tools (AFTER MCPs are connected)
-        self._register_fast_lane_tools()
+            # Register Fast Lane tools as early as possible after MCP discovery.
+            # This keeps runtime-only tools (workspace_event_*) immediately callable,
+            # even if graph auto-registration is slow.
+            self._register_fast_lane_tools()
+
+            # Auto-Registration im Graph (best effort, may be slow under load)
+            self._auto_register_tools()
     
     def _init_transport(self, mcp_name: str, config: Dict):
         """Erstellt Transport für ein MCP."""
@@ -721,7 +726,8 @@ Examples: {"; ".join(examples[:2])}
     def list_tools(self) -> List[Dict[str, Any]]:
         """Gibt aggregierte Tool-Liste aller MCPs zurück."""
         self.initialize()
-        return list(self._tool_definitions.values())
+        with self._lock:
+            return list(self._tool_definitions.values())
     
     def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """
@@ -730,55 +736,67 @@ Examples: {"; ".join(examples[:2])}
         Unterstützt auch Fast Lane direct execution.
         """
         self.initialize()
-        
+        trace_id = ""
+        if isinstance(arguments, dict):
+            trace_id = str(arguments.get("_trace_id") or "").strip()
+        trace_suffix = f" trace={trace_id}" if trace_id else ""
+
+        # Snapshot routing data under lock so refresh() cannot expose transient empty caches.
+        with self._lock:
+            tool_def = self._tool_definitions.get(tool_name)
+            mcp_name = self._tools_cache.get(tool_name)
+            transport = self._transports.get(mcp_name) if mcp_name else None
+
         # Check if it's a Fast Lane tool (direct execution)
-        tool_def = self._tool_definitions.get(tool_name)
         if tool_def and tool_def.get("execution") == "direct":
-            log_info(f"[MCPHub] Calling Fast Lane tool: {tool_name}")
+            log_info(f"[MCPHub] Calling Fast Lane tool: {tool_name}{trace_suffix}")
             try:
                 from core.tools.fast_lane.executor import FastLaneExecutor
                 executor = FastLaneExecutor()
                 result = executor.execute(tool_name, arguments)
                 return result
             except Exception as e:
-                log_error(f"[MCPHub] Fast Lane execution failed: {e}")
+                log_error(f"[MCPHub] Fast Lane execution failed{trace_suffix}: {e}")
                 return {"error": f"Fast Lane execution failed: {e}"}
         
         # Regular MCP tool execution
-        mcp_name = self._tools_cache.get(tool_name)
         if not mcp_name:
-            log_error(f"[MCPHub] Tool not found: {tool_name}")
+            log_error(f"[MCPHub] Tool not found: {tool_name}{trace_suffix}")
             return {"error": f"Tool '{tool_name}' not found in any MCP"}
         
-        transport = self._transports.get(mcp_name)
         if not transport:
-            log_error(f"[MCPHub] No transport for MCP: {mcp_name}")
+            log_error(f"[MCPHub] No transport for MCP: {mcp_name}{trace_suffix}")
             return {"error": f"MCP '{mcp_name}' not available"}
         
-        log_info(f"[MCPHub] Calling {tool_name} via {mcp_name}")
+        log_info(f"[MCPHub] Calling {tool_name} via {mcp_name}{trace_suffix}")
         
         try:
             result = transport.call_tool(tool_name, arguments)
             return result
         except Exception as e:
-            log_error(f"[MCPHub] Tool call failed: {e}")
+            log_error(f"[MCPHub] Tool call failed{trace_suffix}: {e}")
             return {"error": str(e)}
     
     def get_mcp_for_tool(self, tool_name: str) -> Optional[str]:
         """Gibt den MCP-Namen für ein Tool zurück."""
         self.initialize()
-        return self._tools_cache.get(tool_name)
+        with self._lock:
+            return self._tools_cache.get(tool_name)
     
     def list_mcps(self) -> List[Dict[str, Any]]:
         """Gibt Status aller MCPs zurück."""
         self.initialize()
-        
+
+        with self._lock:
+            transports = dict(self._transports)
+            tools_cache = dict(self._tools_cache)
+
         result = []
         for mcp_name, config in MCPS.items():
-            transport = self._transports.get(mcp_name)
+            transport = transports.get(mcp_name)
             
             # Zähle Tools für dieses MCP
-            tools_count = sum(1 for t, m in self._tools_cache.items() if m == mcp_name)
+            tools_count = sum(1 for _, m in tools_cache.items() if m == mcp_name)
             
             # Erkanntes Format (wenn HTTPTransport)
             detected_format = None
@@ -800,20 +818,25 @@ Examples: {"; ".join(examples[:2])}
     
     def refresh(self):
         """Aktualisiert Tool-Liste von allen MCPs."""
-        log_info("[MCPHub] Refreshing...")
-        
-        self._tools_cache.clear()
-        self._tool_definitions.clear()
-        self._tools_registered = False  # Neu registrieren
+        with self._lock:
+            log_info("[MCPHub] Refreshing...")
+            
+            self._tools_cache.clear()
+            self._tool_definitions.clear()
+            self._tools_registered = False  # Neu registrieren
 
+            for mcp_name in list(self._transports.keys()):
+                self._discover_tools(mcp_name)
+
+            # Keep Fast-Lane tools available immediately after refresh, independent
+            # of graph auto-registration runtime.
+            self._register_fast_lane_tools()
+            # Re-register nach Refresh
+            self._auto_register_tools()
+            
+            tools_count = len(self._tools_cache)
         
-        for mcp_name in self._transports.keys():
-            self._discover_tools(mcp_name)
-        
-        # Re-register nach Refresh
-        self._auto_register_tools()
-        
-        log_info(f"[MCPHub] Refresh complete: {len(self._tools_cache)} tools")
+        log_info(f"[MCPHub] Refresh complete: {tools_count} tools")
     
     def shutdown(self):
         """Beendet alle STDIO-Transports."""

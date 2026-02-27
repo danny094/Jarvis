@@ -244,9 +244,11 @@ async def tags():
     """
     import requests
     from config import OLLAMA_BASE
+    from utils.role_endpoint_resolver import resolve_ollama_base_endpoint
     
     try:
-        resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=10)
+        endpoint = resolve_ollama_base_endpoint(default_endpoint=OLLAMA_BASE)
+        resp = requests.get(f"{endpoint}/api/tags", timeout=10)
         resp.raise_for_status()
         return JSONResponse(resp.json())
     except Exception as e:

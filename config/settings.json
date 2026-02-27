@@ -1,0 +1,4 @@
+{
+  "THINKING_MODEL": "compat-model:3b",
+  "CONTROL_MODEL": "ctrl:3b"
+}

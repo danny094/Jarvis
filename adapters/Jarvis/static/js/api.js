@@ -26,6 +26,10 @@ export function getApiBase() {
     return API_BASE;
 }
 
+function _sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ═══════════════════════════════════════════════════════════
 // MODEL LIST
 // ═══════════════════════════════════════════════════════════
@@ -291,6 +295,65 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                 // Nicht-JSON Zeile ignorieren
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// CHAT - DEEP JOBS (ASYNC, POLLING)
+// ═══════════════════════════════════════════════════════════
+export async function submitDeepChatJob(model, messages, conversationId = "webui-default") {
+    const res = await fetch(`${API_BASE}/api/chat/deep-jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            model,
+            messages,
+            stream: false,
+            response_mode: "deep",
+            conversation_id: conversationId,
+        }),
+    });
+
+    if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Deep job submit failed: HTTP ${res.status} ${errText}`.trim());
+    }
+    return res.json();
+}
+
+export async function getDeepChatJobStatus(jobId) {
+    const res = await fetch(`${API_BASE}/api/chat/deep-jobs/${encodeURIComponent(jobId)}`);
+    if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Deep job status failed: HTTP ${res.status} ${errText}`.trim());
+    }
+    return res.json();
+}
+
+export async function waitForDeepChatJob(
+    jobId,
+    { pollIntervalMs = 1500, timeoutMs = 15 * 60 * 1000, onProgress = null } = {}
+) {
+    const started = Date.now();
+    while (true) {
+        const status = await getDeepChatJobStatus(jobId);
+        if (typeof onProgress === "function") {
+            try {
+                onProgress(status);
+            } catch {
+                // Progress hooks must never break polling.
+            }
+        }
+
+        const state = String(status?.status || "").toLowerCase();
+        if (state === "succeeded") return status;
+        if (state === "failed") {
+            throw new Error(status?.error || "Deep job failed");
+        }
+        if ((Date.now() - started) > timeoutMs) {
+            throw new Error(`Deep job timeout after ${Math.round(timeoutMs / 1000)}s`);
+        }
+        await _sleep(pollIntervalMs);
     }
 }
 

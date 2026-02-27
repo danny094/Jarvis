@@ -1,0 +1,267 @@
+{
+  "query": "Erstelle einen kompakten aber dichten Bericht ueber Token-Effizienz in Chat-Pipelines mit Fokus auf Kontext-Budget, Dedupe, Top-k-Auswahl, Char-Caps und Sync-Stream-Paritaet. Struktur: 10 nummerierte Punkte, pro Punkt drei kurze Saetze.",
+  "mode": "HeavyGraphBuilder",
+  "source": "auto_selector",
+  "graph": {
+    "nodes": [
+      {
+        "node_id": "GATE_AP002",
+        "name": "Mitigate: Correlation-Causation Conflation",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Correlation can arise from: (1) X causes Y, (2) Y causes X, (3) Common cause Z, (4) Coincidence, (5) Selection bias. Never conclude causation from correlation alone."
+        }
+      },
+      {
+        "node_id": "GATE_AP005",
+        "name": "Mitigate: Survivorship Bias",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Ask: Where are the failures? Analysis excluding failures systematically overestimates effect sizes. Require complete cohort data."
+        }
+      },
+      {
+        "node_id": "GATE_AP006",
+        "name": "Mitigate: Regression to Mean Confusion",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Extreme values naturally regress toward the mean. Improvement after extreme selection may be statistical artifact, not intervention effect. Require control group."
+        }
+      },
+      {
+        "node_id": "GATE_AP007",
+        "name": "Mitigate: Reverse Causation",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Consider: Could Y cause X instead? Could there be a feedback loop (X\u2194Y)? Test temporal precedence rigorously."
+        }
+      },
+      {
+        "node_id": "GATE_AP008",
+        "name": "Mitigate: Single Study Overconfidence",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Single studies provide preliminary evidence only. Replication across contexts is required. Maximum confidence from single study: 0.6."
+        }
+      },
+      {
+        "node_id": "GATE_AP011",
+        "name": "Mitigate: Mechanism-Free Causation",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Causal claims require plausible mechanism. Ask: Through what process does X produce Y? Specify intermediate steps."
+        }
+      },
+      {
+        "node_id": "GATE_AP012",
+        "name": "Mitigate: Ignoring Effect Modification",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Effects often vary by subgroup (effect modification). Ask: For whom? Under what conditions? Heterogeneity is expected."
+        }
+      },
+      {
+        "node_id": "GATE_AP013",
+        "name": "Mitigate: Immortal Time Bias",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Time periods where outcome cannot occur (e.g., pre-treatment) create spurious protective effects. Align time origins correctly."
+        }
+      },
+      {
+        "node_id": "GATE_AP014",
+        "name": "Mitigate: Berkson's Paradox",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Selection on a common effect creates spurious negative correlation between causes. Hospital samples are particularly prone. Consider selection mechanism."
+        }
+      },
+      {
+        "node_id": "GATE_AP015",
+        "name": "Mitigate: Simpson's Paradox Ignorance",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Aggregated trends can reverse when disaggregated. Always check subgroup consistency. Identify confounding variable driving reversal."
+        }
+      },
+      {
+        "node_id": "GATE_AP019",
+        "name": "Mitigate: Absence-Evidence Confusion",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Absence of evidence is not evidence of absence. Null findings may reflect low power, measurement issues, or inappropriate timing. Calculate power."
+        }
+      },
+      {
+        "node_id": "GATE_AP020",
+        "name": "Mitigate: Intention-Violation Bias",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Per-protocol analysis is biased by differential dropout. Intention-to-treat preserves randomization benefits. Report both analyses."
+        }
+      },
+      {
+        "node_id": "STEP_PROC001_1",
+        "name": "1. State the outcome of interest clearly",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "vt_001,vt_004,hr_001"
+        }
+      },
+      {
+        "node_id": "STEP_PROC001_2",
+        "name": "2. List all plausible causes (brainstorm)",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "vt_001,vt_004,hr_001"
+        }
+      },
+      {
+        "node_id": "STEP_PROC001_3",
+        "name": "3. Identify potential confounders",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "vt_001,vt_004,hr_001"
+        }
+      },
+      {
+        "node_id": "STEP_PROC001_4",
+        "name": "4. Consider counterfactuals",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "vt_001,vt_004,hr_001"
+        }
+      },
+      {
+        "node_id": "STEP_PROC001_5",
+        "name": "5. Evaluate temporal ordering",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "vt_001,vt_004,hr_001"
+        }
+      },
+      {
+        "node_id": "STEP_PROC001_6",
+        "name": "6. Assess mechanism plausibility",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "vt_001,vt_004,hr_001"
+        }
+      },
+      {
+        "node_id": "STEP_PROC001_7",
+        "name": "7. Ask: What evidence would change my conclusion?",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "vt_001,vt_004,hr_001"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source": "STEP_PROC001_1",
+        "target": "STEP_PROC001_2",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC001_2",
+        "target": "STEP_PROC001_3",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC001_3",
+        "target": "STEP_PROC001_4",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC001_4",
+        "target": "STEP_PROC001_5",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC001_5",
+        "target": "STEP_PROC001_6",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC001_6",
+        "target": "STEP_PROC001_7",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      }
+    ],
+    "metrics": {
+      "node_count": 19,
+      "edge_count": 6,
+      "is_dag": true,
+      "density": 0.017543859649122806
+    }
+  }
+}

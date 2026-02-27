@@ -42,7 +42,8 @@ export async function init() {
     bindEvents();
     connectWebSocket();
     await switchTab('blueprints');
-    pollApprovals();
+    // Guard against duplicate polling loops when the terminal app is re-initialized.
+    if (!approvalPollTimer) pollApprovals();
 }
 
 // ── HTML Structure ───────────────────────────────────────

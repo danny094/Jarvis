@@ -196,8 +196,13 @@
                         <i data-lucide="arrow-up" class="w-4 h-4"></i>
                     </button>
                 </div>
-                <div class="text-center mt-2 text-[10px] text-gray-600 font-mono">
-                    TR/ON AI SYSTEM v2.0 • AGENTIC MODE ACTIVE
+                <div class="mt-2 flex items-center justify-between text-[10px] text-gray-600 font-mono">
+                    <label for="deep-job-toggle" class="flex items-center gap-2 cursor-pointer select-none">
+                        <input id="deep-job-toggle" type="checkbox"
+                            class="w-3.5 h-3.5 rounded border-dark-border bg-dark-card text-accent-primary focus:ring-accent-primary/50">
+                        <span>DEEP JOB (ASYNC)</span>
+                    </label>
+                    <span>TR/ON AI SYSTEM v2.0 • AGENTIC MODE ACTIVE</span>
                 </div>
             </div>
         </div>
@@ -329,15 +334,7 @@
                 <h2 class="px-6 mb-6 text-xl font-bold tracking-wider text-gray-200">Settings</h2>
 
                 <nav class="space-y-1 px-3" id="settings-nav">
-                    <div class="settings-category active" data-category="personas">
-                        <i data-lucide="user" class="w-5 h-5"></i>
-                        <span>Personas</span>
-                    </div>
-                    <div class="settings-category" data-category="models">
-                        <i data-lucide="cpu" class="w-5 h-5"></i>
-                        <span>Models</span>
-                    </div>
-                    <div class="settings-category" data-category="memory">
+                    <div class="settings-category active" data-category="memory">
                         <i data-lucide="database" class="w-5 h-5"></i>
                         <span>Memory</span>
                     </div>
@@ -348,6 +345,10 @@
                     <div class="settings-category" data-category="plugins">
                         <i data-lucide="puzzle" class="w-5 h-5"></i>
                         <span>Plugins</span>
+                    </div>
+                    <div class="settings-category" data-category="models">
+                        <i data-lucide="brain" class="w-5 h-5"></i>
+                        <span>Models</span>
                     </div>
                     <div class="settings-category" data-category="api">
                         <i data-lucide="key" class="w-5 h-5"></i>
@@ -364,87 +365,8 @@
             <!-- Content Area -->
             <div class="flex-1 bg-[#1a1a1a] p-8 overflow-y-auto" id="settings-content-area">
 
-                <!-- Page: Personas -->
-                <div id="page-personas" class="settings-page">
-                    <h2 class="text-3xl font-light mb-8 border-b border-[#333] pb-4">Personas</h2>
-
-                    <div class="grid grid-cols-12 gap-8">
-                        <!-- Current Persona Card -->
-                        <div class="col-span-8 bg-[#111] border border-[#333] rounded-xl p-6">
-                            <div class="flex items-start justify-between mb-6">
-                                <div>
-                                    <h3 class="text-xl font-bold text-accent-primary">Current: System Default</h3>
-                                    <p class="text-sm text-gray-500 mt-1">Standard AI Behavior</p>
-                                </div>
-                                <div
-                                    class="w-12 h-12 rounded-full bg-accent-primary/20 flex items-center justify-center text-accent-primary">
-                                    <i data-lucide="bot" class="w-6 h-6"></i>
-                                </div>
-                            </div>
-
-                            <div class="space-y-4 mb-6">
-                                <div class="flex justify-between py-3 border-b border-[#222]">
-                                    <span class="text-gray-400">Tone</span>
-                                    <span class="text-gray-200">Professional, Concise</span>
-                                </div>
-                                <div class="flex justify-between py-3 border-b border-[#222]">
-                                    <span class="text-gray-400">Language</span>
-                                    <span class="text-gray-200">English (Auto)</span>
-                                </div>
-                            </div>
-
-                            <div class="flex gap-3">
-                                <button id="edit-persona-btn"
-                                    class="px-4 py-2 bg-accent-primary text-black font-semibold rounded hover:bg-orange-500 transition-colors">Edit</button>
-                                <button id="switch-persona-btn"
-                                    class="px-4 py-2 bg-[#222] text-gray-200 rounded hover:bg-[#333] transition-colors">Switch
-                                    Persona</button>
-                            </div>
-                        </div>
-
-                        <!-- Persona Sidebar -->
-                        <div class="col-span-4 space-y-4">
-                            <!-- Persona Selector -->
-                            <div class="bg-[#111] border border-[#333] rounded-xl p-4">
-                                <label class="block text-sm text-gray-400 mb-2">Switch To:</label>
-                                <select id="persona-selector" 
-                                    class="w-full bg-[#1a1a1a] border border-[#333] rounded-lg px-3 py-2 text-gray-200 focus:border-accent-primary focus:outline-none">
-                                    <option value="">Loading...</option>
-                                </select>
-                            </div>
-
-                            <!-- Available Personas List -->
-                            <div class="bg-[#111] border border-[#333] rounded-xl p-4">
-                                <h4 class="text-sm font-semibold text-gray-400 mb-3">Available Personas</h4>
-                                <div id="persona-list" class="space-y-2 max-h-[300px] overflow-y-auto">
-                                    <div class="text-gray-500 text-sm">Loading...</div>
-                                </div>
-                            </div>
-
-                            <!-- Upload Persona -->
-                            <div class="bg-[#111] border border-[#333] rounded-xl p-4">
-                                <h4 class="text-sm font-semibold text-gray-400 mb-3">Upload New Persona</h4>
-                                <input type="file" id="persona-file-input" accept=".md,.txt,.json" class="hidden">
-                                <button id="upload-persona-btn"
-                                    class="w-full px-4 py-2 bg-[#222] text-gray-200 rounded hover:bg-[#333] transition-colors flex items-center justify-center gap-2">
-                                    <i data-lucide="upload" class="w-4 h-4"></i>
-                                    <span>Choose File</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Page: Models -->
-                <div id="page-models" class="settings-page hidden">
-                    <h2 class="text-3xl font-light mb-8 border-b border-[#333] pb-4">Models & Intelligence</h2>
-                    <p class="text-gray-400">Configure thinking layers and LLM endpoints.</p>
-                    <!-- Content injected by settings.js -->
-                </div>
-
-
                 <!-- Page: Memory -->
-                <div id="page-memory" class="settings-page hidden">
+                <div id="page-memory" class="settings-page">
                     <h2 class="text-3xl font-light mb-8 border-b border-[#333] pb-4">Memory & Graph</h2>
                     <p class="text-gray-400">Manage STM/LTM transfer and Vector Store.</p>
                 </div>
@@ -454,6 +376,20 @@
                     <h2 class="text-3xl font-light mb-8 border-b border-[#333] pb-4">Plugins</h2>
                     <div id="plugins-container" class="space-y-4">
                         <p class="text-gray-400">Loading plugins...</p>
+                    </div>
+                </div>
+
+                <!-- Page: Models -->
+                <div id="page-models" class="settings-page hidden">
+                    <h2 class="text-3xl font-light mb-8 border-b border-[#333] pb-4">Models</h2>
+                    <p class="text-gray-400 mb-6">
+                        Only runtime-wired model controls are shown here.
+                        Non-wired controls remain hidden until implementation is complete.
+                    </p>
+                    <div class="model-grid grid grid-cols-1 gap-6">
+                        <div class="bg-[#111] rounded-xl p-8 flex items-center justify-center">
+                            <i data-lucide="loader" class="animate-spin text-accent-primary w-8 h-8"></i>
+                        </div>
                     </div>
                 </div>
 
@@ -695,6 +631,65 @@
                         </div>
                     </div>
 
+                    <!-- Embeddings Runtime (runtime-wired only) -->
+                    <div class="bg-dark-surface border border-dark-border rounded-xl p-6 mt-4">
+                        <div class="space-y-4">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-8 h-8 rounded-lg bg-accent-primary/20 flex items-center justify-center text-sm">◎</div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">Embeddings Runtime</h3>
+                                    <p class="text-xs text-text-secondary">Runtime-wired block: compute policy and fallback only</p>
+                                </div>
+                            </div>
+
+                            <div class="bg-dark-bg rounded-lg px-3 py-2 text-xs text-text-secondary">
+                                Scope: This block controls runtime policy for embedding compute.
+                                Layer-to-GPU pinning and non-wired model routing are intentionally hidden.
+                            </div>
+
+                            <!-- Runtime Policy -->
+                            <div>
+                                <label class="text-sm font-medium block mb-1">Runtime Policy</label>
+                                <p class="text-xs text-text-secondary mb-2">Auto: choose best target · Prefer GPU: fallback to CPU if unavailable · CPU only: no GPU offload</p>
+                                <select id="embedding-runtime-policy" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <option value="auto">Auto</option>
+                                    <option value="prefer_gpu">Prefer GPU</option>
+                                    <option value="cpu_only">CPU only</option>
+                                </select>
+                            </div>
+
+                            <!-- Fallback Policy -->
+                            <div>
+                                <label class="text-sm font-medium block mb-1">Fallback Policy</label>
+                                <p class="text-xs text-text-secondary mb-2">Best effort: retry on CPU if GPU fails · Strict: fail immediately on primary failure</p>
+                                <select id="embedding-fallback-policy" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <option value="best_effort">Best Effort (default) — fallback to CPU on failure</option>
+                                    <option value="strict">Strict — no fallback, fail on primary error</option>
+                                </select>
+                            </div>
+
+                            <div class="bg-dark-bg rounded-lg px-3 py-2 text-xs text-text-secondary">
+                                Effective policy: <span id="embedding-effective-policy" class="text-text-primary font-mono">—</span>
+                                <span class="ml-2 text-gray-500">source:</span>
+                                <span id="embedding-policy-source" class="text-text-primary font-mono">—</span>
+                            </div>
+
+                            <!-- Effective Target (read-only) -->
+                            <div class="bg-dark-bg rounded-lg px-3 py-2 text-xs text-text-secondary">
+                                Effective target: <span id="embedding-effective-target" class="text-text-primary font-mono">—</span>
+                                <span class="ml-2 text-gray-500" id="embedding-effective-reason"></span>
+                            </div>
+
+                            <!-- Save Button -->
+                            <div class="mt-4 pt-4 border-t border-dark-border">
+                                <button id="save-embedding-runtime" class="w-full bg-accent-primary hover:bg-accent-primary/80 text-white font-medium py-2 px-4 rounded-lg transition flex items-center justify-center gap-2">
+                                    <i data-lucide="save" class="w-4 h-4"></i>
+                                    Save Embedding Settings
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
 
             </div>
@@ -920,7 +915,7 @@
     <!-- TRION Plugin System -->
     <script src="./static/js/trion-panel.js?v=2"></script>
     <script src="./static/js/trion-bridge.js?v=3"></script>
-    <script src="./static/js/workspace.js?v=2"></script>
+    <script src="./static/js/workspace.js?v=3"></script>
     <script>
         // Initialize TRION Bridge after DOM ready
         document.addEventListener("DOMContentLoaded", () => {

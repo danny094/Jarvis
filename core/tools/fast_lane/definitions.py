@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 import os
 import sqlite3
 import json
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -113,6 +114,112 @@ def get_db_connection():
     return conn
 
 
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_READY = False
+
+
+def _memory_columns(conn: sqlite3.Connection) -> List[str]:
+    cur = conn.execute("PRAGMA table_info(memory)")
+    return [str(r[1]) for r in cur.fetchall()]
+
+
+def _ensure_memory_fts(conn: sqlite3.Connection, force_repair: bool = False) -> None:
+    """
+    Ensure memory_fts + triggers exist and are compatible with current memory schema.
+    Repairs broken legacy states that cause:
+      "vtable constructor failed: memory_fts"
+    """
+    global _SCHEMA_READY
+    if _SCHEMA_READY and not force_repair:
+        return
+
+    with _SCHEMA_LOCK:
+        if _SCHEMA_READY and not force_repair:
+            return
+
+        cols = set(_memory_columns(conn))
+        if not {"id", "content"}.issubset(cols):
+            return
+
+        fts_cols = ["content"]
+        for c in ("conversation_id", "role", "tags", "layer", "created_at"):
+            if c in cols:
+                fts_cols.append(c)
+
+        trigger_cols = ", ".join(fts_cols)
+        trigger_vals = ", ".join(f"new.{c}" for c in fts_cols)
+        trigger_updates = ", ".join(f"{c}=new.{c}" for c in fts_cols)
+        select_cols = ", ".join(fts_cols)
+
+        def _force_remove_broken_fts() -> None:
+            conn.execute("PRAGMA writable_schema=ON")
+            conn.execute("DELETE FROM sqlite_master WHERE name LIKE 'memory_fts%'")
+            conn.execute(
+                "DELETE FROM sqlite_master WHERE type='trigger' "
+                "AND name IN ('memory_ai','memory_au','memory_ad')"
+            )
+            current_ver = conn.execute("PRAGMA schema_version").fetchone()[0]
+            conn.execute(f"PRAGMA schema_version={int(current_ver) + 1}")
+            conn.execute("PRAGMA writable_schema=OFF")
+
+        # Drop potentially broken legacy artifacts first.
+        conn.execute("DROP TRIGGER IF EXISTS memory_ai")
+        conn.execute("DROP TRIGGER IF EXISTS memory_au")
+        conn.execute("DROP TRIGGER IF EXISTS memory_ad")
+        try:
+            conn.execute("DROP TABLE IF EXISTS memory_fts")
+        except sqlite3.DatabaseError as e:
+            if "memory_fts" not in str(e).lower():
+                raise
+            _force_remove_broken_fts()
+        # Also remove orphaned FTS shadow entries from prior failed drops.
+        _force_remove_broken_fts()
+
+        conn.execute(
+            f"""
+            CREATE VIRTUAL TABLE memory_fts USING fts5(
+                {", ".join(fts_cols)},
+                content='memory',
+                content_rowid='id'
+            );
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TRIGGER memory_ai AFTER INSERT ON memory BEGIN
+                INSERT INTO memory_fts(rowid, {trigger_cols})
+                VALUES (new.id, {trigger_vals});
+            END;
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TRIGGER memory_au AFTER UPDATE ON memory BEGIN
+                UPDATE memory_fts
+                SET {trigger_updates}
+                WHERE rowid=new.id;
+            END;
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER memory_ad AFTER DELETE ON memory BEGIN
+                DELETE FROM memory_fts WHERE rowid=old.id;
+            END;
+            """
+        )
+
+        conn.execute(
+            f"""
+            INSERT INTO memory_fts(rowid, {trigger_cols})
+            SELECT id, {select_cols}
+            FROM memory;
+            """
+        )
+        conn.commit()
+        _SCHEMA_READY = True
+
+
 class MemorySaveTool(BaseNativeTool):
     """Saves memory text to database (embeddings computed async)."""
     content: str = Field(..., description="Content to save to memory")
@@ -122,14 +229,28 @@ class MemorySaveTool(BaseNativeTool):
     def execute(self) -> str:
         try:
             with get_db_connection() as conn:
+                _ensure_memory_fts(conn)
                 cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO memory (conversation_id, role, content, created_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (self.conversation_id, self.role, self.content, datetime.utcnow().isoformat())
-                )
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO memory (conversation_id, role, content, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (self.conversation_id, self.role, self.content, datetime.utcnow().isoformat())
+                    )
+                except sqlite3.OperationalError as oe:
+                    if "memory_fts" not in str(oe).lower():
+                        raise
+                    # One-shot repair for legacy/corrupt FTS states, then retry.
+                    _ensure_memory_fts(conn, force_repair=True)
+                    cursor.execute(
+                        """
+                        INSERT INTO memory (conversation_id, role, content, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (self.conversation_id, self.role, self.content, datetime.utcnow().isoformat())
+                    )
                 conn.commit()
                 row_id = cursor.lastrowid
                 

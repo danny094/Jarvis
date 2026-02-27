@@ -6,6 +6,103 @@ from typing import Optional, Dict, List
 from .config import DB_PATH
 
 
+def _ensure_memory_fts(conn: sqlite3.Connection, force_repair: bool = False) -> None:
+    """
+    Ensure memory_fts/triggers exist and are compatible with current memory schema.
+    Repairs broken legacy states that trigger:
+      DatabaseError: vtable constructor failed: memory_fts
+    """
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(memory)").fetchall()}
+    if not {"id", "content"}.issubset(cols):
+        return
+
+    fts_cols = ["content"]
+    for c in ("conversation_id", "role", "tags", "layer", "created_at"):
+        if c in cols:
+            fts_cols.append(c)
+
+    if not force_repair:
+        try:
+            conn.execute("SELECT rowid FROM memory_fts LIMIT 1").fetchall()
+            return
+        except sqlite3.DatabaseError:
+            force_repair = True
+
+    if not force_repair:
+        return
+
+    def _force_remove_broken_fts() -> None:
+        # Last-resort cleanup for corrupted/broken virtual table entries that
+        # fail even on DROP TABLE with "vtable constructor failed".
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute("DELETE FROM sqlite_master WHERE name LIKE 'memory_fts%'")
+        conn.execute(
+            "DELETE FROM sqlite_master WHERE type='trigger' "
+            "AND name IN ('memory_ai','memory_au','memory_ad')"
+        )
+        current_ver = conn.execute("PRAGMA schema_version").fetchone()[0]
+        conn.execute(f"PRAGMA schema_version={int(current_ver) + 1}")
+        conn.execute("PRAGMA writable_schema=OFF")
+
+    trigger_cols = ", ".join(fts_cols)
+    trigger_vals = ", ".join(f"new.{c}" for c in fts_cols)
+    trigger_updates = ", ".join(f"{c}=new.{c}" for c in fts_cols)
+    select_cols = ", ".join(fts_cols)
+
+    conn.execute("DROP TRIGGER IF EXISTS memory_ai")
+    conn.execute("DROP TRIGGER IF EXISTS memory_au")
+    conn.execute("DROP TRIGGER IF EXISTS memory_ad")
+    try:
+        conn.execute("DROP TABLE IF EXISTS memory_fts")
+    except sqlite3.DatabaseError as e:
+        if "memory_fts" not in str(e).lower():
+            raise
+        _force_remove_broken_fts()
+    # Also remove orphaned FTS shadow entries from prior failed drops.
+    _force_remove_broken_fts()
+
+    conn.execute(
+        f"""
+        CREATE VIRTUAL TABLE memory_fts USING fts5(
+            {", ".join(fts_cols)},
+            content='memory',
+            content_rowid='id'
+        )
+        """
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER memory_ai AFTER INSERT ON memory BEGIN
+            INSERT INTO memory_fts(rowid, {trigger_cols})
+            VALUES (new.id, {trigger_vals});
+        END;
+        """
+    )
+    conn.execute(
+        f"""
+        CREATE TRIGGER memory_au AFTER UPDATE ON memory BEGIN
+            UPDATE memory_fts
+            SET {trigger_updates}
+            WHERE rowid=new.id;
+        END;
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER memory_ad AFTER DELETE ON memory BEGIN
+            DELETE FROM memory_fts WHERE rowid=old.id;
+        END;
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT INTO memory_fts(rowid, {trigger_cols})
+        SELECT id, {select_cols}
+        FROM memory
+        """
+    )
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -24,6 +121,7 @@ def init_db():
             )
             """
         )
+        _ensure_memory_fts(conn, force_repair=False)
 
         # Tabelle für strukturierte Fakten
         conn.execute(
@@ -118,6 +216,49 @@ def init_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_task_archive_conv ON task_archive(conversation_id)"
         )
+
+        # Embeddings table (shared with vector_store / archive manager)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_type TEXT DEFAULT 'fact',
+                metadata TEXT,
+                embedding BLOB,
+                embedding_model TEXT,
+                embedding_dim INTEGER,
+                embedding_version TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        # Legacy-safe schema guard:
+        # CREATE TABLE IF NOT EXISTS does not alter existing tables.
+        # Older deployments may still miss Scope-3.2 columns.
+        emb_cols = [r[1] for r in conn.execute("PRAGMA table_info(embeddings)").fetchall()]
+        if "embedding_model" not in emb_cols:
+            conn.execute("ALTER TABLE embeddings ADD COLUMN embedding_model TEXT")
+            emb_cols.append("embedding_model")
+        if "embedding_dim" not in emb_cols:
+            conn.execute("ALTER TABLE embeddings ADD COLUMN embedding_dim INTEGER")
+            emb_cols.append("embedding_dim")
+        if "embedding_version" not in emb_cols:
+            conn.execute("ALTER TABLE embeddings ADD COLUMN embedding_version TEXT")
+            emb_cols.append("embedding_version")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_embeddings_conv ON embeddings(conversation_id)"
+        )
+        if "embedding_version" in emb_cols:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_version ON embeddings(embedding_version)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_type_version "
+                "ON embeddings(content_type, embedding_version)"
+            )
 
         # API Secrets (verschlüsselt gespeichert)
         conn.execute(
@@ -377,6 +518,42 @@ def migrate_db():
             "CREATE INDEX IF NOT EXISTS idx_task_archive_conv ON task_archive(conversation_id)"
         )
 
+    # embeddings table + Scope-3.2 columns
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_type TEXT DEFAULT 'fact',
+            metadata TEXT,
+            embedding BLOB,
+            embedding_model TEXT,
+            embedding_dim INTEGER,
+            embedding_version TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cur.execute("PRAGMA table_info(embeddings)")
+    emb_cols = [row[1] for row in cur.fetchall()]
+    if "embedding_model" not in emb_cols:
+        cur.execute("ALTER TABLE embeddings ADD COLUMN embedding_model TEXT")
+    if "embedding_dim" not in emb_cols:
+        cur.execute("ALTER TABLE embeddings ADD COLUMN embedding_dim INTEGER")
+    if "embedding_version" not in emb_cols:
+        cur.execute("ALTER TABLE embeddings ADD COLUMN embedding_version TEXT")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_embeddings_conv ON embeddings(conversation_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_embeddings_version ON embeddings(embedding_version)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_embeddings_type_version "
+        "ON embeddings(content_type, embedding_version)"
+    )
+
     conn.commit()
     conn.close()
 
@@ -385,22 +562,43 @@ def insert_row(conversation_id: str, role: str, content: str,
                tags: Optional[str], layer: str) -> int:
     conn = sqlite3.connect(DB_PATH)
     try:
+        _ensure_memory_fts(conn, force_repair=False)
         cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO memory
-            (conversation_id, role, content, tags, layer, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                conversation_id,
-                role,
-                content,
-                tags or "",
-                layer,
-                datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        try:
+            cur.execute(
+                """
+                INSERT INTO memory
+                (conversation_id, role, content, tags, layer, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_id,
+                    role,
+                    content,
+                    tags or "",
+                    layer,
+                    datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                )
             )
-        )
+        except sqlite3.DatabaseError as e:
+            if "memory_fts" not in str(e).lower():
+                raise
+            _ensure_memory_fts(conn, force_repair=True)
+            cur.execute(
+                """
+                INSERT INTO memory
+                (conversation_id, role, content, tags, layer, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_id,
+                    role,
+                    content,
+                    tags or "",
+                    layer,
+                    datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                )
+            )
         conn.commit()
         return cur.lastrowid
     finally:

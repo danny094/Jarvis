@@ -108,6 +108,7 @@ services:
     - COMPRESSION_KEEP_MESSAGES=20
     - DAILY_SUMMARY_HOUR=4
     - MEMORY_URL=http://mcp-sql-memory:8081
+    - INTERNAL_SECRET_RESOLVE_TOKEN=${INTERNAL_SECRET_RESOLVE_TOKEN:-trion-internal-secret-resolve-token}
     volumes:
     - ./personas:/app/personas
     - ./core:/app/core:ro
@@ -159,6 +160,8 @@ services:
     - DB_PATH=/app/data/memory.db
     - OLLAMA_URL=http://ollama:11434
     - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
+    - SETTINGS_API_URL=http://jarvis-admin-api:8200/api/settings
+    - EMBEDDING_ENDPOINT_MODE=single
     volumes:
     - ./sql-memory:/app
     - memory-data:/app/data
@@ -271,6 +274,7 @@ services:
     - PYTHONUNBUFFERED=1
     - SKILLS_DIR=/skills
     - PLUGINS_DIR=/trion/plugins
+    - INTERNAL_SECRET_RESOLVE_TOKEN=${INTERNAL_SECRET_RESOLVE_TOKEN:-trion-internal-secret-resolve-token}
     volumes:
     - /DATA/AppData/MCP/Jarvis/shared_skills:/skills:rw
     - ~/.trion/plugins:/trion/plugins:rw

@@ -13,10 +13,17 @@ Part of: CoreBridge Refactoring Phase 1
 
 import os
 import json
+import time
+from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Tuple, Dict, List, Optional
+from typing import Any, Tuple, Dict, List, Optional
 from utils.logger import log_info, log_warn, log_error
+from config import (
+    get_context_retrieval_budget_s,
+    get_memory_lookup_timeout_s,
+    get_memory_keys_max_per_request,
+)
 from mcp.client import (
     get_fact_for_query,
     graph_search,
@@ -64,6 +71,7 @@ class ContextManager:
 
     def __init__(self):
         self._protocol_cache = {}  # {filepath: (mtime, content)}
+        self._retrieval_executor: Optional[ThreadPoolExecutor] = None
         log_info("[ContextManager] Initialized")
     
     # ═══════════════════════════════════════════════════════════
@@ -76,6 +84,7 @@ class ContextManager:
         thinking_plan: Dict,
         conversation_id: str,
         small_model_mode: bool = False,
+        request_cache: Optional[Dict[str, Any]] = None,
     ) -> ContextResult:
         """
         Main entry point: Get all relevant context for a query.
@@ -92,11 +101,29 @@ class ContextManager:
                               Only TRION laws + active containers are loaded.
                               Compact NOW/RULES/NEXT context is injected by the
                               orchestrator via _get_compact_context() instead.
+            request_cache: Optional request-scoped cache for memory lookup results.
+                           Reused across multiple retrieval rounds in one request.
 
         Returns:
             ContextResult with memory_data, memory_used, system_tools
         """
         result = ContextResult()
+        request_cache = request_cache if isinstance(request_cache, dict) else {}
+        retrieval_budget_s = get_context_retrieval_budget_s()
+        per_call_timeout_s = get_memory_lookup_timeout_s()
+        deadline = time.monotonic() + retrieval_budget_s
+
+        def _budget_remaining() -> float:
+            return max(0.0, deadline - time.monotonic())
+
+        def _budget_ok(stage: str) -> bool:
+            if _budget_remaining() > 0:
+                return True
+            log_warn(
+                f"[ContextManager] Retrieval budget exhausted at stage={stage} "
+                f"budget_s={retrieval_budget_s:.2f} — degrading context"
+            )
+            return False
 
         if small_model_mode:
             # ── SMALL-MODEL fast path ──────────────────────────────────────
@@ -120,15 +147,23 @@ class ContextManager:
             if not _smm_time_ref and thinking_plan and (
                 thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query")
             ):
-                for key in thinking_plan.get("memory_keys", []):
-                    log_info(f"[ContextManager] small_model_mode memory key='{key}'")
-                    content, found = self._search_memory_multi_context(
-                        key, conversation_id, include_system=False
+                memory_keys = self._normalize_memory_keys(thinking_plan.get("memory_keys", []))
+                if memory_keys and _budget_ok("small_mode_memory_keys"):
+                    key_results = self._search_memory_keys_parallel(
+                        keys=memory_keys,
+                        conversation_id=conversation_id,
+                        include_system=False,
+                        deadline=deadline,
+                        call_timeout_s=per_call_timeout_s,
+                        request_cache=request_cache,
                     )
-                    if found:
-                        result.memory_data += content + "\n"
-                        result.memory_used = True
-                        result.sources.append(f"memory:{key}")
+                    for key in memory_keys:
+                        content, found = key_results.get(key, ("", False))
+                        if found:
+                            log_info(f"[ContextManager] small_model_mode memory key='{key}'")
+                            result.memory_data += content + "\n"
+                            result.memory_used = True
+                            result.sources.append(f"memory:{key}")
 
             log_info(
                 f"[ContextManager] small_model_mode=True — skipped daily_protocol/skills/blueprints, "
@@ -154,51 +189,60 @@ class ContextManager:
                 if "NICHT VORHANDEN" in protocol_ctx:
                     log_info(f"[ContextManager] Protocol missing for {time_ref} — activating graph fallback")
                     graph_results = self._search_memory_multi_context(
-                        f"gespräch {time_ref}", conversation_id, include_system=False
+                        f"gespräch {time_ref}",
+                        conversation_id,
+                        include_system=False,
+                        deadline=deadline,
+                        call_timeout_s=per_call_timeout_s,
+                        request_cache=request_cache,
                     )
                     if graph_results[1]:  # found = True
                         result.memory_data += f"\n[GRAPH-FALLBACK für {time_ref}]\n{graph_results[0]}\n"
                         result.sources.append(f"graph_fallback:{time_ref}")
 
         # 0.3. TRION Gesetze (unumstößliche Hardware-Constraints, immer geladen)
-        laws_ctx = self._load_trion_laws()
+        laws_ctx = self._load_trion_laws() if _budget_ok("trion_laws") else ""
         if laws_ctx:
             result.memory_data += laws_ctx + "\n"
             result.memory_used = True
             result.sources.append("trion_laws")
 
         # 0.5. Active Container context (Workspace Event-Log)
-        container_ctx = self._load_active_containers()
+        container_ctx = self._load_active_containers() if _budget_ok("active_containers") else ""
         if container_ctx:
             result.memory_data += container_ctx + "\n"
             result.memory_used = True
             result.sources.append("active_containers")
 
         # 1. System Tools if relevant
-        system_tools = self._search_system_tools(query)
+        system_tools = self._search_system_tools(query) if _budget_ok("system_tools") else ""
         if system_tools:
             result.system_tools = system_tools
             result.memory_used = True
             result.sources.append("system_tools")
             log_info("[ContextManager] Found system tool info")
 
-        # 1.5. Skill Graph: semantische Skill-Discovery (immer aktiv)
-        skill_ctx = self._search_skill_graph(query)
-        if skill_ctx:
-            result.system_tools = (result.system_tools + "\n" + skill_ctx).strip()
-            result.memory_used = True
-            result.sources.append("skill_graph")
-            log_info("[ContextManager] Found skills in graph")
+        # 1.5. Skill Graph: semantische Skill-Discovery (renderer-gesteuert, C6)
+        # typedstate: skills injected by ThinkingLayer prefetch (_maybe_prefetch_skills) — skip here
+        # legacy:     inject via _search_skill_graph (original behaviour)
+        from config import get_skill_context_renderer as _gcr
+        if _gcr() == "legacy" and _budget_ok("skill_graph"):
+            skill_ctx = self._get_skill_context(query)
+            if skill_ctx:
+                result.system_tools = (result.system_tools + "\n" + skill_ctx).strip()
+                result.memory_used = True
+                result.sources.append("skill_graph")
+                log_info("[ContextManager] Found skills in graph (legacy renderer)")
 
         # 1.55. Blueprint Graph: semantische Blueprint-Discovery (immer aktiv)
-        blueprint_ctx = self._search_blueprint_graph(query)
+        blueprint_ctx = self._search_blueprint_graph(query) if _budget_ok("blueprint_graph") else ""
         if blueprint_ctx:
             result.system_tools = (result.system_tools + "\n\n" + blueprint_ctx).strip()
             result.memory_used = True
             result.sources.append("blueprint_graph")
 
         # 1.6. SkillKnowledgeBase Hint (winziger Kontext-Footprint, immer da)
-        kb_hint = self._load_skill_knowledge_hint()
+        kb_hint = self._load_skill_knowledge_hint() if _budget_ok("skill_knowledge_hint") else ""
         if kb_hint:
             result.system_tools = (result.system_tools + "\n\n" + kb_hint).strip()
             result.sources.append("skill_knowledge_base")
@@ -208,21 +252,23 @@ class ContextManager:
         if time_ref:
             log_info(f"[ContextManager] Skipping memory search — time_reference={time_ref}, protocol is source")
         elif thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query"):
-            memory_keys = thinking_plan.get("memory_keys", [])
-            
-            for key in memory_keys:
-                log_info(f"[ContextManager] Searching key='{key}'")
-                
-                content, found = self._search_memory_multi_context(
-                    key,
-                    conversation_id,
-                    include_system=True
+            memory_keys = self._normalize_memory_keys(thinking_plan.get("memory_keys", []))
+            if memory_keys and _budget_ok("memory_keys_loop"):
+                key_results = self._search_memory_keys_parallel(
+                    keys=memory_keys,
+                    conversation_id=conversation_id,
+                    include_system=True,
+                    deadline=deadline,
+                    call_timeout_s=per_call_timeout_s,
+                    request_cache=request_cache,
                 )
-                
-                if found:
-                    result.memory_data += content
-                    result.memory_used = True
-                    result.sources.append(f"memory:{key}")
+
+                for key in memory_keys:
+                    content, found = key_results.get(key, ("", False))
+                    if found:
+                        result.memory_data += content
+                        result.memory_used = True
+                        result.sources.append(f"memory:{key}")
         
         return result
     
@@ -230,11 +276,155 @@ class ContextManager:
     # PRIVATE HELPERS (Copied from bridge.py)
     # ═══════════════════════════════════════════════════════════
     
+    def _ensure_retrieval_executor(self) -> ThreadPoolExecutor:
+        """Lazy init for retrieval executor (needed for __new__ test instances)."""
+        executor = getattr(self, "_retrieval_executor", None)
+        if executor is not None:
+            return executor
+        try:
+            raw_workers = int(os.getenv("CONTEXT_RETRIEVAL_MAX_WORKERS", "16"))
+        except Exception:
+            raw_workers = 16
+        max_workers = max(4, min(64, raw_workers))
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ctx-retrieval")
+        self._retrieval_executor = executor
+        return executor
+
+    @staticmethod
+    def _normalize_memory_keys(keys: List[str], max_keys: Optional[int] = None) -> List[str]:
+        limit = (
+            max(1, int(max_keys))
+            if max_keys is not None
+            else get_memory_keys_max_per_request()
+        )
+        normalized: List[str] = []
+        seen = set()
+        total_nonempty = 0
+        for key in keys or []:
+            k = str(key or "").strip()
+            if not k or k in seen:
+                continue
+            total_nonempty += 1
+            normalized.append(k)
+            seen.add(k)
+            if len(normalized) >= limit:
+                break
+        if total_nonempty > limit:
+            log_info(
+                f"[ContextManager] memory_keys capped: kept={len(normalized)} "
+                f"dropped={total_nonempty - len(normalized)} limit={limit}"
+            )
+        return normalized
+
+    def _search_memory_keys_parallel(
+        self,
+        keys: List[str],
+        conversation_id: str,
+        include_system: bool = True,
+        deadline: Optional[float] = None,
+        call_timeout_s: Optional[float] = None,
+        request_cache: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Tuple[str, bool]]:
+        """
+        Request phase retrieval:
+        1) collect keys
+        2) execute key lookups concurrently
+        3) merge in original key order
+        """
+        normalized_keys = self._normalize_memory_keys(keys)
+        if not normalized_keys:
+            return {}
+        call_timeout_s = call_timeout_s if call_timeout_s is not None else get_memory_lookup_timeout_s()
+        request_cache = request_cache if isinstance(request_cache, dict) else {}
+
+        def _remaining_timeout() -> float:
+            if deadline is None:
+                # Whole key phase budget when no global deadline exists.
+                return max(0.2, call_timeout_s * len(normalized_keys))
+            return max(0.0, deadline - time.monotonic())
+
+        max_workers = max(1, min(6, len(normalized_keys)))
+        degraded_fanout = len(normalized_keys) >= 3
+        if degraded_fanout:
+            log_info(
+                f"[ContextManager-Memory] degraded fanout active: keys={len(normalized_keys)} "
+                f"workers={max_workers}"
+            )
+        results: Dict[str, Tuple[str, bool]] = {}
+        future_map = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ctx-keys") as key_executor:
+            for key in normalized_keys:
+                if _remaining_timeout() <= 0:
+                    log_warn(f"[ContextManager-Memory] Key phase budget exhausted before key='{key}'")
+                    results[key] = ("", False)
+                    continue
+                future = key_executor.submit(
+                    self._search_memory_multi_context,
+                    key,
+                    conversation_id,
+                    include_system,
+                    deadline,
+                    call_timeout_s,
+                    request_cache,
+                    "degraded" if degraded_fanout else "full",
+                )
+                future_map[future] = key
+
+            if future_map:
+                phase_wait_timeout = self._compute_key_phase_wait_timeout(
+                    remaining_s=_remaining_timeout(),
+                    call_timeout_s=call_timeout_s,
+                    num_keys=len(normalized_keys),
+                    max_workers=max_workers,
+                )
+                done, not_done = wait(
+                    set(future_map.keys()),
+                    timeout=phase_wait_timeout,
+                    return_when=ALL_COMPLETED,
+                )
+                for fut in done:
+                    key = future_map[fut]
+                    try:
+                        results[key] = fut.result()
+                    except Exception as e:
+                        log_warn(f"[ContextManager-Memory] Key lookup failed key='{key}': {e}")
+                        results[key] = ("", False)
+                for fut in not_done:
+                    key = future_map[fut]
+                    fut.cancel()
+                    log_warn(f"[ContextManager-Memory] Key lookup timed out key='{key}'")
+                    results[key] = ("", False)
+
+        return results
+
+    @staticmethod
+    def _compute_key_phase_wait_timeout(
+        remaining_s: float,
+        call_timeout_s: float,
+        num_keys: int,
+        max_workers: int,
+    ) -> float:
+        """
+        Bound key-phase wait time to avoid long tail stalls under high fanout.
+        """
+        remaining = max(0.0, float(remaining_s))
+        timeout = max(0.2, float(call_timeout_s))
+        keys = max(1, int(num_keys))
+        workers = max(1, int(max_workers))
+        queue_factor = max(1.0, keys / workers)
+        capped = max(0.3, timeout * queue_factor + 0.25)
+        return max(0.0, min(remaining, capped))
+
     def _search_memory_multi_context(
         self, 
         key: str, 
         conversation_id: str,
-        include_system: bool = True
+        include_system: bool = True,
+        deadline: Optional[float] = None,
+        call_timeout_s: Optional[float] = None,
+        request_cache: Optional[Dict[str, Any]] = None,
+        fanout_mode: str = "full",
     ) -> Tuple[str, bool]:
         """
         Sucht Memory in mehreren Kontexten:
@@ -246,50 +436,155 @@ class ContextManager:
         """
         found_content = ""
         found = False
+        call_timeout_s = call_timeout_s if call_timeout_s is not None else get_memory_lookup_timeout_s()
+        request_cache = request_cache if isinstance(request_cache, dict) else {}
+        fanout_mode = (fanout_mode or "full").strip().lower()
+        degraded_fanout = fanout_mode == "degraded"
+        executor = self._ensure_retrieval_executor()
+
+        def _remaining_timeout() -> float:
+            if deadline is None:
+                return max(0.2, call_timeout_s)
+            remaining = max(0.0, deadline - time.monotonic())
+            return max(0.2, min(call_timeout_s, remaining))
+
+        def _budget_ok(stage: str) -> bool:
+            if deadline is None:
+                return True
+            if (deadline - time.monotonic()) > 0:
+                return True
+            log_warn(f"[ContextManager-Memory] Budget exhausted at stage={stage} key='{key}'")
+            return False
         
         # Kontexte die durchsucht werden
         contexts = [conversation_id]
         if include_system and conversation_id != SYSTEM_CONV_ID:
             contexts.append(SYSTEM_CONV_ID)
-        
+
+        def _cache_key(ctx: str, backend: str) -> str:
+            return f"{ctx}|{backend}|{key}"
+
+        backend_values: Dict[str, Dict[str, Any]] = {ctx: {} for ctx in contexts}
+        future_map = {}
+        cache_hits = 0
+
         for ctx in contexts:
+            if not _budget_ok("context_submit"):
+                break
+            stage_timeout = _remaining_timeout()
+            if stage_timeout <= 0:
+                break
+
+            if ctx == SYSTEM_CONV_ID:
+                # System context is useful but expensive under pressure:
+                # keep FACT always, GRAPH only in full fanout with sufficient budget.
+                specs = [("fact", get_fact_for_query, None)]
+                if not degraded_fanout and stage_timeout >= 1.0:
+                    specs.append(("graph", graph_search, []))
+            else:
+                # User context: keep high-signal backends first.
+                specs = [
+                    ("fact", get_fact_for_query, None),
+                    ("graph", graph_search, []),
+                ]
+                if stage_timeout >= 0.45:
+                    specs.append(("semantic", semantic_search, []))
+                if not degraded_fanout and stage_timeout >= 0.9:
+                    specs.append(("fallback", search_memory_fallback, ""))
+
+            for backend_name, fn, default_value in specs:
+                ck = _cache_key(ctx, backend_name)
+                if ck in request_cache:
+                    backend_values[ctx][backend_name] = request_cache[ck]
+                    cache_hits += 1
+                    continue
+                future = executor.submit(fn, ctx, key, timeout_s=stage_timeout)
+                future_map[future] = (ctx, backend_name, ck, default_value)
+
+        if future_map:
+            wait_timeout = max(0.0, _remaining_timeout())
+            done, not_done = wait(set(future_map.keys()), timeout=wait_timeout, return_when=ALL_COMPLETED)
+            for fut in done:
+                ctx, backend_name, ck, default_value = future_map[fut]
+                try:
+                    value = fut.result()
+                except Exception as e:
+                    value = default_value
+                    log_warn(
+                        f"[ContextManager-Memory] backend failed key='{key}' "
+                        f"ctx='{ctx}' backend='{backend_name}' err={e}"
+                    )
+                backend_values[ctx][backend_name] = value
+                request_cache[ck] = value
+
+            for fut in not_done:
+                ctx, backend_name, ck, default_value = future_map[fut]
+                fut.cancel()
+                backend_values[ctx][backend_name] = default_value
+                request_cache[ck] = default_value
+                log_warn(
+                    f"[ContextManager-Memory] backend timeout key='{key}' "
+                    f"ctx='{ctx}' backend='{backend_name}'"
+                )
+
+        for ctx in contexts:
+            if not _budget_ok("context_compose"):
+                break
             ctx_label = "system" if ctx == SYSTEM_CONV_ID else "user"
-            
-            # 1. Facts suchen
-            fact_value = get_fact_for_query(ctx, key)
+            values = backend_values.get(ctx, {})
+            ctx_added_content = False
+
+            # 1) Fact priority
+            fact_value = values.get("fact")
             if fact_value:
                 found_content += f"{key}: {fact_value}\n"
                 found = True
-                log_info(f"[ContextManager-Memory] Found fact ({ctx_label}): {key}={fact_value[:50]}...")
-                continue  # Nächster Kontext
-            
-            # 2. Graph search
-            graph_results = graph_search(ctx, key)
-            if graph_results:
-                for res in graph_results[:3]:
-                    content = res.get("content", "")
-                    log_info(f"[ContextManager-Memory] Graph match ({ctx_label}): {content[:50]}")
-                    found_content += f"{content}\n"
-                found = True
+                ctx_added_content = True
+                log_info(f"[ContextManager-Memory] Found fact ({ctx_label}): {key}={str(fact_value)[:50]}...")
                 continue
-            
-            # 3. Semantic search (nur für User-Kontext, System ist meist Fakten)
-            if ctx != SYSTEM_CONV_ID:
-                semantic_results = semantic_search(ctx, key)
-                if semantic_results:
-                    for res in semantic_results[:3]:
-                        content = res.get("content", "")
+
+            # 2) Graph
+            graph_results = values.get("graph") or []
+            if isinstance(graph_results, list) and graph_results:
+                for res in graph_results[:3]:
+                    if not isinstance(res, dict):
+                        continue
+                    content = res.get("content", "")
+                    if content:
+                        log_info(f"[ContextManager-Memory] Graph match ({ctx_label}): {content[:50]}")
                         found_content += f"{content}\n"
+                        ctx_added_content = True
+                if ctx_added_content:
                     found = True
                     continue
-            
-            # 4. Text-Fallback (nur User)
+
+            # 3) Semantic (user ctx only)
             if ctx != SYSTEM_CONV_ID:
-                fallback = search_memory_fallback(ctx, key)
+                semantic_results = values.get("semantic") or []
+                if isinstance(semantic_results, list) and semantic_results:
+                    for res in semantic_results[:3]:
+                        if not isinstance(res, dict):
+                            continue
+                        content = res.get("content", "")
+                        if content:
+                            found_content += f"{content}\n"
+                            ctx_added_content = True
+                    if ctx_added_content:
+                        found = True
+                        continue
+
+                # 4) Fallback
+                fallback = values.get("fallback")
                 if fallback:
                     found_content += f"{key}: {fallback}\n"
                     found = True
-        
+
+        if future_map or cache_hits:
+            log_info(
+                f"[ContextManager-Memory] key='{key}' contexts={len(contexts)} "
+                f"backend_calls={len(future_map)} cache_hits={cache_hits}"
+            )
+
         return found_content, found
     
     def _search_system_tools(self, query: str) -> str:
@@ -370,6 +665,155 @@ class ContextManager:
             log_info(f"[ContextManager] Skill context: {len(skill_lines)} Skills für ThinkingLayer")
             return "VERFÜGBARE SKILLS (installiert):\n" + "\n".join(skill_lines)
         return ""
+
+    def _build_typedstate_skill_context(self, query: str) -> str:
+        """
+        C6 TypedState skill context using the C5 pipeline.
+
+        C10 selection mode:
+          - budgeted (default): top-k + char-cap preselection first, then lazy
+            detail fetch only for selected active skills.
+          - legacy: eager detail fetch for all active skills (rollback behavior).
+
+        Runs the C5 deterministic pipeline for final rendering:
+            normalize → dedupe → top_k → budget → render
+
+        Returns "SKILLS:\n  - ..." format, empty string on error or no skills.
+        Never raises — fail-closed: returns "" on any exception.
+        """
+        import urllib.request as _ur
+        import json as _json
+        import importlib
+        from urllib.parse import quote as _quote
+
+        try:
+            _ts = importlib.import_module("core.typedstate_skills")
+        except ImportError:
+            log_warn("[ContextManager] typedstate_skills import failed — returning empty skill context")
+            return ""
+        build_skills_context = getattr(_ts, "build_skills_context", None)
+        if not callable(build_skills_context):
+            log_warn("[ContextManager] build_skills_context missing — returning empty skill context")
+            return ""
+        _ts_normalize = getattr(_ts, "normalize", None)
+        _ts_dedupe = getattr(_ts, "dedupe", None)
+        _ts_top_k = getattr(_ts, "top_k", None)
+        _ts_budget = getattr(_ts, "budget", None)
+        can_preselect = all(callable(fn) for fn in (_ts_normalize, _ts_dedupe, _ts_top_k, _ts_budget))
+
+        from config import (
+            get_skill_selection_char_cap,
+            get_skill_selection_mode,
+            get_skill_selection_top_k,
+        )
+
+        skill_server_url = os.getenv("SKILL_SERVER_URL", "http://trion-skill-server:8088")
+        selection_mode = get_skill_selection_mode()
+        top_k_count = get_skill_selection_top_k()
+        char_cap = get_skill_selection_char_cap()
+
+        def _detail_url(name: str) -> str:
+            # channel=active makes endpoint contract explicit and avoids draft fallback.
+            return f"{skill_server_url}/v1/skills/{_quote(name, safe='')}?channel=active"
+
+        def _fetch_active_detail(name: str) -> dict:
+            try:
+                req_detail = _ur.Request(_detail_url(name))
+                with _ur.urlopen(req_detail, timeout=2) as mr:
+                    return _json.loads(mr.read())
+            except Exception:
+                return {}
+
+        def _to_raw_active(name: str, meta: dict) -> dict:
+            return {
+                "name": name,
+                "channel": "active",
+                "description": meta.get("description", ""),
+                "triggers": meta.get("triggers", []),
+                "validation_score": meta.get("validation_score", 1.0),
+                "gap_question": meta.get("gap_question"),
+                "required_packages": meta.get("required_packages", []),
+                "status": "installed",
+                "signature_status": meta.get("signature_status", "unsigned"),
+            }
+
+        try:
+            req = _ur.Request(f"{skill_server_url}/v1/skills")
+            with _ur.urlopen(req, timeout=3) as r:
+                data = _json.loads(r.read())
+
+            active_names = data.get("active", [])
+            draft_names = data.get("drafts", [])
+        except Exception as e:
+            log_warn(f"[ContextManager] TypedState skill fetch failed: {e}")
+            return ""
+
+        if not active_names and not draft_names:
+            return ""
+
+        raw_skills = []
+        if selection_mode == "legacy" or not can_preselect:
+            for name in active_names:
+                meta = _fetch_active_detail(name)
+                raw_skills.append(_to_raw_active(name, meta))
+            for name in draft_names:
+                raw_skills.append({"name": name, "channel": "draft", "status": "draft"})
+        else:
+            # C10 budgeted preselection on minimal records (no detail I/O).
+            preselect_raw = (
+                [{"name": name, "channel": "active", "status": "installed"} for name in active_names]
+                + [{"name": name, "channel": "draft", "status": "draft"} for name in draft_names]
+            )
+            try:
+                selected_entities = [_ts_normalize(s) for s in preselect_raw]
+                selected_entities = _ts_dedupe(selected_entities)
+                selected_entities = _ts_top_k(selected_entities, top_k_count)
+                selected_entities = _ts_budget(selected_entities, char_cap)
+            except Exception as exc:
+                log_warn(f"[ContextManager] TypedState preselection failed: {exc}")
+                return ""
+
+            for entity in selected_entities:
+                if entity.channel == "active":
+                    meta = _fetch_active_detail(entity.name)
+                    raw_skills.append(_to_raw_active(entity.name, meta))
+                else:
+                    raw_skills.append({"name": entity.name, "channel": "draft", "status": "draft"})
+
+        if not raw_skills:
+            return ""
+
+        result = build_skills_context(
+            raw_skills,
+            mode="active",
+            top_k_count=top_k_count,
+            char_cap=char_cap,
+        )
+        if result:
+            selected_active = sum(1 for s in raw_skills if s.get("channel") == "active")
+            log_info(
+                f"[ContextManager] TypedState skill context ({selection_mode}): "
+                f"selected={len(raw_skills)} active_detail={selected_active}/{len(active_names)} "
+                f"top_k={top_k_count} char_cap={char_cap}"
+            )
+        return result
+
+    def _get_skill_context(self, query: str) -> str:
+        """
+        Single authority for skill context injection (C6).
+
+        Routes between TypedState C5 pipeline and legacy _search_skill_graph
+        based on SKILL_CONTEXT_RENDERER environment flag.
+
+        'typedstate' (default): uses C5 pipeline → 'SKILLS:' header format
+        'legacy':               uses _search_skill_graph → 'VERFÜGBARE SKILLS:' format
+
+        Rollback: SKILL_CONTEXT_RENDERER=legacy
+        """
+        from config import get_skill_context_renderer
+        if get_skill_context_renderer() == "typedstate":
+            return self._build_typedstate_skill_context(query)
+        return self._search_skill_graph(query)
 
     # ═══════════════════════════════════════════════════════════
     # BLUEPRINT GRAPH

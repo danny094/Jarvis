@@ -4,7 +4,7 @@ import { getModels, checkHealth, setApiBase, getApiBase } from "./api.js";
 
 // Expose getApiBase to window for non-module scripts
 window.getApiBase = getApiBase;
-import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount, initChatFromStorage } from "./chat.js?v=1770329526";
+import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount, initChatFromStorage } from "./chat.js?v=1771975000";
 import { log, clearLogs, setVerbose } from "./debug.js";
 // NOTE: Settings UI is handled exclusively by js/apps/settings.js (lazy-loaded by shell.js).
 // Do NOT call initSettings() from static/js/settings.js here — it would create a second controller.
@@ -16,10 +16,12 @@ import { initMaintenance } from "./maintenance.js";
 const DEFAULT_SETTINGS = {
     historyLength: 10,
     apiBase: window.location.protocol + "//" + window.location.hostname + ":8200",  // Updated: admin-api port
-    verbose: false
+    verbose: false,
+    deepJobMode: false
 };
 
 let settings = { ...DEFAULT_SETTINGS };
+let chatModelNames = [];
 
 function loadSettings() {
     try {
@@ -66,6 +68,12 @@ function applySettings() {
     // Verbose
     setVerbose(settings.verbose);
     updateVerboseToggle();
+
+    // Deep Job toggle
+    const deepJobToggle = document.getElementById("deep-job-toggle");
+    if (deepJobToggle) {
+        deepJobToggle.checked = Boolean(settings.deepJobMode);
+    }
 
     log("info", `Settings applied: history=${settings.historyLength}, verbose=${settings.verbose}`);
 }
@@ -168,6 +176,7 @@ async function loadModels() {
     log("debug", "Loading models...");
 
     const models = await getModels();
+    chatModelNames = [...models];
     const dropdown = document.getElementById("model-dropdown");
     const nameEl = document.getElementById("model-name");
 
@@ -177,29 +186,96 @@ async function loadModels() {
         return;
     }
 
-    dropdown.innerHTML = models.map(m => `
+    const outputModel = await loadEffectiveOutputModel();
+    const allModels = [...models];
+    if (outputModel && !allModels.includes(outputModel)) {
+        allModels.unshift(outputModel);
+        chatModelNames = [...allModels];
+    }
+
+    dropdown.innerHTML = allModels.map(m => `
         <button class="w-full px-4 py-2 text-left hover:bg-dark-hover transition-colors text-sm"
                 data-model="${m}">
             ${m}
         </button>
     `).join("");
 
-    // Select first model
-    const firstModel = models[0];
-    nameEl.textContent = firstModel;
-    setModel(firstModel);
-    log("info", `Loaded ${models.length} models, selected: ${firstModel}`);
+    // Select OUTPUT_MODEL from effective settings when available.
+    const selectedModel = outputModel || allModels[0];
+    setActiveChatModel(selectedModel);
+    log("info", `Loaded ${allModels.length} models, selected: ${selectedModel}`);
 
     // Model click handlers
     dropdown.querySelectorAll("button").forEach(btn => {
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", async () => {
             const model = btn.dataset.model;
-            nameEl.textContent = model;
-            setModel(model);
+            setActiveChatModel(model);
+            await persistOutputModelSelection(model);
+            window.dispatchEvent(new CustomEvent("jarvis:model-settings-updated", {
+                detail: { OUTPUT_MODEL: model, source: "chat-quick-select" }
+            }));
             dropdown.classList.add("hidden");
             log("info", `Model changed to: ${model}`);
         });
     });
+}
+
+function setActiveChatModel(model) {
+    if (!model) return;
+    const nameEl = document.getElementById("model-name");
+    if (nameEl) nameEl.textContent = model;
+    setModel(model);
+}
+
+async function loadEffectiveOutputModel() {
+    try {
+        const res = await fetch(`${getApiBase()}/api/settings/models/effective`);
+        if (!res.ok) return "";
+        const data = await res.json();
+        return data?.effective?.OUTPUT_MODEL?.value || "";
+    } catch (e) {
+        log("warn", `Failed to load effective OUTPUT_MODEL: ${e.message}`);
+        return "";
+    }
+}
+
+async function persistOutputModelSelection(model) {
+    try {
+        const res = await fetch(`${getApiBase()}/api/settings/models`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ OUTPUT_MODEL: model })
+        });
+        if (!res.ok) {
+            const err = await res.text().catch(() => "");
+            log("warn", `Quick model sync failed: HTTP ${res.status} ${err}`.trim());
+        }
+    } catch (e) {
+        log("warn", `Quick model sync failed: ${e.message}`);
+    }
+}
+
+function ensureChatModelInDropdown(model) {
+    if (!model) return;
+    const dropdown = document.getElementById("model-dropdown");
+    if (!dropdown) return;
+    if (chatModelNames.includes(model)) return;
+
+    chatModelNames.unshift(model);
+    const btn = document.createElement("button");
+    btn.className = "w-full px-4 py-2 text-left hover:bg-dark-hover transition-colors text-sm";
+    btn.dataset.model = model;
+    btn.textContent = model;
+    btn.addEventListener("click", async () => {
+        setActiveChatModel(model);
+        await persistOutputModelSelection(model);
+        window.dispatchEvent(new CustomEvent("jarvis:model-settings-updated", {
+            detail: { OUTPUT_MODEL: model, source: "chat-quick-select" }
+        }));
+        dropdown.classList.add("hidden");
+        log("info", `Model changed to: ${model}`);
+    });
+    dropdown.prepend(btn);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -258,6 +334,24 @@ function setupEventListeners() {
         });
     }
 
+    // Keep chat quick selector synchronized with Settings > Models.
+    window.addEventListener("jarvis:model-settings-updated", (event) => {
+        const nextOutputModel = event?.detail?.OUTPUT_MODEL;
+        if (!nextOutputModel) return;
+        ensureChatModelInDropdown(nextOutputModel);
+        setActiveChatModel(nextOutputModel);
+    });
+
+    // Deep job mode quick toggle
+    const deepJobToggle = document.getElementById("deep-job-toggle");
+    if (deepJobToggle) {
+        deepJobToggle.addEventListener("change", () => {
+            settings.deepJobMode = Boolean(deepJobToggle.checked);
+            saveSettings();
+            log("info", `Deep job mode: ${settings.deepJobMode ? "on" : "off"}`);
+        });
+    }
+
     // NOTE: Settings and Maintenance buttons are handled by their respective modules
     // settings.js handles: settings-btn, close-settings-btn, etc.
     // maintenance.js handles: maintenance-btn, maintenance-start-btn, etc.
@@ -265,10 +359,12 @@ function setupEventListeners() {
 
 function sendMessage() {
     const input = document.getElementById("user-input");
+    const deepJobToggle = document.getElementById("deep-job-toggle");
     const text = input.value.trim();
 
     if (text) {
-        handleUserMessage(text);
+        const deepJob = deepJobToggle ? Boolean(deepJobToggle.checked) : Boolean(settings.deepJobMode);
+        handleUserMessage(text, { deepJob });
         input.value = "";
         input.style.height = "auto";
     }

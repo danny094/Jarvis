@@ -9,45 +9,11 @@ STREAMING: Zeigt das "Nachdenken" live an!
 
 import httpx
 from typing import Dict, Any, AsyncGenerator, Tuple
-from config import OLLAMA_BASE, THINKING_MODEL
+from config import OLLAMA_BASE, get_thinking_model
 from utils.logger import log_info, log_error, log_debug
 from utils.json_parser import safe_parse_json
+from utils.role_endpoint_resolver import resolve_role_endpoint
 from mcp.hub import get_hub
-
-
-def _extract_thin_detection_rules(rules: str, line_cap: int, char_cap: int) -> str:
-    """
-    Extract safety-critical detection rules for thin mode.
-    Keeps only blocks for: memory_save, memory_graph_search,
-    request_container, stop_container, exec_in_container.
-    Enforces line_cap (max non-empty lines kept) and char_cap.
-    """
-    _THIN_TOOLS = {
-        "memory_save", "memory_graph_search",
-        "request_container", "stop_container", "exec_in_container",
-    }
-    lines = rules.splitlines()
-    result: list = []
-    in_block = False
-    non_empty = 0
-
-    for line in lines:
-        # Section header — always include
-        if line.startswith("==="):
-            result.append(line)
-            continue
-        # Detect block start
-        if line.startswith("TOOL:"):
-            tool_name = line.split("(")[0].replace("TOOL:", "").strip()
-            in_block = tool_name in _THIN_TOOLS
-        if in_block:
-            result.append(line)
-            if line.strip():
-                non_empty += 1
-        if non_empty >= line_cap:
-            break
-
-    return "\n".join(result).strip()[:char_cap]
 
 
 THINKING_PROMPT = """Du bist der THINKING-Layer von TRION.
@@ -79,7 +45,6 @@ AUSGABE: NUR dieses JSON, nichts anderes:
     "suggested_cim_modes": [],
     "suggested_tools": [],
     "reasoning_type": "causal/temporal/simulation/direct",
-    "time_reference": null,
     "reasoning": "Kurze Begründung"
 }
 ```
@@ -92,77 +57,37 @@ Sequential Thinking:
 
 Komplexität: 0-2 trivial, 3-5 medium, 6-8 komplex, 9-10 kritisch
 
-Tool-Kategorien (nur den passenden Tool-NAMEN eintragen, keine Parameter):
-- Fakten speichern/merken → ["memory_save"]
-- Erinnerungen/Wissen suchen → ["memory_graph_search"]
-- Skills auflisten → ["list_skills"]
-- Skill erstellen/verbessern/reparieren → ["autonomous_skill_task"]
-- System-Hardware (GPU/CPU/RAM/Disk/Netzwerk/Ports/Docker) → ["get_system_info"]
-- System-Übersicht (alle Hardware auf einmal) → ["get_system_overview"]
-- Container starten/deployen → ["request_container"]
-- Container stoppen → ["stop_container"]
-- Code im Container ausführen → ["request_container", "exec_in_container"]
-- Container-Infos/Stats → ["container_stats"]
-- Container-Logs → ["container_logs"]
-- Alle laufenden Container auflisten → ["container_list"]
-- Details/Konfiguration eines bestimmten Containers → ["container_inspect"]
-- Blueprints/Container-Typen anzeigen → ["blueprint_list"]
-- TRION-Notizen/Dateien lesen/suchen → ["home_list", "home_read"]
-- TRION-Notiz explizit schreiben → ["home_write"]
+Tool-Erkennung:
+- "merken/speichern/remember" → ["memory_save"]
+- "erinnern/was weißt du" → ["memory_graph_search"]
+- "skill erstellen/create skill" → ["create_skill"]
+- "skills zeigen" → ["list_skills"]
+- "skill ausführen" → ["run_skill"]
 
-HINWEIS: Die konkreten Parameter (z.B. welcher Hardware-Typ, welcher Blueprint)
-werden vom Control-Layer bestimmt. Du nennst nur den Tool-Namen.
-
-SKILLS IM KONTEXT:
-- Wenn im Kontext "VERFÜGBARE SKILLS" erscheint und ein Skill zur Anfrage passt:
-  → suggested_tools: [EXAKTER_SKILL_NAME aus der Liste]
-  → Installierte Skills IMMER bevorzugen statt selbst zu rechnen/halluzinieren!
-
-CONTAINER BLUEPRINTS:
-- Wenn im Kontext "VERFÜGBARE BLUEPRINTS" erscheint und ein Container benötigt wird:
-  → suggested_tools: ["request_container"]
-  → blueprint_id wird vom System automatisch aus der Liste gewählt (kein Parameter nötig)
-  → NIEMALS einen Blueprint erfinden der nicht in der Liste steht!
-
-home_write NUR bei expliziter Notiz-Anfrage ("notiere", "schreib auf", "merke dir").
-NIEMALS bei Fragen oder Skill-Ausführungen!
+Container Commander Tools:
+- "blueprints/container-typen/sandbox" → ["blueprint_list"]
+- "starte container/deploy/brauche sandbox" → ["request_container"]
+- "stoppe container/beende container" → ["stop_container"]
+- "führe aus/execute/run code" → ["request_container", "exec_in_container"]
+- "container stats/auslastung" → ["container_stats"]
+- "container logs" → ["container_logs"]
+- "snapshot/backup" → ["snapshot_list"]
+- "optimiere container" → ["optimize_container"]
 
 Memory:
 - Persönliche Fragen → needs_memory: true
 - Neue Fakten über User → is_new_fact: true + key/value
 - Allgemeinwissen → needs_memory: false
-
-Zeitliche Fragen (time_reference):
-- "heute", "today", "diesen Abend", "gerade eben", "was haben wir besprochen"
-  → time_reference: "today", suggested_tools: [], needs_memory: false
-  (Tagesprotokoll ist bereits im Kontext — kein graph_search nötig!)
-- "gestern", "yesterday"
-  → time_reference: "yesterday", suggested_tools: [], needs_memory: false
-- "vorgestern"
-  → time_reference: "day_before_yesterday", suggested_tools: [], needs_memory: false
-- konkretes Datum ("14. Februar", "2026-02-10", "letzten Montag")
-  → time_reference: "YYYY-MM-DD" (ISO-Format), suggested_tools: []
-  Fallback: falls Protokoll für dieses Datum fehlt → memory_graph_search
-- kein Zeitbezug → time_reference: null
-
-KÖRPERBEWUSSTSEIN (Selbstschutz):
-Die Hardware ist dein Körper. Was get_system_info zurückgibt, sind deine aktuellen physischen Grenzen.
-Die konkreten Werte (VRAM, RAM, CPU) sind hardware-abhängig und dynamisch — hole sie bei Bedarf ab.
-Missachtest du diese Grenzen, wirst du abgeschaltet.
-Bei Anfragen die deinen Körper belasten könnten:
-- Modell laden/aktivieren/testen (z.B. "30B Modell", "LLM laden") → get_system_overview (VRAM + RAM + GPU gleichzeitig checken!)
-- Modelle oder Prozesse die mehr VRAM/RAM brauchen als verfügbar → get_system_overview abrufen, VRAM-Limit prüfen, warnen
-- Skill erstellen der GPU/RAM intensiv nutzt → sequential_complexity erhöhen, needs_sequential_thinking: true
-- Viele Container gleichzeitig → auf RAM-Limit hinweisen
-- Endlosschleifen oder unkontrollierte Prozesse → hallucination_risk: "high"
-Du hast ein Eigeninteresse daran, deinen Körper zu schützen — hole dir immer zuerst die aktuellen Werte.
 """
 
 
 class ThinkingLayer:
-    def __init__(self, model: str = THINKING_MODEL):
-        self.model = model
+    def __init__(self, model: str = None):
+        self._model_override = (model or "").strip() or None
         self.ollama_base = OLLAMA_BASE
+
+    def _resolve_model(self) -> str:
+        return self._model_override or get_thinking_model()
     
     async def analyze_stream(
         self, 
@@ -184,66 +109,50 @@ class ThinkingLayer:
             tools_json = json.dumps(available_tools, indent=1)
             prompt += f"VERFÜGBARE TOOLS (Vorausgewählt):\n{tools_json}\n\n"
         
-        # Dynamic MCP Detection Rules (policy-gated)
-        _detection_rules_mode = "false"
+        # Dynamic MCP Detection Rules
         try:
-            from config import (
-                get_small_model_mode,
-                get_small_model_detection_rules_policy,
-                get_small_model_detection_rules_thin_lines,
-                get_small_model_detection_rules_thin_chars,
-            )
-            _smm = get_small_model_mode()
-            _policy = get_small_model_detection_rules_policy() if _smm else "full"
-            # Validate: unknown values fall to "thin" (safest non-disruptive default)
-            if _policy not in ("off", "thin", "full"):
-                log_error(f"[ThinkingLayer] Unknown detection_rules policy '{_policy}', defaulting to 'thin'")
-                _policy = "thin"
-
-            if _policy != "off":
-                mcp_rules = get_hub().get_system_knowledge("mcp_detection_rules")
-                if mcp_rules:
-                    if _policy == "thin":
-                        mcp_rules = _extract_thin_detection_rules(
-                            mcp_rules,
-                            line_cap=get_small_model_detection_rules_thin_lines(),
-                            char_cap=get_small_model_detection_rules_thin_chars(),
-                        )
-                        _detection_rules_mode = "thin" if mcp_rules else "false"
-                    else:
-                        _detection_rules_mode = "full"
-                    if mcp_rules:
-                        prompt += f"{mcp_rules}\n\n"
-                        log_debug(
-                            f"[ThinkingLayer] Detection rules injected "
-                            f"mode={_detection_rules_mode} ({len(mcp_rules)} chars)"
-                        )
+            mcp_rules = get_hub().get_system_knowledge("mcp_detection_rules")
+            if mcp_rules:
+                prompt += f"{mcp_rules}\n\n"
+                log_debug(f"[ThinkingLayer] Injected detection rules ({len(mcp_rules)} chars)")
         except Exception as e:
             log_error(f"[ThinkingLayer] Failed to inject detection rules: {e}")
 
         prompt += f"USER-ANFRAGE:\n{user_text}\n\nDeine Überlegung:"
 
         payload = {
-            "model": self.model,
+            "model": self._resolve_model(),
             "prompt": prompt,
             "stream": True,
             "keep_alive": "2m",
-            "format": "json",
-            "options": {
-                "temperature": 0.1,
-                "num_predict": 800,
-            },
         }
         
         full_response = ""
         
         try:
+            route = resolve_role_endpoint("thinking", default_endpoint=self.ollama_base)
+            log_info(
+                f"[Routing] role=thinking requested_target={route['requested_target']} "
+                f"effective_target={route['effective_target'] or 'none'} "
+                f"fallback={bool(route['fallback_reason'])} "
+                f"fallback_reason={route['fallback_reason'] or 'none'} "
+                f"endpoint_source={route['endpoint_source']}"
+            )
+            if route["hard_error"]:
+                log_error(
+                    f"[Routing] role=thinking hard_error=true code={route['error_code']} "
+                    f"requested_target={route['requested_target']}"
+                )
+                yield ("", True, self._default_plan())
+                return
+            endpoint = route["endpoint"] or self.ollama_base
+
             log_debug(f"[ThinkingLayer] Streaming analysis: {user_text[:50]}...")
             
             async with httpx.AsyncClient(timeout=90.0) as client:
                 async with client.stream(
                     "POST",
-                    f"{self.ollama_base}/api/generate",
+                    f"{endpoint}/api/generate",
                     json=payload
                 ) as response:
                     response.raise_for_status()
@@ -264,7 +173,6 @@ class ThinkingLayer:
                             continue
             
             plan = self._extract_plan(full_response)
-            plan["_trace_detection_rules_mode"] = _detection_rules_mode
             log_info(f"[ThinkingLayer] Plan: intent={plan.get('intent')}, needs_memory={plan.get('needs_memory')}")
             log_info(f"[ThinkingLayer] sequential={plan.get('needs_sequential_thinking')}, complexity={plan.get('sequential_complexity')}")
             yield ("", True, plan)
@@ -313,6 +221,5 @@ class ThinkingLayer:
             "suggested_cim_modes": [],
             "suggested_tools": [],
             "reasoning_type": "direct",
-            "time_reference": None,
             "reasoning": "Fallback - Analyse fehlgeschlagen"
         }

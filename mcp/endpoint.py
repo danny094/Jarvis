@@ -20,6 +20,27 @@ from utils.logger import log_info, log_error, log_debug
 router = APIRouter()
 
 
+def _normalize_tool_result(result: Any) -> Any:
+    """
+    Normalize hub tool results into JSON-serializable payloads.
+
+    Fast-Lane tools return ToolResult objects (dataclass-like); MCP endpoint
+    must convert them before returning JSON-RPC responses.
+    """
+    if hasattr(result, "to_dict") and callable(getattr(result, "to_dict")):
+        try:
+            return result.to_dict()
+        except Exception:
+            pass
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, (str, int, float, bool)) or result is None:
+        return result
+    if isinstance(result, list):
+        return result
+    return {"result": str(result)}
+
+
 @router.post("/mcp")
 async def mcp_handler(request: Request):
     """
@@ -95,22 +116,41 @@ async def mcp_handler(request: Request):
             log_info(f"[MCP-Endpoint] tools/call → {tool_name}")
             
             result = hub.call_tool(tool_name, arguments)
+            normalized = _normalize_tool_result(result)
             
             # Check for error
-            if isinstance(result, dict) and "error" in result:
+            if (
+                isinstance(normalized, dict)
+                and normalized.get("error") not in (None, "")
+            ):
                 return JSONResponse({
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "error": {
                         "code": -32000,
-                        "message": result["error"]
+                        "message": normalized["error"]
+                    }
+                })
+
+            # ToolResult error parity (fast-lane): {"success": false, "error": "..."}
+            if (
+                isinstance(normalized, dict)
+                and normalized.get("success") is False
+                and normalized.get("error")
+            ):
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32000,
+                        "message": str(normalized.get("error"))
                     }
                 })
             
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": result
+                "result": normalized
             })
         
         # ─────────────────────────────────────────────────────────────

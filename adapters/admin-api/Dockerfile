@@ -21,7 +21,7 @@ COPY adapters/__init__.py /app/adapters/__init__.py
 # Copy application last
 # Container Commander module
 COPY container_commander /app/container_commander
-COPY adapters/admin-api/*.py .
+COPY adapters/admin-api/*.py ./
 
 RUN mkdir -p /app/data && chown 1000:1000 /app/data
 

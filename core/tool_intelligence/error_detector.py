@@ -4,8 +4,21 @@ Tool Intelligence - Error Detection Module
 Classifies tool errors and determines if they are retryable.
 """
 
+import re
 from typing import Dict, Any, Optional
 from utils.logger import log_info, log_warn, log_error, log_debug
+
+
+def _has_meaningful_error(value: Any) -> bool:
+    """Return True only for non-empty error payloads."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        return lowered not in ("", "none", "null")
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) > 0
+    return True
 
 
 def detect_tool_error(result: Any) -> tuple[bool, Optional[str]]:
@@ -32,10 +45,11 @@ def detect_tool_error(result: Any) -> tuple[bool, Optional[str]]:
     # Check dict with error key
     # WICHTIG: run_skill gibt {"success": true, "result": ..., "error": null} zurück.
     # Nur als Fehler werten wenn: error ist nicht None UND success ist nicht True.
-    elif isinstance(result, dict) and result.get('error') is not None:
-        if not result.get('success', True):
+    elif isinstance(result, dict) and "error" in result:
+        err_value = result.get("error")
+        if _has_meaningful_error(err_value) and result.get("success") is not True:
             is_error = True
-            error_msg = str(result['error'])
+            error_msg = str(err_value)
     
     # Check String errors (common pattern)
     elif isinstance(result, str):
@@ -62,11 +76,121 @@ def classify_error(error_msg: str, tool_name: str) -> Dict[str, Any]:
             'confidence': float
         }
     """
-    # PLACEHOLDER for Phase 3
-    # For now, just return basic classification
+    message = (error_msg or "").strip()
+    lowered = message.lower()
+
+    if not lowered:
+        return {
+            'retryable': False,
+            'error_type': 'empty_error',
+            'category': 'unknown',
+            'confidence': 0.2
+        }
+
+    def _contains_any(patterns: list[str]) -> bool:
+        return any(pattern in lowered for pattern in patterns)
+
+    if _contains_any([
+        "permission denied",
+        "access denied",
+        "unauthorized",
+        "forbidden",
+        "not allowed",
+        " 401",
+        " 403",
+    ]):
+        return {
+            'retryable': False,
+            'error_type': 'permission_denied',
+            'category': 'auth',
+            'confidence': 0.95
+        }
+
+    if _contains_any([
+        "rate limit",
+        "too many requests",
+        "quota exceeded",
+        " 429",
+    ]):
+        return {
+            'retryable': False,
+            'error_type': 'rate_limited',
+            'category': 'quota',
+            'confidence': 0.9
+        }
+
+    if _contains_any([
+        "not found",
+        "does not exist",
+        "unknown tool",
+        "no such file",
+        "module not found",
+    ]):
+        return {
+            'retryable': False,
+            'error_type': 'not_found',
+            'category': 'resource',
+            'confidence': 0.9
+        }
+
+    if _contains_any([
+        "already exists",
+        "conflict",
+        "duplicate",
+    ]):
+        return {
+            'retryable': False,
+            'error_type': 'conflict',
+            'category': 'state',
+            'confidence': 0.85
+        }
+
+    if _contains_any([
+        "timeout",
+        "timed out",
+        "temporarily unavailable",
+        "connection reset",
+        "connection refused",
+        "try again",
+        "service unavailable",
+        "gateway timeout",
+    ]):
+        return {
+            'retryable': True,
+            'error_type': 'transient',
+            'category': 'infrastructure',
+            'confidence': 0.75
+        }
+
+    validation_patterns = [
+        "required",
+        "missing",
+        "invalid",
+        "must be",
+        "should be",
+        "wrong type",
+        "parameter",
+        "argument",
+        "schema",
+        "validation",
+        "valueerror",
+        "typeerror",
+    ]
+    if _contains_any(validation_patterns) or re.search(r"\bexpected\b", lowered):
+        confidence = 0.85
+        if tool_name == "create_skill" and _contains_any(["name", "description", "code"]):
+            confidence = 0.95
+        return {
+            'retryable': True,
+            'error_type': 'validation',
+            'category': 'input',
+            'confidence': confidence
+        }
+
+    # Safe default: unknown errors are not auto-retried.
     return {
-        'retryable': True,
+        'retryable': False,
         'error_type': 'unknown',
         'category': 'general',
-        'confidence': 0.5
+        'confidence': 0.4
     }

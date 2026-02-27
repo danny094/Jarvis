@@ -34,6 +34,18 @@ from utils.logger import log_info, log_error, log_debug, log_warn
 MAX_LOOP_ITERATIONS = 5
 MAX_SAME_RESULT = 2  # Wie oft dasselbe Ergebnis vor STUCK-Erkennung
 
+
+def _has_meaningful_error_payload(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        return lowered not in ("", "none", "null")
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) > 0
+    return True
+
+
 # Fehler-Pattern → konkrete Alternativen für das LLM
 _STUCK_ALTERNATIVES: List[Dict] = [
     {
@@ -265,12 +277,84 @@ class LoopEngine:
         log_debug(f"[LoopEngine] {len(ollama_tools)} tools available")
         return ollama_tools
 
+    def _build_chat_payload(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        stream: bool,
+        output_num_predict: int = 0,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": bool(stream),
+            "keep_alive": "5m",
+        }
+        if tools:
+            payload["tools"] = tools
+        if output_num_predict > 0:
+            payload["options"] = {"num_predict": int(output_num_predict)}
+        return payload
+
+    async def _chat_once_sync(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        output_num_predict: int = 0,
+        timeout_s: float = 90.0,
+    ) -> Dict[str, Any]:
+        payload = self._build_chat_payload(
+            messages=messages,
+            tools=tools,
+            stream=False,
+            output_num_predict=output_num_predict,
+        )
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            response = await client.post(
+                f"{self.ollama_base}/api/chat",
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def _iter_chat_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        output_num_predict: int = 0,
+        timeout_s: float = 90.0,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        payload = self._build_chat_payload(
+            messages=messages,
+            tools=tools,
+            stream=True,
+            output_num_predict=output_num_predict,
+        )
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            async with client.stream(
+                "POST",
+                f"{self.ollama_base}/api/chat",
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(data, dict):
+                        yield data
+
     async def run_stream(
         self,
         user_text: str,
         system_prompt: str,
         initial_tool_context: str = "",
         max_iterations: int = MAX_LOOP_ITERATIONS,
+        output_char_cap: int = 0,
+        output_num_predict: int = 0,
     ) -> AsyncGenerator[Tuple[str, bool, Dict[str, Any]], None]:
         """
         Führt den ReAct-Loop aus und streamt die finale Antwort.
@@ -317,6 +401,7 @@ class LoopEngine:
         messages.append({"role": "user", "content": user_msg})
 
         iteration = 0
+        total_emitted_chars = 0
 
         while iteration < max_iterations:
             iteration += 1
@@ -327,22 +412,68 @@ class LoopEngine:
                 "max": max_iterations
             })
 
-            # LLM-Call: stream=False um Tool-Calls zu erkennen
+            # LLM-Call: echtes Streaming (stream=True), damit TTFT nicht bis zum Ende blockiert.
+            tool_calls: List[Dict[str, Any]] = []
+            content_parts: List[str] = []
+            truncated = False
             try:
-                async with httpx.AsyncClient(timeout=90.0) as client:
-                    response = await client.post(
-                        f"{self.ollama_base}/api/chat",
-                        json={
-                            "model": self.model,
-                            "messages": messages,
-                            "tools": tools,
-                            "stream": False,
-                            "keep_alive": "5m",
-                        }
+                try:
+                    async for data in self._iter_chat_stream(
+                        messages=messages,
+                        tools=tools,
+                        output_num_predict=output_num_predict,
+                        timeout_s=90.0,
+                    ):
+                        msg = data.get("message", {}) if isinstance(data.get("message"), dict) else {}
+                        tc = msg.get("tool_calls", [])
+                        if isinstance(tc, list) and tc:
+                            tool_calls = tc
+                        chunk = msg.get("content", "")
+                        if chunk:
+                            emit = str(chunk)
+                            if output_char_cap > 0:
+                                if total_emitted_chars >= output_char_cap:
+                                    truncated = True
+                                    break
+                                remaining = output_char_cap - total_emitted_chars
+                                if len(emit) > remaining:
+                                    emit = emit[:remaining]
+                                    truncated = True
+                            if emit:
+                                content_parts.append(emit)
+                                total_emitted_chars += len(emit)
+                                yield (emit, False, {"type": "content"})
+                            if truncated:
+                                break
+                        if data.get("done"):
+                            break
+                except Exception as stream_err:
+                    # Kompatibilitäts-Fallback: falls stream-path fehlschlägt, nutze non-stream.
+                    log_warn(f"[LoopEngine] Stream-Fallback zu non-stream: {stream_err}")
+                    data = await self._chat_once_sync(
+                        messages=messages,
+                        tools=tools,
+                        output_num_predict=output_num_predict,
+                        timeout_s=90.0,
                     )
-                    response.raise_for_status()
-                    data = response.json()
-
+                    msg = data.get("message", {}) if isinstance(data.get("message"), dict) else {}
+                    tc = msg.get("tool_calls", [])
+                    if isinstance(tc, list) and tc:
+                        tool_calls = tc
+                    content = str(msg.get("content", "") or "")
+                    if content:
+                        if output_char_cap > 0:
+                            if total_emitted_chars >= output_char_cap:
+                                content = ""
+                                truncated = True
+                            elif total_emitted_chars + len(content) > output_char_cap:
+                                keep = output_char_cap - total_emitted_chars
+                                content = content[:keep]
+                                truncated = True
+                        if content:
+                            total_emitted_chars += len(content)
+                            content_parts.append(content)
+                            yield (content, False, {"type": "content"})
             except httpx.TimeoutException:
                 log_error(f"[LoopEngine] Timeout auf Runde {iteration}")
                 yield ("", False, {"type": "loop_error", "error": "timeout", "iteration": iteration})
@@ -352,9 +483,12 @@ class LoopEngine:
                 yield ("", False, {"type": "loop_error", "error": str(e), "iteration": iteration})
                 break
 
-            msg = data.get("message", {})
-            tool_calls = msg.get("tool_calls", [])
-            content = msg.get("content", "")
+            content = "".join(content_parts)
+            if truncated:
+                log_info("[LoopEngine] Output char cap erreicht")
+                yield ("\n\n[Antwort gekürzt: LoopEngine Output-Budget erreicht.]", False, {"type": "content"})
+                yield ("", True, {"type": "done", "iterations": iteration, "truncated": True})
+                return
 
             # Antwort zur History hinzufügen
             assistant_msg: Dict = {"role": "assistant", "content": content or ""}
@@ -399,15 +533,37 @@ class LoopEngine:
 
                     try:
                         result = hub.call_tool(tool_name, tool_args)
+                        if hasattr(result, "success") and result.success is False:
+                            tool_err = getattr(result, "error", None)
+                            if not _has_meaningful_error_payload(tool_err):
+                                tool_err = getattr(result, "content", None)
+                            raise RuntimeError(str(tool_err or "Unknown tool error"))
                         # ToolResult-Objekt entpacken
                         if hasattr(result, 'content') and result.content is not None:
                             result_data = result.content
                         else:
                             result_data = result
+                        # MCPHub can return {"error": "..."} without raising an exception.
+                        # Treat this as a hard tool failure so the loop does not mark it as success.
+                        parsed_data = result_data
+                        if isinstance(result_data, str):
+                            _raw = result_data.strip()
+                            if _raw.startswith("{") or _raw.startswith("["):
+                                try:
+                                    parsed_data = json.loads(_raw)
+                                except Exception:
+                                    parsed_data = result_data
+                        if (
+                            isinstance(parsed_data, dict)
+                            and "error" in parsed_data
+                            and _has_meaningful_error_payload(parsed_data.get("error"))
+                            and parsed_data.get("success") is not True
+                        ):
+                            raise RuntimeError(str(parsed_data.get("error")))
                         result_str = (
-                            json.dumps(result_data, ensure_ascii=False, default=str)
-                            if isinstance(result_data, (dict, list))
-                            else str(result_data)
+                            json.dumps(parsed_data, ensure_ascii=False, default=str)
+                            if isinstance(parsed_data, (dict, list))
+                            else str(parsed_data)
                         )
                         log_info(f"[LoopEngine] Tool {tool_name} OK: {len(result_str)} chars")
 
@@ -464,13 +620,6 @@ class LoopEngine:
             else:
                 # ── FINALE ANTWORT (keine Tool-Calls mehr) ──
                 log_info(f"[LoopEngine] Finale Antwort nach {iteration} Runde(n), {len(content)} chars")
-
-                if content:
-                    # Streaming simulieren (content kommt als ganzes, da stream=False)
-                    chunk_size = 60
-                    for i in range(0, len(content), chunk_size):
-                        yield (content[i:i + chunk_size], False, {"type": "content"})
-
                 yield ("", True, {"type": "done", "iterations": iteration})
                 return
 
@@ -501,15 +650,18 @@ class LoopEngine:
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
+                payload: Dict[str, Any] = {
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": True,
+                    "keep_alive": "5m",
+                }
+                if output_num_predict > 0:
+                    payload["options"] = {"num_predict": int(output_num_predict)}
                 async with client.stream(
                     "POST",
                     f"{self.ollama_base}/api/chat",
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "stream": True,
-                        "keep_alive": "5m",
-                    }
+                    json=payload
                 ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
@@ -518,7 +670,22 @@ class LoopEngine:
                                 d = json.loads(line)
                                 chunk = d.get("message", {}).get("content", "")
                                 if chunk:
-                                    yield (chunk, False, {"type": "content"})
+                                    emit = str(chunk)
+                                    if output_char_cap > 0:
+                                        if total_emitted_chars >= output_char_cap:
+                                            yield ("\n\n[Antwort gekürzt: LoopEngine Output-Budget erreicht.]", False, {"type": "content"})
+                                            yield ("", True, {"type": "done", "iterations": max_iterations, "forced": True, "truncated": True})
+                                            return
+                                        remaining = output_char_cap - total_emitted_chars
+                                        if len(emit) > remaining:
+                                            emit = emit[:remaining]
+                                    if emit:
+                                        total_emitted_chars += len(emit)
+                                        yield (emit, False, {"type": "content"})
+                                    if output_char_cap > 0 and total_emitted_chars >= output_char_cap:
+                                        yield ("\n\n[Antwort gekürzt: LoopEngine Output-Budget erreicht.]", False, {"type": "content"})
+                                        yield ("", True, {"type": "done", "iterations": max_iterations, "forced": True, "truncated": True})
+                                        return
                                 if d.get("done"):
                                     break
                             except Exception:

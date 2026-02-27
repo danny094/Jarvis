@@ -27,7 +27,7 @@ from fastmcp import FastMCP
 CIM_URL = os.environ.get("CIM_URL", "http://cim-server:8086")
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://ollama:11434")
 MEMORY_URL = os.environ.get("MEMORY_URL", "http://mcp-sql-memory:8081/mcp")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-r1:8b")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "ministral-3:8b")
 
 # Initialize MCP Server
 mcp = FastMCP("sequential_thinking")

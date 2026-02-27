@@ -1,0 +1,147 @@
+{
+  "query": "Analysiere Input-zu-Output Pipeline in 5 Punkten: Thinking, Control, Tooling, Memory, Output.",
+  "mode": "LightGraphBuilder",
+  "source": "auto_selector",
+  "graph": {
+    "nodes": [
+      {
+        "node_id": "STEP_1",
+        "name": "1. Define intervention precisely",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC003"
+        }
+      },
+      {
+        "node_id": "STEP_2",
+        "name": "2. Specify comparison/control condition",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC003"
+        }
+      },
+      {
+        "node_id": "STEP_3",
+        "name": "3. Identify randomization strategy",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC003"
+        }
+      },
+      {
+        "node_id": "STEP_4",
+        "name": "4. List potential confounders to control",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC003"
+        }
+      },
+      {
+        "node_id": "STEP_5",
+        "name": "5. Define outcomes and measurement timing",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC003"
+        }
+      },
+      {
+        "node_id": "STEP_6",
+        "name": "6. Consider blinding requirements",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC003"
+        }
+      },
+      {
+        "node_id": "STEP_7",
+        "name": "7. Specify success criteria",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC003"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source": "STEP_1",
+        "target": "STEP_2",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_2",
+        "target": "STEP_3",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_3",
+        "target": "STEP_4",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_4",
+        "target": "STEP_5",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_5",
+        "target": "STEP_6",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_6",
+        "target": "STEP_7",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      }
+    ],
+    "metrics": {
+      "node_count": 7,
+      "edge_count": 6,
+      "is_dag": true,
+      "density": 0.14285714285714285
+    }
+  }
+}

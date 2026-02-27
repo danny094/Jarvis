@@ -15,7 +15,10 @@ MCP Tools:
 import os
 import json
 import time
+import asyncio
 import traceback
+import importlib
+import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -34,6 +37,109 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8088"))
 SKILLS_DIR = os.getenv("SKILLS_DIR", "/skills")
 REGISTRY_URL = os.getenv("REGISTRY_URL", "https://raw.githubusercontent.com/trion-ai/skill-registry/main")
+
+
+def _get_skill_package_install_mode() -> str:
+    """
+    Resolve package-install policy without hard dependency on top-level config.py.
+
+    In isolated skill-server containers /app/config.py may not exist.
+    Fail-safe behavior: env fallback with strict enum normalization.
+    """
+    mode = ""
+    try:
+        cfg = importlib.import_module("config")
+        getter = getattr(cfg, "get_skill_package_install_mode", None)
+        if callable(getter):
+            mode = str(getter()).lower()
+    except Exception:
+        mode = ""
+
+    if not mode:
+        mode = os.getenv("SKILL_PACKAGE_INSTALL_MODE", "allowlist_auto").lower()
+    if mode not in ("allowlist_auto", "manual_only"):
+        return "allowlist_auto"
+    return mode
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _normalize_trace_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raw = f"skill-{int(time.time() * 1000)}"
+    safe = re.sub(r"[^a-zA-Z0-9:_-]", "", raw)[:64]
+    return safe or f"skill-{int(time.time() * 1000)}"
+
+
+def _safe_text(value: Any, *, max_len: int = 4000) -> str:
+    text = str(value or "").strip()
+    if len(text) > max_len:
+        return text[:max_len]
+    return text
+
+
+def _sanitize_suggested_tools(raw_tools: Any) -> List[str]:
+    result: List[str] = []
+    if not isinstance(raw_tools, list):
+        return result
+    for item in raw_tools:
+        if isinstance(item, dict):
+            name = _safe_text(item.get("tool") or item.get("name"), max_len=120)
+        else:
+            name = _safe_text(item, max_len=120)
+        if name:
+            result.append(name)
+    return result[:20]
+
+
+def _sanitize_thinking_plan(thinking_plan: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(thinking_plan, dict):
+        return None
+
+    safe: Dict[str, Any] = {}
+    for key in ("intent", "reasoning", "reasoning_type", "hallucination_risk", "time_reference"):
+        if key in thinking_plan:
+            text = _safe_text(thinking_plan.get(key), max_len=2000)
+            if text:
+                safe[key] = text
+
+    for key in ("needs_memory", "is_fact_query", "needs_sequential_thinking", "sequential_thinking_required"):
+        if key in thinking_plan:
+            safe[key] = bool(thinking_plan.get(key))
+
+    if "sequential_complexity" in thinking_plan:
+        try:
+            c = int(thinking_plan.get("sequential_complexity", 0))
+        except Exception:
+            c = 0
+        safe["sequential_complexity"] = max(0, min(10, c))
+
+    raw_keys = thinking_plan.get("memory_keys", [])
+    if isinstance(raw_keys, list):
+        memory_keys = [_safe_text(k, max_len=80) for k in raw_keys]
+        memory_keys = [k for k in memory_keys if k]
+        if memory_keys:
+            safe["memory_keys"] = memory_keys[:20]
+
+    suggested_tools = _sanitize_suggested_tools(thinking_plan.get("suggested_tools", []))
+    if suggested_tools:
+        safe["suggested_tools"] = suggested_tools
+
+    return safe or None
 
 # === MCP TOOL DEFINITIONS ===
 
@@ -329,6 +435,32 @@ skill_manager = SkillManager(
     skills_dir=SKILLS_DIR,
     registry_url=REGISTRY_URL
 )
+_graph_reconcile_task: Optional["asyncio.Task"] = None
+
+
+def _consume_graph_reconcile_result(task: "asyncio.Task") -> None:
+    """Drain task exceptions to avoid 'Task exception was never retrieved' warnings."""
+    try:
+        task.result()
+    except Exception as e:
+        print(f"[SkillGraphReconcile] background task failed: {e}")
+
+
+def _trigger_graph_reconcile_background() -> None:
+    """
+    Start a single in-flight C9 reconcile run in background.
+    Non-blocking by design so list endpoints remain low-latency.
+    """
+    global _graph_reconcile_task
+    try:
+        if not skill_manager._is_graph_reconcile_enabled():
+            return
+        if _graph_reconcile_task is not None and not _graph_reconcile_task.done():
+            return
+        _graph_reconcile_task = asyncio.create_task(skill_manager.reconcile_skill_graph_index())
+        _graph_reconcile_task.add_done_callback(_consume_graph_reconcile_result)
+    except Exception as e:
+        print(f"[SkillGraphReconcile] trigger skipped: {e}")
 
 # === PYDANTIC MODELS ===
 
@@ -358,12 +490,30 @@ async def root():
 @app.get("/v1/skills")
 async def get_skills_direct():
     """Direct REST endpoint for browser/WebUI access."""
+    _trigger_graph_reconcile_background()
     installed = skill_manager.list_installed()
     drafts = skill_manager.list_drafts()
     return {
         "active": [s["name"] if isinstance(s, dict) else s for s in installed],
         "drafts": [s["name"] if isinstance(s, dict) else s for s in drafts]
     }
+
+
+@app.get("/v1/skills/{name}")
+async def get_skill_detail(name: str, channel: Optional[str] = None):
+    """Get detailed information about a specific skill by name.
+
+    Query param ``channel`` can be ``active`` or ``draft``.
+    Without it the active version is returned when available, otherwise draft.
+    Returns 404 when the skill does not exist or when
+    ENABLE_SKILL_DETAIL_API is set to ``false``.
+    """
+    if os.getenv("ENABLE_SKILL_DETAIL_API", "true").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
+    result = skill_manager.get_skill_detail(name, channel)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
 
 @app.get("/v1/skill-knowledge/categories")
 async def get_skill_knowledge_categories():
@@ -523,6 +673,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 # === TOOL HANDLERS ===
 
 async def handle_list_skills(args: Dict[str, Any]) -> Dict[str, Any]:
+    _trigger_graph_reconcile_background()
     include_available = args.get("include_available", True)
     category = args.get("category")
 
@@ -592,7 +743,14 @@ async def handle_get_skill_info(args: Dict[str, Any]) -> Dict[str, Any]:
 # === MINI-CONTROL-LAYER HANDLERS (Delegated) ===
 
 async def handle_create_skill(args: Dict[str, Any]) -> Dict[str, Any]:
-    """AI creates a new skill (Delegated)"""
+    """
+    AI creates a new skill.
+
+    C4.5 Single Control Authority: skill-server is the sole decision authority.
+    CIM validation + package check happen HERE before the executor is called.
+    BLOCK decisions never reach the executor.
+    APPROVE/WARN decisions are forwarded with a control_decision payload.
+    """
     name = args.get("name")
     description = args.get("description", "")
     triggers = args.get("triggers", [])
@@ -608,21 +766,111 @@ async def handle_create_skill(args: Dict[str, Any]) -> Dict[str, Any]:
     if not description or len(description.strip()) < 10:
         description = f"Skill {name}: Automatisch erstellter Skill."
 
-    # Package-Check: Drittanbieter-Pakete prüfen
-    from mini_control_layer import get_mini_control
+    from mini_control_layer import get_mini_control, SkillRequest
     _ctrl = get_mini_control()
+
+    # 1. Package-Check + C7 Policy: Drittanbieter-Pakete prüfen
+    _pkg_mode = _get_skill_package_install_mode()
     missing_pkgs = await _ctrl._check_missing_packages(code)
     if missing_pkgs:
-        pkg_list = ", ".join(f"`{p}`" for p in missing_pkgs)
+        if _pkg_mode == "manual_only":
+            # Rollback path: preserve original behavior
+            pkg_list = ", ".join(f"`{p}`" for p in missing_pkgs)
+            return {
+                "success": False,
+                "needs_package_install": True,
+                "missing_packages": missing_pkgs,
+                "message": (
+                    f"Skill '{name}' benötigt folgende Pakete die noch nicht installiert sind: "
+                    f"{pkg_list}. Bitte installiere sie zuerst."
+                ),
+            }
+        # allowlist_auto: classify against executor allowlist
+        _allowlist = await _ctrl._get_package_allowlist()
+        _allowlisted = [p for p in missing_pkgs if p.lower() in _allowlist]
+        _non_allowlisted = [p for p in missing_pkgs if p.lower() not in _allowlist]
+        if _non_allowlisted:
+            non_list = ", ".join(f"`{p}`" for p in _non_allowlisted)
+            return {
+                "success": False,
+                "action": "pending_package_approval",
+                "action_taken": "pending_package_approval",
+                "skill_name": name,
+                "needs_package_install": True,
+                "needs_package_approval": True,
+                "missing_packages": missing_pkgs,
+                "allowlisted_missing_packages": _allowlisted,
+                "non_allowlisted_packages": _non_allowlisted,
+                "policy_state": "pending_package_approval",
+                "event_type": "approval_requested",
+                "message": (
+                    f"Skill '{name}' benötigt Pakete die nicht auf der Allowlist stehen: "
+                    f"{non_list}. Manuelle Freigabe erforderlich."
+                ),
+            }
+        if _allowlisted:
+            _install_result = await _ctrl._auto_install_packages(_allowlisted)
+            if not _install_result["success"]:
+                pkg_list = ", ".join(f"`{p}`" for p in _allowlisted)
+                return {
+                    "success": False,
+                    "error": _install_result.get("error", "Package installation failed"),
+                    "missing_packages": _allowlisted,
+                    "message": (
+                        f"Automatische Installation fehlgeschlagen für: {pkg_list}."
+                    ),
+                }
+            print(f"[Server] C7 allowlisted packages auto-installed: {_allowlisted}")
+
+    # 1.5 C8 Secret Scanner
+    try:
+        from secret_scanner import SecretScanner
+        scanner = SecretScanner()
+        scan_res = scanner.enforce(code)
+        if not scan_res["passed"]:
+            return {
+                "success": False,
+                "error": scan_res["error"],
+                "action": "block",
+                "warnings": scan_res["warnings"],
+            }
+        scanner_warnings = scan_res["warnings"]
+    except Exception as e:
+        print(f"[SkillServer] SecretScanner error: {e}")
+        scanner_warnings = []
+
+    # 2. CIM Validation — Authority Decision (skill-server is sole authority)
+    skill_req = SkillRequest(
+        type="CREATE",
+        name=name,
+        code=code,
+        description=description,
+        triggers=triggers,
+        auto_promote=auto_promote,
+    )
+    decision = await _ctrl.process_request(skill_req)
+
+    # 3. Block locally — executor is NOT called
+    if not decision.passed:
         return {
             "success": False,
-            "needs_package_install": True,
-            "missing_packages": missing_pkgs,
-            "message": (
-                f"Skill '{name}' benötigt folgende Pakete die noch nicht installiert sind: "
-                f"{pkg_list}. Bitte installiere sie zuerst."
-            ),
+            "error": decision.reason,
+            "action": decision.action.value,
+            "warnings": decision.warnings + scanner_warnings,
         }
+
+    # 4. Build delegated control_decision for executor
+    control_decision = {
+        "action": decision.action.value,
+        "passed": True,
+        "reason": decision.reason,
+        "warnings": decision.warnings + scanner_warnings,
+        "validation_score": (
+            decision.validation_result.score if decision.validation_result else 0.0
+        ),
+        "source": "skill_server",
+        "policy_version": "1.0",
+    }
 
     skill_data = {
         "code": code,
@@ -631,9 +879,10 @@ async def handle_create_skill(args: Dict[str, Any]) -> Dict[str, Any]:
         "gap_patterns": args.get("gap_patterns", []),
         "gap_question": args.get("gap_question"),
         "default_params": args.get("default_params", {}),
+        "control_decision": control_decision,
     }
 
-    # Delegate to manager -> executor
+    # 5. Delegate to manager -> executor (side-effect only)
     return await skill_manager.create_skill(name, skill_data, draft=not auto_promote)
 
 
@@ -680,20 +929,32 @@ async def handle_autonomous_skill_task(args: Dict[str, Any]) -> Dict[str, Any]:
     """
     from mini_control_layer import get_mini_control, AutonomousTaskRequest
     
-    user_text = args.get("user_text", "")
-    intent = args.get("intent", "")
-    complexity = args.get("complexity", 5)
-    allow_auto_create = args.get("allow_auto_create", True)
-    execute_after_create = args.get("execute_after_create", True)
+    trace_id = _normalize_trace_id(args.get("_trace_id"))
+    user_text = _safe_text(args.get("user_text", ""), max_len=4000)
+    intent = _safe_text(args.get("intent", ""), max_len=4000)
+    try:
+        complexity = int(args.get("complexity", 5))
+    except Exception:
+        complexity = 5
+    complexity = max(1, min(10, complexity))
+    allow_auto_create = _coerce_bool(args.get("allow_auto_create", True), True)
+    execute_after_create = _coerce_bool(args.get("execute_after_create", True), True)
+    prefer_create = _coerce_bool(args.get("prefer_create", False), False)
     
     if not user_text or not intent:
         return {
             "success": False,
-            "error": "user_text and intent are required"
+            "error": "user_text and intent are required",
+            "trace_id": trace_id,
         }
     
     # Get optional thinking_plan
-    thinking_plan = args.get("thinking_plan", None)
+    thinking_plan = _sanitize_thinking_plan(args.get("thinking_plan", None))
+    print(
+        f"[SkillServer][trace={trace_id}] autonomous_skill_task "
+        f"complexity={complexity} has_plan={bool(thinking_plan)} "
+        f"plan_keys={sorted(thinking_plan.keys()) if isinstance(thinking_plan, dict) else []}"
+    )
     
     # Create task request with ThinkingLayer context
     task = AutonomousTaskRequest(
@@ -702,14 +963,23 @@ async def handle_autonomous_skill_task(args: Dict[str, Any]) -> Dict[str, Any]:
         complexity=complexity,
         allow_auto_create=allow_auto_create,
         execute_after_create=execute_after_create,
+        prefer_create=prefer_create,
         thinking_plan=thinking_plan
     )
     
     # Process via Mini-Control
-    control = get_mini_control()
-    start = time.monotonic()
-    result = await control.process_autonomous_task(task)
-    elapsed_ms = (time.monotonic() - start) * 1000
+    try:
+        control = get_mini_control()
+        start = time.monotonic()
+        result = await control.process_autonomous_task(task)
+        elapsed_ms = (time.monotonic() - start) * 1000
+    except Exception as e:
+        print(f"[SkillServer][trace={trace_id}] autonomous_skill_task exception: {e}\n{traceback.format_exc()}")
+        return {
+            "success": False,
+            "error": f"{type(e).__name__}: {e}",
+            "trace_id": trace_id,
+        }
 
     # Clarification needed — kein Fehler, Frage an User
     if result.action_taken == "needs_clarification":
@@ -719,6 +989,7 @@ async def handle_autonomous_skill_task(args: Dict[str, Any]) -> Dict[str, Any]:
             "question": result.message,
             "original_intent": intent,
             "original_user_text": user_text,
+            "trace_id": trace_id,
         }
 
     skill_name = result.skill_name or intent[:30]
@@ -730,7 +1001,10 @@ async def handle_autonomous_skill_task(args: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         print(f"[SkillServer] Metric recording failed: {e}")
 
-    return result.to_dict()
+    response = result.to_dict()
+    if isinstance(response, dict):
+        response["trace_id"] = trace_id
+    return response
 
 
 # === STARTUP ===

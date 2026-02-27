@@ -2,6 +2,7 @@
 MCP Installation & Management Module
 Handles Tier 1 (Simple Python) MCPs only
 """
+import asyncio
 from fastapi import APIRouter, UploadFile, HTTPException
 from pathlib import Path
 import shutil
@@ -25,6 +26,73 @@ class InstallationError(Exception):
     def rollback(self):
         if self.target_dir and self.target_dir.exists():
             shutil.rmtree(self.target_dir)
+
+
+def _reload_hub_registry(hub) -> str:
+    """
+    Reload MCP registry via hub using a compatibility fallback.
+    Prefers reload_registry(); falls back to refresh().
+    """
+    reload_fn = getattr(hub, "reload_registry", None)
+    if callable(reload_fn):
+        reload_fn()
+        return "reload_registry"
+
+    refresh_fn = getattr(hub, "refresh", None)
+    if callable(refresh_fn):
+        refresh_fn()
+        return "refresh"
+
+    raise InstallationError("Hub does not support registry reload/refresh")
+
+
+def _is_online_flag(value) -> bool:
+    """Normalize 'online' payloads from list_mcps entries."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        if isinstance(value.get("online"), bool):
+            return value["online"]
+        if isinstance(value.get("ok"), bool):
+            return value["ok"]
+        status = value.get("status")
+        if isinstance(status, str):
+            return status.lower() in {"ok", "healthy", "online", "ready"}
+    return bool(value)
+
+
+async def _run_post_install_health_check(hub, mcp_name: str, attempts: int = 8, delay_s: float = 0.25) -> Dict[str, str]:
+    """
+    Validate that installed MCP appears in registry and is reported online.
+    Returns status in {"healthy","unhealthy","unknown"}.
+    """
+    list_mcps = getattr(hub, "list_mcps", None)
+    if not callable(list_mcps):
+        return {"status": "unknown", "reason": "hub_missing_list_mcps"}
+
+    reason = "mcp_not_listed"
+    total_attempts = max(1, int(attempts))
+
+    for idx in range(total_attempts):
+        try:
+            mcps = list_mcps()
+            if not isinstance(mcps, list):
+                return {"status": "unknown", "reason": "invalid_list_mcps_payload"}
+
+            entry = next((m for m in mcps if isinstance(m, dict) and m.get("name") == mcp_name), None)
+            if entry is None:
+                reason = "mcp_not_listed"
+            elif _is_online_flag(entry.get("online")):
+                return {"status": "healthy", "reason": "online"}
+            else:
+                reason = "mcp_listed_offline"
+        except Exception as exc:
+            reason = f"list_mcps_error:{exc}"
+
+        if idx < total_attempts - 1:
+            await asyncio.sleep(delay_s)
+
+    return {"status": "unhealthy", "reason": reason}
 
 @router.post("/install")
 async def install_mcp(file: UploadFile):
@@ -116,18 +184,27 @@ async def install_mcp(file: UploadFile):
         
         # PHASE 5: Hot Reload
         hub = get_hub()
-        hub.reload_registry()
-        
+        reload_method = _reload_hub_registry(hub)
+
         # PHASE 6: Health Check
-        # TODO: Implement health check
-        
+        health = await _run_post_install_health_check(hub, mcp_name)
+        if health.get("status") == "unhealthy":
+            raise InstallationError(
+                f"Health check failed for MCP '{mcp_name}': {health.get('reason')}",
+                target_dir
+            )
+
         return {
             "success": True,
             "mcp": {
                 "name": mcp_name,
                 "description": config.get("description", ""),
                 "url": config.get("url")
-            }
+            },
+            "health": {
+                **health,
+                "reload_method": reload_method,
+            },
         }
     
     except InstallationError as e:
@@ -176,7 +253,7 @@ async def delete_mcp(name: str):
     
     # Hot Reload
     hub = get_hub()
-    hub.reload_registry()
+    _reload_hub_registry(hub)
     
     return {"success": True, "deleted": name}
 
@@ -202,7 +279,7 @@ async def toggle_mcp(name: str):
             
             # Hot Reload
             hub = get_hub()
-            hub.reload_registry()
+            _reload_hub_registry(hub)
             
             return {"success": True, "enabled": config["enabled"]}
         except Exception as e:

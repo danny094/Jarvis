@@ -1,4 +1,5 @@
 
+import importlib.util
 import os
 import yaml
 import shutil
@@ -6,6 +7,24 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 from observability.events import EventLogger
+
+
+def _load_registry_store():
+    """
+    Load skill_registry_store by absolute path so the import is robust
+    even when sys.modules["engine"] has been mocked in tests.
+    Result is cached under a private module name.
+    """
+    _name = "_skill_registry_store_impl"
+    import sys
+    if _name in sys.modules:
+        return sys.modules[_name]
+    _path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skill_registry_store.py")
+    spec = importlib.util.spec_from_file_location(_name, _path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules[_name] = mod
+    return mod
 
 class SkillInstaller:
     """
@@ -18,6 +37,29 @@ class SkillInstaller:
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         (self.skills_dir / "_drafts").mkdir(exist_ok=True)
         (self.skills_dir / "_registry").mkdir(exist_ok=True)
+        (self.skills_dir / "_history").mkdir(exist_ok=True)
+
+    def _resolve_overwrite_policy(self) -> str:
+        """
+        Returns overwrite policy for existing targets.
+        Supported:
+        - overwrite (default): delete existing target before write
+        - archive: move existing target to _history/<skill>/<timestamp>
+        - error: refuse overwrite with FileExistsError
+        """
+        policy = os.getenv("SKILL_OVERWRITE_POLICY", "overwrite").strip().lower()
+        if policy in {"overwrite", "archive", "error"}:
+            return policy
+        return "overwrite"
+
+    def _archive_existing_target(self, safe_name: str, source_dir: Path) -> Path:
+        """Archive existing skill directory before replacing it."""
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+        archive_root = self.skills_dir / "_history" / safe_name
+        archive_root.mkdir(parents=True, exist_ok=True)
+        archive_dir = archive_root / ts
+        shutil.move(str(source_dir), str(archive_dir))
+        return archive_dir
 
     def save_skill(self, name: str, code: str, manifest_data: Dict[str, Any], is_draft: bool) -> Dict[str, Any]:
         """
@@ -39,10 +81,22 @@ class SkillInstaller:
         else:
             target_dir = self.skills_dir / safe_name
 
+        overwrite_policy = self._resolve_overwrite_policy()
+        archived_to = None
         if target_dir.exists():
-            # TODO: Add versioning or overwrite policy?
-            # For now, overwrite is allowed for development
-            shutil.rmtree(target_dir)
+            if overwrite_policy == "error":
+                raise FileExistsError(
+                    f"Skill '{safe_name}' already exists at '{target_dir}' and SKILL_OVERWRITE_POLICY=error"
+                )
+            if overwrite_policy == "archive":
+                archived_to = self._archive_existing_target(safe_name, target_dir)
+                EventLogger.emit(
+                    "skill_overwrite_archived",
+                    {"name": safe_name, "archived_to": str(archived_to)},
+                    status="success",
+                )
+            else:
+                shutil.rmtree(target_dir)
         
         target_dir.mkdir(parents=True, exist_ok=True)
         
@@ -87,34 +141,41 @@ class SkillInstaller:
         return {
             "success": True,
             "path": str(target_dir),
-            "status": "draft" if is_draft else "active"
+            "status": "draft" if is_draft else "active",
+            "overwrite_policy": overwrite_policy,
+            "archived_to": str(archived_to) if archived_to else None,
         }
 
     def _update_registry_file(self, name: str, manifest: Dict):
-        """Update the installed.json registry file."""
-        registry_path = self.skills_dir / "_registry" / "installed.json"
-        
-        registry = {}
-        if registry_path.exists():
-            try:
-                with open(registry_path, "r") as f:
-                    registry = yaml.safe_load(f) or {} # Using yaml loader for json is fine usually, but let's stick to json
-                    # Wait, checking SkillManager... it used json.load
-            except:
-                pass
-                
-        # Re-read properly
-        if registry_path.exists():
-             import json
-             with open(registry_path, "r") as f:
-                 try:
-                     registry = json.load(f)
-                 except:
-                     registry = {}
+        """
+        Update installed.json — atomic V2 write via skill_registry_store.
+        Increments revision on each update, preserves installed_at across updates.
+        Sets updated_at, channel, skill_key on every write.
+        """
+        store = _load_registry_store()
+        import os as _os
 
-        registry[name] = {
+        registry_path = self.skills_dir / "_registry" / "installed.json"
+        skills = store.load_registry(registry_path)
+
+        # Preserve installed_at and increment revision
+        existing = skills.get(name, {})
+        installed_at = existing.get("installed_at") or datetime.now().isoformat()
+        old_revision = int(existing.get("revision") or 0)
+        new_revision = old_revision + 1
+        now = datetime.now().isoformat()
+
+        mode = _os.getenv("SKILL_KEY_MODE", "name").lower()
+        skill_key = store.make_skill_key(name, channel="active", mode=mode)
+
+        skills[name] = {
+            "skill_key": skill_key,
+            "name": name,
+            "channel": "active",
             "version": manifest["version"],
-            "installed_at": datetime.now().isoformat(),
+            "installed_at": installed_at,
+            "updated_at": now,
+            "revision": new_revision,
             "description": manifest["description"],
             "triggers": manifest.get("triggers", []),
             "gap_patterns": manifest.get("gap_patterns", []),
@@ -122,10 +183,9 @@ class SkillInstaller:
             "preferred_model": manifest.get("preferred_model"),
             "default_params": manifest.get("default_params", {}),
         }
-        
-        import json
-        with open(registry_path, "w") as f:
-            json.dump(registry, f, indent=2)
+
+        # Atomic V2 write — never leaves a partial file on disk
+        store.save_registry_atomic(registry_path, skills, mode=mode)
 
     def uninstall_skill(self, name: str) -> Dict[str, Any]:
         """Remove a skill."""
@@ -140,21 +200,21 @@ class SkillInstaller:
         return {"success": True, "message": f"Skill {name} uninstalled"}
 
     def _remove_from_registry(self, name: str):
+        """Remove skill from installed.json — atomic V2 write via skill_registry_store."""
+        store = _load_registry_store()
+        load_registry = store.load_registry
+        save_registry_atomic = store.save_registry_atomic
+
         registry_path = self.skills_dir / "_registry" / "installed.json"
         if not registry_path.exists():
             return
-            
-        import json
-        with open(registry_path, 'r') as f:
-            try:
-                registry = json.load(f)
-            except:
-                return
-        
-        if name in registry:
-            del registry[name]
-            with open(registry_path, 'w') as f:
-                json.dump(registry, f, indent=2)
+
+        skills = load_registry(registry_path)
+        if name not in skills:
+            return
+
+        del skills[name]
+        save_registry_atomic(registry_path, skills)
 
 
     def list_skills(self) -> Dict[str, Any]:

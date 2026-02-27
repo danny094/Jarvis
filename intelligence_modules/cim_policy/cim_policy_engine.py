@@ -161,6 +161,12 @@ class CIMPolicyEngine:
                 
                 # Kombiniere mit Policy-Confidence
                 min_confidence = policy['intent_confidence']
+                # Confirmation-gated policies are safe to trigger on regex match:
+                # false positives still require explicit user confirmation.
+                if policy.get('requires_confirmation', False):
+                    effective_conf = max(match_confidence, min_confidence)
+                    logger.debug(f"[CIM] Matched (confirm-gated): {pattern_id} (conf={effective_conf:.2f})")
+                    return policy, effective_conf
                 if match_confidence >= min_confidence * 0.8:  # 80% Toleranz
                     logger.debug(f"[CIM] Matched: {pattern_id} (conf={match_confidence:.2f})")
                     return policy, match_confidence
@@ -173,6 +179,10 @@ class CIMPolicyEngine:
         
         Beispiel: "Berechne Fibonacci von 10" → "auto_fibonacci_calc"
         """
+        explicit_name = self._extract_explicit_skill_name(user_input)
+        if explicit_name:
+            return explicit_name
+
         category = policy.get('trigger_category', 'general')
         
         # Keywords extrahieren
@@ -201,6 +211,37 @@ class CIMPolicyEngine:
         skill_name = re.sub(r'_+', '_', skill_name).strip('_')
         
         return skill_name
+
+    def _extract_explicit_skill_name(self, user_input: str) -> Optional[str]:
+        """
+        Try to parse user-provided skill names before falling back to auto_* naming.
+        """
+        text = (user_input or "").strip()
+        if not text:
+            return None
+
+        patterns = [
+            r"(?:skill|funktion)\s+namens\s+[`\"']?([A-Za-z][A-Za-z0-9_-]{2,63})[`\"']?",
+            r"(?:namens|named|called|name)\s+[`\"']?([A-Za-z][A-Za-z0-9_-]{2,63})[`\"']?",
+        ]
+        stopwords = {
+            "skill", "funktion", "function", "neu", "neue", "new",
+            "bitte", "einen", "eine", "einer", "den", "die", "das",
+        }
+
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE)
+            if not match:
+                continue
+            candidate = match.group(1).strip("`\"'.,:;!?()[]{} ").lower()
+            candidate = candidate.replace("-", "_")
+            candidate = re.sub(r"[^a-z0-9_]", "_", candidate)
+            candidate = re.sub(r"_+", "_", candidate).strip("_")
+            if len(candidate) < 3 or candidate in stopwords:
+                continue
+            return candidate
+
+        return None
     
     def process(
         self, 

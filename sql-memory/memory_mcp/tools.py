@@ -388,7 +388,9 @@ def register_tools(mcp):
         conversation_id: str = None,
         limit: int = 5,
         min_similarity: float = 0.5,
-        content_type: Optional[str] = None
+        content_type: Optional[str] = None,
+        allow_mixed_versions: bool = False,
+        embedding_version: Optional[str] = None,
     ) -> Dict:
         """Semantische Suche - findet ähnliche Einträge nach Bedeutung."""
         vs = get_vector_store()
@@ -398,13 +400,52 @@ def register_tools(mcp):
             conversation_id=conversation_id,
             limit=limit,
             min_similarity=min_similarity,
-            content_type=content_type
+            content_type=content_type,
+            allow_mixed_versions=allow_mixed_versions,
+            embedding_version=embedding_version,
         )
 
         return {
             "results": results,
             "count": len(results)
         }
+
+    # --------------------------------------------------
+    # memory_embedding_version_status
+    # --------------------------------------------------
+    @mcp.tool
+    def memory_embedding_version_status(
+        conversation_id: Optional[str] = None,
+        content_type: Optional[str] = None,
+    ) -> Dict:
+        """Zeigt aktive/stale Embedding-Versionen fuer Monitoring und Migration."""
+        vs = get_vector_store()
+        return vs.get_version_status(
+            conversation_id=conversation_id,
+            content_type=content_type,
+        )
+
+    # --------------------------------------------------
+    # memory_embedding_backfill
+    # --------------------------------------------------
+    @mcp.tool
+    def memory_embedding_backfill(
+        batch_size: int = 100,
+        conversation_id: Optional[str] = None,
+        content_type: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict:
+        """
+        Re-embedding Batch fuer veraltete/fehlende embedding_version.
+        Resume-faehig: wiederholte Aufrufe arbeiten die Restmenge ab.
+        """
+        vs = get_vector_store()
+        return vs.backfill_embeddings(
+            batch_size=max(1, min(int(batch_size), 1000)),
+            conversation_id=conversation_id,
+            content_type=content_type,
+            dry_run=bool(dry_run),
+        )
     # --------------------------------------------------
     # memory_graph_search (NEU)
     # --------------------------------------------------

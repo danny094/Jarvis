@@ -18,8 +18,11 @@ import os
 import time
 import hashlib
 import threading
+import re
+import sqlite3
+import uuid
 from datetime import datetime
-from typing import AsyncGenerator, Tuple, Dict, Any, Optional, List
+from typing import AsyncGenerator, Tuple, Dict, Any, Optional, List, Callable
 
 from core.models import CoreChatRequest, CoreChatResponse
 from core.context_manager import ContextManager, ContextResult
@@ -107,9 +110,347 @@ class _PlanCache:
                 }
 
 
+class _SqlitePlanCache:
+    """
+    SQLite-backed TTL cache for cross-worker cache sharing.
+    Enables optional multi-process cache coherence via shared DB file.
+    """
+
+    def __init__(
+        self,
+        ttl_seconds: int = 300,
+        *,
+        db_path: str = "/tmp/trion_plan_cache.sqlite",
+        namespace: str = "default",
+        max_entries: int = 1000,
+    ):
+        self._ttl = ttl_seconds
+        self._db_path = db_path
+        self._namespace = namespace
+        self._max_entries = max_entries
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, timeout=5.0, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self):
+        with self._conn() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plan_cache (
+                    namespace TEXT NOT NULL,
+                    cache_key TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    payload TEXT NOT NULL,
+                    PRIMARY KEY(namespace, cache_key)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_plan_cache_ttl ON plan_cache(namespace, created_at)"
+            )
+
+    @staticmethod
+    def _key(text: str) -> str:
+        return hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()
+
+    def get(self, text: str) -> Optional[Dict]:
+        key = self._key(text)
+        now = time.time()
+        cutoff = now - self._ttl
+        try:
+            with self._lock, self._conn() as conn:
+                conn.execute(
+                    "DELETE FROM plan_cache WHERE namespace=? AND created_at < ?",
+                    (self._namespace, cutoff),
+                )
+                row = conn.execute(
+                    """
+                    SELECT payload
+                    FROM plan_cache
+                    WHERE namespace=? AND cache_key=? AND created_at >= ?
+                    """,
+                    (self._namespace, key, cutoff),
+                ).fetchone()
+                if not row:
+                    return None
+                return json.loads(row["payload"])
+        except Exception as e:
+            log_warn(f"[PlanCache:sqlite] get failed namespace={self._namespace}: {e}")
+            return None
+
+    def set(self, text: str, plan: Dict):
+        key = self._key(text)
+        now = time.time()
+        payload = json.dumps(plan, ensure_ascii=False, default=str)
+        cutoff = now - self._ttl
+        try:
+            with self._lock, self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO plan_cache(namespace, cache_key, created_at, payload)
+                    VALUES(?,?,?,?)
+                    ON CONFLICT(namespace, cache_key)
+                    DO UPDATE SET created_at=excluded.created_at, payload=excluded.payload
+                    """,
+                    (self._namespace, key, now, payload),
+                )
+                conn.execute(
+                    "DELETE FROM plan_cache WHERE namespace=? AND created_at < ?",
+                    (self._namespace, cutoff),
+                )
+                count_row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM plan_cache WHERE namespace=?",
+                    (self._namespace,),
+                ).fetchone()
+                count = int(count_row["n"]) if count_row else 0
+                if count > self._max_entries:
+                    drop = count - self._max_entries
+                    conn.execute(
+                        """
+                        DELETE FROM plan_cache
+                        WHERE rowid IN (
+                            SELECT rowid FROM plan_cache
+                            WHERE namespace=?
+                            ORDER BY created_at ASC
+                            LIMIT ?
+                        )
+                        """,
+                        (self._namespace, drop),
+                    )
+        except Exception as e:
+            log_warn(f"[PlanCache:sqlite] set failed namespace={self._namespace}: {e}")
+
+
+def _make_plan_cache(ttl_seconds: int, namespace: str):
+    backend = os.getenv("TRION_PLAN_CACHE_BACKEND", "sqlite").strip().lower()
+    if backend in {"sqlite", "shared", "sqlite_shared"}:
+        db_path = os.getenv("TRION_PLAN_CACHE_DB", "/tmp/trion_plan_cache.sqlite")
+        try:
+            log_info(f"[PlanCache] backend=sqlite namespace={namespace} db={db_path}")
+            return _SqlitePlanCache(ttl_seconds=ttl_seconds, db_path=db_path, namespace=namespace)
+        except Exception as e:
+            log_warn(f"[PlanCache] sqlite backend init failed, fallback=memory: {e}")
+    return _PlanCache(ttl_seconds=ttl_seconds)
+
+
 # Module-level Cache-Instanzen (leben bis Container neugestartet wird)
-_thinking_plan_cache = _PlanCache(ttl_seconds=300)     # 5 min
-_sequential_result_cache = _PlanCache(ttl_seconds=600)  # 10 min
+_thinking_plan_cache = _make_plan_cache(ttl_seconds=300, namespace="thinking_plan")      # 5 min
+_sequential_result_cache = _make_plan_cache(ttl_seconds=600, namespace="sequential_result")  # 10 min
+
+
+class _ArchiveEmbeddingJobQueue:
+    """
+    Durable local job queue for archive embedding post-processing.
+    Uses SQLite so pending jobs survive process restarts.
+    """
+
+    def __init__(
+        self,
+        *,
+        db_path: str = "/tmp/trion_posttask_jobs.sqlite",
+        poll_interval_s: float = 0.8,
+        retry_base_s: float = 1.0,
+        retry_max_s: float = 60.0,
+    ):
+        self._db_path = db_path
+        self._poll_interval_s = max(0.1, float(poll_interval_s))
+        self._retry_base_s = max(0.0, float(retry_base_s))
+        self._retry_max_s = max(self._retry_base_s, float(retry_max_s))
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._notify_event = threading.Event()
+        self._start_lock = threading.Lock()
+        self._db_lock = threading.Lock()
+        self._processor: Optional[Callable[[], int]] = None
+        self._init_db()
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, timeout=5.0, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self):
+        with self._conn() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS archive_embedding_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    available_at REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    last_error TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_archive_embedding_jobs_pending "
+                "ON archive_embedding_jobs(status, available_at, id)"
+            )
+
+    def ensure_worker_running(self, processor: Callable[[], int]):
+        self.set_processor(processor)
+        if self._thread and self._thread.is_alive():
+            return
+        with self._start_lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._worker_loop,
+                name="archive-embedding-worker",
+                daemon=True,
+            )
+            self._thread.start()
+            log_info("[PostTaskQueue] worker started")
+
+    def set_processor(self, processor: Callable[[], int]):
+        if callable(processor):
+            self._processor = processor
+
+    def enqueue(self) -> int:
+        now = time.time()
+        with self._db_lock, self._conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO archive_embedding_jobs(status, attempts, available_at, created_at, updated_at)
+                VALUES('pending', 0, ?, ?, ?)
+                """,
+                (now, now, now),
+            )
+            job_id = int(cur.lastrowid)
+        self._notify_event.set()
+        return job_id
+
+    def _claim_next(self) -> Optional[sqlite3.Row]:
+        now = time.time()
+        with self._db_lock, self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, attempts
+                FROM archive_embedding_jobs
+                WHERE status='pending' AND available_at <= ?
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
+            if not row:
+                conn.execute("COMMIT")
+                return None
+            conn.execute(
+                "UPDATE archive_embedding_jobs SET status='running', updated_at=? WHERE id=?",
+                (now, int(row["id"])),
+            )
+            conn.execute("COMMIT")
+            return row
+
+    def _mark_done(self, job_id: int):
+        with self._db_lock, self._conn() as conn:
+            conn.execute("DELETE FROM archive_embedding_jobs WHERE id=?", (job_id,))
+
+    def _mark_retry(self, job_id: int, attempts: int, error: str):
+        backoff = min(self._retry_max_s, self._retry_base_s * (2 ** max(0, attempts)))
+        next_at = time.time() + backoff
+        with self._db_lock, self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE archive_embedding_jobs
+                SET status='pending',
+                    attempts=?,
+                    available_at=?,
+                    updated_at=?,
+                    last_error=?
+                WHERE id=?
+                """,
+                (attempts, next_at, time.time(), error[:1000], job_id),
+            )
+
+    def pending_count(self) -> int:
+        with self._db_lock, self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM archive_embedding_jobs WHERE status='pending'"
+            ).fetchone()
+            return int(row["n"]) if row else 0
+
+    def stats(self) -> Dict[str, int]:
+        with self._db_lock, self._conn() as conn:
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM archive_embedding_jobs WHERE status='pending'"
+            ).fetchone()
+            running = conn.execute(
+                "SELECT COUNT(*) AS n FROM archive_embedding_jobs WHERE status='running'"
+            ).fetchone()
+            total = conn.execute("SELECT COUNT(*) AS n FROM archive_embedding_jobs").fetchone()
+            return {
+                "pending": int(pending["n"]) if pending else 0,
+                "running": int(running["n"]) if running else 0,
+                "total": int(total["n"]) if total else 0,
+            }
+
+    def run_once(self) -> bool:
+        if not callable(self._processor):
+            return False
+        row = self._claim_next()
+        if not row:
+            return False
+
+        job_id = int(row["id"])
+        attempts = int(row["attempts"])
+        try:
+            processed = int(self._processor() or 0)
+            if processed > 0:
+                log_info(f"[PostTaskQueue] processed archive embeddings: {processed} (job_id={job_id})")
+            self._mark_done(job_id)
+        except Exception as e:
+            next_attempt = attempts + 1
+            self._mark_retry(job_id, next_attempt, str(e))
+            log_error(
+                f"[PostTaskQueue] job failed (job_id={job_id}, attempts={next_attempt}) "
+                f"error={e}"
+            )
+        return True
+
+    def _worker_loop(self):
+        while not self._stop_event.is_set():
+            worked = self.run_once()
+            if worked:
+                continue
+            self._notify_event.wait(self._poll_interval_s)
+            self._notify_event.clear()
+
+    def stop(self):
+        self._stop_event.set()
+        self._notify_event.set()
+
+
+_archive_embedding_queue_lock = threading.Lock()
+_archive_embedding_queue: Optional[_ArchiveEmbeddingJobQueue] = None
+
+
+def _get_archive_embedding_queue() -> _ArchiveEmbeddingJobQueue:
+    global _archive_embedding_queue
+    with _archive_embedding_queue_lock:
+        if _archive_embedding_queue is None:
+            db_path = os.getenv("TRION_POSTTASK_QUEUE_DB", "/tmp/trion_posttask_jobs.sqlite")
+            poll = float(os.getenv("TRION_POSTTASK_QUEUE_POLL_S", "0.8") or "0.8")
+            retry_base = float(os.getenv("TRION_POSTTASK_QUEUE_RETRY_BASE_S", "1.0") or "1.0")
+            retry_max = float(os.getenv("TRION_POSTTASK_QUEUE_RETRY_MAX_S", "60.0") or "60.0")
+            _archive_embedding_queue = _ArchiveEmbeddingJobQueue(
+                db_path=db_path,
+                poll_interval_s=poll,
+                retry_base_s=retry_base,
+                retry_max_s=retry_max,
+            )
+        return _archive_embedding_queue
 
 # Patterns für frühes Hardware-Gate (vor Sequential Thinking)
 _HARDWARE_GATE_PATTERNS = [
@@ -185,6 +526,130 @@ class PipelineOrchestrator:
         
         log_info("[PipelineOrchestrator] Initialized with 3 layers + ContextManager")
 
+    _CONTROL_SKIP_BLOCK_TOOLS = {
+        "create_skill",
+        "autonomous_skill_task",
+        "request_container",
+        "exec_in_container",
+        "home_write",
+    }
+    _CONTROL_SKIP_BLOCK_KEYWORDS = (
+        "skill",
+        "erstelle",
+        "create",
+        "programmier",
+        "baue",
+        "bau",
+        "funktion",
+        "neue funktion",
+        "new function",
+    )
+
+    @classmethod
+    def _extract_suggested_tool_names(cls, thinking_plan: Dict[str, Any]) -> List[str]:
+        names: List[str] = []
+        raw_tools = (thinking_plan or {}).get("suggested_tools", []) or []
+        for tool in raw_tools:
+            if isinstance(tool, dict):
+                name = str(tool.get("tool") or tool.get("name") or "").strip()
+            else:
+                name = str(tool).strip()
+            if name:
+                names.append(name)
+        return names
+
+    @staticmethod
+    def _normalize_trace_id(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            raw = uuid.uuid4().hex[:12]
+        safe = re.sub(r"[^a-zA-Z0-9:_-]", "", raw)[:64]
+        return safe or uuid.uuid4().hex[:12]
+
+    @staticmethod
+    def _safe_str(value: Any, *, max_len: int = 3000) -> str:
+        text = str(value or "").strip()
+        if len(text) > max_len:
+            return text[:max_len]
+        return text
+
+    def _sanitize_intent_thinking_plan_for_skill_task(self, thinking_plan: Any) -> Dict[str, Any]:
+        """
+        Build a compact, schema-safe subset for autonomous_skill_task.
+        Prevents noisy / incompatible structures from crossing service boundaries.
+        """
+        if not isinstance(thinking_plan, dict):
+            return {}
+
+        safe: Dict[str, Any] = {}
+
+        text_keys = (
+            "intent",
+            "reasoning",
+            "reasoning_type",
+            "hallucination_risk",
+            "time_reference",
+        )
+        for key in text_keys:
+            if key in thinking_plan:
+                value = self._safe_str(thinking_plan.get(key), max_len=2000)
+                if value:
+                    safe[key] = value
+
+        for key in ("needs_memory", "is_fact_query", "needs_sequential_thinking", "sequential_thinking_required"):
+            if key in thinking_plan:
+                safe[key] = bool(thinking_plan.get(key))
+
+        if "sequential_complexity" in thinking_plan:
+            try:
+                complexity = int(thinking_plan.get("sequential_complexity", 0))
+            except Exception:
+                complexity = 0
+            safe["sequential_complexity"] = max(0, min(10, complexity))
+
+        raw_memory_keys = thinking_plan.get("memory_keys", [])
+        memory_keys: List[str] = []
+        if isinstance(raw_memory_keys, list):
+            for item in raw_memory_keys:
+                text = self._safe_str(item, max_len=80)
+                if text:
+                    memory_keys.append(text)
+        if memory_keys:
+            safe["memory_keys"] = memory_keys[:20]
+
+        suggested_tools = self._extract_suggested_tool_names(
+            {"suggested_tools": thinking_plan.get("suggested_tools", [])}
+        )
+        if suggested_tools:
+            safe["suggested_tools"] = suggested_tools[:20]
+
+        return safe
+
+    def _should_skip_control_layer(self, user_text: str, thinking_plan: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Unified skip policy for sync + stream to avoid drift.
+
+        Returns:
+            (skip_control, reason)
+        """
+        if not ENABLE_CONTROL_LAYER:
+            return True, "control_disabled"
+
+        hallucination_risk = (thinking_plan or {}).get("hallucination_risk", "medium")
+        if not (SKIP_CONTROL_ON_LOW_RISK and hallucination_risk == "low"):
+            return False, "control_required"
+
+        suggested_names = set(self._extract_suggested_tool_names(thinking_plan))
+        sensitive_hits = sorted(suggested_names.intersection(self._CONTROL_SKIP_BLOCK_TOOLS))
+        if sensitive_hits:
+            return False, f"sensitive_tools:{','.join(sensitive_hits)}"
+
+        user_lower = (user_text or "").lower()
+        if any(kw in user_lower for kw in self._CONTROL_SKIP_BLOCK_KEYWORDS):
+            return False, "creation_keywords"
+
+        return True, "low_risk_skip"
+
     # ===============================================================
     # HARDWARE GATE EARLY CHECK
     # ===============================================================
@@ -234,8 +699,22 @@ class PipelineOrchestrator:
         sonst None (→ Erstellung weiterhin erlaubt).
 
         Returns:
-            {"skill_name": str, "score": float} oder None
+            {"skill_name": str, "score": float}
+            {"blocked": True, "reason": "...", "error": "..."} bei Router-Fehler (fail-closed)
+            oder None
         """
+        # C10 (Rest) rollout/rollback gate:
+        # discovery paths can be disabled globally without code changes.
+        try:
+            from config import get_skill_discovery_enable
+            if not bool(get_skill_discovery_enable()):
+                log_info("[Orchestrator] Skill discovery disabled (SKILL_DISCOVERY_ENABLE=false)")
+                return None
+        except Exception:
+            if os.getenv("SKILL_DISCOVERY_ENABLE", "true").lower() != "true":
+                log_info("[Orchestrator] Skill discovery disabled via env fallback")
+                return None
+
         try:
             from core.skill_router import get_skill_router
             router = get_skill_router()
@@ -246,7 +725,13 @@ class PipelineOrchestrator:
             if decision.decision == "use_existing" and decision.skill_name:
                 return {"skill_name": decision.skill_name, "score": decision.score}
         except Exception as e:
-            log_warn(f"[Orchestrator] SkillRouter error: {e}")
+            # Fail-closed: Router-Fehler dürfen nicht still auf "kein Match" degradieren.
+            log_error(f"[Orchestrator] SkillRouter error (fail-closed): {e}")
+            return {
+                "blocked": True,
+                "reason": "skill_router_unavailable",
+                "error": str(e),
+            }
         return None
 
     # ===============================================================
@@ -260,6 +745,7 @@ class PipelineOrchestrator:
         Returns:
             {"blueprint_id": str, "score": float}                                  → use_blueprint (auto-route)
             {"blueprint_id": str, "score": float, "suggest": True, "candidates": [...]} → suggest_blueprint (Rückfrage)
+            {"blocked": True, "reason": "...", "error": "..."}                     → Router-Fehler (fail-closed)
             None                                                                    → no_blueprint (kein Freestyle!)
         """
         try:
@@ -279,7 +765,13 @@ class PipelineOrchestrator:
                     "candidates": decision.candidates,
                 }
         except Exception as e:
-            log_warn(f"[Orchestrator] BlueprintRouter error: {e}")
+            # Fail-closed: Bei Router-Fehler Container-Start strikt blockieren.
+            log_error(f"[Orchestrator] BlueprintRouter error (fail-closed): {e}")
+            return {
+                "blocked": True,
+                "reason": "blueprint_router_unavailable",
+                "error": str(e),
+            }
         return None
 
     # ===============================================================
@@ -288,27 +780,270 @@ class PipelineOrchestrator:
 
     def _post_task_processing(self):
         """
-        Background processing after task completion.
-        
-        Runs embedding generation for archived tasks in a separate thread
-        so it doesn't block the response to the user.
-        
-        Called after finish_task() in both sync and streaming pipelines.
+        Post-task processing after task completion.
+
+        Enqueues durable archive-embedding jobs into a local SQLite queue.
+        A background worker drains jobs asynchronously with retry/backoff.
+        This avoids unbounded fire-and-forget thread spawning and survives
+        process restarts for pending jobs.
         """
-        def _background_embeddings():
+        try:
+            q = _get_archive_embedding_queue()
+            q.ensure_worker_running(
+                lambda: get_archive_manager().process_pending_embeddings(batch_size=5)
+            )
+            job_id = q.enqueue()
+            log_debug(f"[PostTask] queued archive-embedding job_id={job_id} pending={q.pending_count()}")
+        except Exception as e:
+            log_error(f"[PostTask] queue enqueue failed, fallback inline processing: {e}")
             try:
                 processed = self.archive_manager.process_pending_embeddings(batch_size=5)
                 if processed > 0:
-                    log_info(f"[PostTask] Processed {processed} archive embeddings (background)")
-            except Exception as e:
-                log_error(f"[PostTask] Background embedding processing failed: {e}")
+                    log_info(f"[PostTask] Processed {processed} archive embeddings (inline fallback)")
+            except Exception as inner:
+                log_error(f"[PostTask] Inline fallback embedding processing failed: {inner}")
 
-        thread = threading.Thread(target=_background_embeddings, daemon=True)
-        thread.start()
+    def _is_explicit_deep_request(self, user_text: str) -> bool:
+        text = (user_text or "").lower()
+        deep_markers = (
+            "/deep",
+            "deep analysis",
+            "tiefenanalyse",
+            "ausfuehrlich",
+            "ausführlich",
+            "sehr detailliert",
+            "vollständige analyse",
+            "vollstaendige analyse",
+        )
+        return any(m in text for m in deep_markers)
+
+    def _is_explicit_think_request(self, user_text: str) -> bool:
+        text = (user_text or "").lower()
+        think_markers = (
+            "schritt für schritt",
+            "schritt fuer schritt",
+            "step by step",
+            "denk schrittweise",
+            "denke schrittweise",
+            "reason step by step",
+            "chain of thought",
+            "zeige dein thinking",
+        )
+        return any(m in text for m in think_markers)
+
+    @staticmethod
+    def _extract_tool_name(tool_spec: Any) -> str:
+        if isinstance(tool_spec, dict):
+            return str(tool_spec.get("tool") or tool_spec.get("name") or "").strip()
+        return str(tool_spec or "").strip()
+
+    def _filter_think_tools(
+        self,
+        tools: list,
+        user_text: str,
+        thinking_plan: Optional[Dict[str, Any]],
+        source: str,
+    ) -> list:
+        if not tools:
+            return tools
+
+        plan = thinking_plan or {}
+        allow_think = False
+        reason = "not_needed"
+
+        if self._is_explicit_think_request(user_text):
+            allow_think = True
+            reason = "explicit_user_request"
+        elif str(plan.get("_response_mode", "interactive")) == "deep":
+            allow_think = True
+            reason = "deep_mode"
+        elif plan.get("_sequential_deferred"):
+            allow_think = False
+            reason = "sequential_deferred"
+        elif plan.get("needs_sequential_thinking") or plan.get("sequential_thinking_required"):
+            allow_think = True
+            reason = "sequential_required"
+
+        if allow_think:
+            return tools
+
+        filtered = []
+        dropped = 0
+        for t in tools:
+            if self._extract_tool_name(t) == "think":
+                dropped += 1
+                continue
+            filtered.append(t)
+
+        if dropped:
+            log_info(
+                f"[Orchestrator] Filtered think tool(s) source={source} "
+                f"dropped={dropped} reason={reason}"
+            )
+        return filtered
+
+    def _filter_tool_selector_candidates(
+        self,
+        selected_tools: Optional[list],
+        user_text: str,
+        forced_mode: str = "",
+    ) -> Optional[list]:
+        if not selected_tools:
+            return selected_tools
+        plan_hint = {
+            "_response_mode": "deep"
+            if (forced_mode == "deep" or self._is_explicit_deep_request(user_text))
+            else "interactive"
+        }
+        return self._filter_think_tools(
+            list(selected_tools),
+            user_text=user_text,
+            thinking_plan=plan_hint,
+            source="tool_selector",
+        )
+
+    def _requested_response_mode(self, request: CoreChatRequest) -> str:
+        raw = request.raw_request if isinstance(getattr(request, "raw_request", None), dict) else {}
+        mode = str(raw.get("response_mode", "")).strip().lower()
+        return mode if mode in {"interactive", "deep"} else ""
+
+    def _apply_response_mode_policy(
+        self,
+        user_text: str,
+        thinking_plan: Dict[str, Any],
+        forced_mode: str = "",
+    ) -> str:
+        """
+        Resolve response mode and enforce interactive safeguards deterministically.
+        """
+        from config import (
+            get_default_response_mode,
+            get_response_mode_sequential_threshold,
+        )
+
+        if forced_mode in {"interactive", "deep"}:
+            mode = forced_mode
+        else:
+            mode = "deep" if self._is_explicit_deep_request(user_text) else get_default_response_mode()
+        mode = "deep" if mode == "deep" else "interactive"
+        thinking_plan["_response_mode"] = mode
+
+        if mode == "interactive":
+            threshold = get_response_mode_sequential_threshold()
+            complexity = int(thinking_plan.get("sequential_complexity", 0) or 0)
+            needs_seq = bool(
+                thinking_plan.get("needs_sequential_thinking")
+                or thinking_plan.get("sequential_thinking_required")
+            )
+            if needs_seq and complexity >= threshold:
+                thinking_plan["needs_sequential_thinking"] = False
+                thinking_plan["sequential_thinking_required"] = False
+                thinking_plan["_sequential_deferred"] = True
+                thinking_plan["_sequential_deferred_reason"] = (
+                    f"interactive_mode_complexity_{complexity}_threshold_{threshold}"
+                )
+                log_info(
+                    f"[Orchestrator] Sequential deferred (interactive mode): "
+                    f"complexity={complexity} threshold={threshold}"
+                )
+
+        # Keep tool behavior aligned with response-mode/sequential policy.
+        if thinking_plan.get("suggested_tools"):
+            thinking_plan["suggested_tools"] = self._filter_think_tools(
+                list(thinking_plan.get("suggested_tools", [])),
+                user_text=user_text,
+                thinking_plan=thinking_plan,
+                source=f"response_mode:{mode}",
+            )
+        return mode
 
     # ===============================================================
     # SHARED HELPERS
     # ===============================================================
+
+    async def _collect_control_tool_decisions(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        *,
+        stream: bool = False,
+    ) -> Dict[str, Dict]:
+        """
+        Collect authoritative tool args from ControlLayer with gate-override parity
+        for sync and stream paths.
+        """
+        prefix = "[Orchestrator-Stream]" if stream else "[Orchestrator]"
+        decisions: Dict[str, Dict] = {}
+
+        gate_override = verified_plan.get("_gate_tools_override")
+        if gate_override:
+            log_info(f"{prefix} Gate override active — skipping decide_tools(): {gate_override}")
+            for tool_name in gate_override:
+                decisions[tool_name] = self._build_tool_args(tool_name, user_text)
+            return decisions
+
+        try:
+            raw_decisions = await self.control.decide_tools(user_text, verified_plan)
+            for item in raw_decisions or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                args = item.get("arguments", {})
+                decisions[name] = args if isinstance(args, dict) else {}
+            if decisions:
+                log_info(f"{prefix} ControlLayer tool args: {list(decisions.keys())}")
+        except Exception as e:
+            log_error(f"{prefix} decide_tools error: {e}")
+
+        return decisions
+
+    def _resolve_execution_suggested_tools(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        control_tool_decisions: Optional[Dict[str, Dict]],
+        *,
+        stream: bool = False,
+        enable_skill_trigger_router: bool = False,
+    ) -> List[Any]:
+        """
+        Build final suggested_tools list with parity across sync and stream:
+        ControlLayer authority -> Thinking fallback -> keyword fallback (+ optional trigger router).
+        """
+        prefix = "[Orchestrator-Stream]" if stream else "[Orchestrator]"
+        decisions = control_tool_decisions or {}
+
+        if decisions:
+            suggested_tools = list(decisions.keys())
+            log_info(f"{prefix} ControlLayer tools (authoritative): {suggested_tools}")
+        else:
+            suggested_tools = verified_plan.get("suggested_tools", [])
+            if suggested_tools:
+                log_info(f"{prefix} Fallback: ThinkingLayer suggested_tools: {suggested_tools}")
+
+        # Validate + Normalize: filters invalid tools, maps skill names -> run_skill.
+        suggested_tools = self._normalize_tools(suggested_tools)
+
+        if not suggested_tools:
+            suggested_tools = self._detect_tools_by_keyword(user_text)
+            if suggested_tools:
+                suggested_tools = self._normalize_tools(suggested_tools)
+                log_info(f"{prefix} Last-resort keyword fallback: {suggested_tools}")
+
+        if enable_skill_trigger_router and not suggested_tools:
+            trigger_matches = self._detect_skill_by_trigger(user_text)
+            if trigger_matches:
+                suggested_tools = self._normalize_tools(trigger_matches)
+                log_info(f"[Orchestrator] Skill Trigger Router: {trigger_matches}")
+
+        # OutputLayer prompt hygiene: pass only request-scoped selected tools.
+        verified_plan["_selected_tools_for_prompt"] = [
+            t["tool"] if isinstance(t, dict) and "tool" in t else str(t)
+            for t in suggested_tools
+        ]
+        return suggested_tools
 
     def _detect_tools_by_keyword(self, user_text: str) -> list:
         """Keyword-based tool detection fallback when Thinking suggests none."""
@@ -483,7 +1218,29 @@ class PipelineOrchestrator:
         elif tool_name == "get_skill_info":
             return {"skill_name": user_text.strip()}
         elif tool_name == "create_skill":
-            return {"description": user_text.strip()}
+            raw = (user_text or "").strip().lower()
+            name = "".join(ch if (ord(ch) < 128 and ch.isalnum()) else "_" for ch in raw).strip("_")
+            if not name:
+                name = f"auto_skill_{int(time.time())}"
+            if len(name) > 48:
+                name = name[:48].rstrip("_")
+            desc = f"Auto-generated skill scaffold from request: {(user_text or '').strip()[:240]}"
+            code = (
+                "def main(args=None):\n"
+                "    \"\"\"Auto-generated fallback scaffold.\"\"\"\n"
+                "    args = args or {}\n"
+                "    return {\n"
+                f"        \"skill\": \"{name}\",\n"
+                "        \"status\": \"todo\",\n"
+                "        \"message\": \"Scaffold created via fallback. Implement logic.\",\n"
+                "        \"args\": args,\n"
+                "    }\n"
+            )
+            return {
+                "name": name,
+                "description": desc,
+                "code": code,
+            }
         elif tool_name == "autonomous_skill_task":
             return {
                 "user_text": user_text.strip(),
@@ -492,7 +1249,11 @@ class PipelineOrchestrator:
                 "execute_after_create": True,
             }
         # Memory Tools
+        elif tool_name == "think":
+            return {"message": user_text.strip(), "steps": 4}
         elif tool_name in ("memory_search", "memory_graph_search"):
+            return {"query": user_text.strip()}
+        elif tool_name == "analyze":
             return {"query": user_text.strip()}
         elif tool_name in ("memory_save", "memory_fact_save"):
             return {"conversation_id": "auto", "role": "user", "content": user_text.strip()}
@@ -521,6 +1282,50 @@ class PipelineOrchestrator:
             import time as _time
             return {"path": f"notes/note_{_time.strftime('%Y-%m-%d_%H-%M-%S')}.md", "content": user_text.strip()}
         return {}
+
+    def _validate_tool_args(
+        self,
+        tool_hub,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        user_text: str,
+    ) -> Tuple[bool, Dict[str, Any], str]:
+        """
+        Last-line defensive arg validation against MCP inputSchema.required.
+        Auto-fills common missing fields when safe.
+        """
+        args = dict(tool_args or {})
+        if tool_name == "analyze" and not str(args.get("query", "")).strip():
+            args["query"] = (user_text or "").strip()
+
+        required = []
+        try:
+            schema = (tool_hub._tool_definitions.get(tool_name, {}) or {}).get("inputSchema", {}) or {}
+            required = list(schema.get("required", []) or [])
+        except Exception:
+            required = []
+
+        def _missing(k: str) -> bool:
+            v = args.get(k, None)
+            if v is None:
+                return True
+            if isinstance(v, str):
+                return not v.strip()
+            if isinstance(v, (list, dict)):
+                return len(v) == 0
+            return False
+
+        missing = [k for k in required if _missing(k)]
+        if "query" in missing and (user_text or "").strip():
+            args["query"] = user_text.strip()
+            missing = [k for k in required if _missing(k)]
+        if "message" in missing and (user_text or "").strip():
+            args["message"] = user_text.strip()
+            missing = [k for k in required if _missing(k)]
+
+        if missing:
+            return False, args, f"missing_required={missing}"
+        return True, args, ""
 
     def _execute_tools_sync(self, suggested_tools: list, user_text: str, control_tool_decisions: dict = None, time_reference: str = None, thinking_suggested_tools: list = None, blueprint_gate_blocked: bool = False, blueprint_router_id: str = None, blueprint_suggest_msg: str = "", session_id: str = "") -> str:
         """Execute tools and return combined context string."""
@@ -568,6 +1373,16 @@ class PipelineOrchestrator:
                         log_info("[Orchestrator] Blocking home_write — not in ThinkingLayer suggested_tools (ControlLayer hallucination)")
                         continue
 
+                # Fail-closed: bei Skill-Router-Ausfall keine Skill-Ausführung zulassen.
+                if tool_name in {"autonomous_skill_task", "create_skill", "run_skill"} and verified_plan.get("_skill_gate_blocked"):
+                    _skill_reason = verified_plan.get("_skill_gate_reason", "skill_router_unavailable")
+                    log_warn(f"[Orchestrator-Sync] Blocking {tool_name} — reason={_skill_reason}")
+                    tool_context += (
+                        f"\n[{tool_name}]: FEHLER: Skill-Router nicht verfügbar ({_skill_reason}). "
+                        "Skill-Operation aus Sicherheitsgründen blockiert."
+                    )
+                    continue
+
                 # Blueprint Gate + Router (Sync):
                 # Handles both: pre-planned gate (Step 1.8) AND keyword-fallback path (JIT check).
                 if tool_name == "request_container":
@@ -590,7 +1405,15 @@ class PipelineOrchestrator:
                         # Keyword-fallback path: request_container appeared without Step 1.8 gate check → JIT
                         try:
                             _jit_decision = self._route_blueprint_request(user_text, {})
-                            if _jit_decision and not _jit_decision.get("suggest"):
+                            if _jit_decision and _jit_decision.get("blocked"):
+                                _jit_reason = _jit_decision.get("reason", "blueprint_router_unavailable")
+                                log_warn(f"[Orchestrator-Sync] JIT router blocked request_container — reason={_jit_reason}")
+                                tool_context += (
+                                    "\n[request_container]: FEHLER: Blueprint-Router nicht verfügbar. "
+                                    "Kein Freestyle-Container erlaubt."
+                                )
+                                continue
+                            elif _jit_decision and not _jit_decision.get("suggest"):
                                 tool_args["blueprint_id"] = _jit_decision["blueprint_id"]
                                 tool_args["session_id"] = session_id
                                 tool_args["conversation_id"] = session_id
@@ -609,8 +1432,6 @@ class PipelineOrchestrator:
                             tool_context += "\n[request_container]: FEHLER: Blueprint-Router nicht verfügbar. Kein Freestyle-Container erlaubt."
                             continue
 
-                is_fast_lane = tool_name in _FAST_LANE_TOOLS
-
                 # Chain: inject container_id from previous request_container
                 if _last_container_id and tool_args.get("container_id") == "PENDING":
                     tool_args["container_id"] = _last_container_id
@@ -619,6 +1440,16 @@ class PipelineOrchestrator:
                     if tool_name != "request_container":
                          log_info(f"[Orchestrator] Skipping {tool_name} - no container_id yet")
                          continue
+
+                _valid, tool_args, _arg_reason = self._validate_tool_args(
+                    tool_hub, tool_name, tool_args, user_text
+                )
+                if not _valid:
+                    log_warn(f"[Orchestrator] Skipping {tool_name} due to invalid args: {_arg_reason}")
+                    tool_context += f"\n### TOOL-SKIP ({tool_name}): {_arg_reason}\n"
+                    continue
+
+                is_fast_lane = tool_name in _FAST_LANE_TOOLS
                 
                 # ════════════════════════════════════════════════════
                 # FAST LANE EXECUTION (NEW!)
@@ -795,6 +1626,27 @@ class PipelineOrchestrator:
             }
             
             return (formatted, True, metadata)
+
+    @staticmethod
+    def _tool_context_has_failures_or_skips(tool_context: str) -> bool:
+        """Detect tool failures/skips that should prevent high-confidence promotion."""
+        if not tool_context:
+            return False
+        markers = (
+            "TOOL-FEHLER",
+            "VERIFY-FEHLER",
+            "TOOL-SKIP",
+            "[request_container]: FEHLER",
+            "[request_container]: RÜCKFRAGE",
+        )
+        return any(m in tool_context for m in markers)
+
+    @staticmethod
+    def _tool_context_has_success(tool_context: str) -> bool:
+        """Require explicit successful tool evidence instead of assuming success by absence of errors."""
+        if not tool_context:
+            return False
+        return "[TOOL-CARD:" in tool_context and "| ✅ ok |" in tool_context
 
 
     # ═══════════════════════════════════════════════════════════
@@ -1079,6 +1931,7 @@ class PipelineOrchestrator:
         cleanup_payload: Optional[Dict] = None,
         include_blocks: Optional[Dict] = None,
         debug_flags: Optional[Dict] = None,
+        request_cache: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Unified context assembly for Sync and Stream paths.
@@ -1093,6 +1946,7 @@ class PipelineOrchestrator:
             include_blocks:   Dict with keys compact/system_tools/memory_data (default all True).
             debug_flags:      Optional hints: has_tool_failure, skills_prefetch_used,
                               detection_rules_used.
+            request_cache:    Optional request-scoped retrieval cache for ContextManager.
 
         Trace keys:
             small_model_mode, context_sources, context_blocks, context_chars,
@@ -1133,6 +1987,7 @@ class PipelineOrchestrator:
             thinking_plan=cleanup_payload or {},
             conversation_id=conv_id or "",
             small_model_mode=small_model_mode,
+            request_cache=request_cache,
         )
         memory_used = ctx.memory_used
 
@@ -1351,6 +2206,291 @@ class PipelineOrchestrator:
             log_warn(f"[CTX] FINAL CAP enforced ({label}): {orig} → {cap} chars")
         return ctx
 
+    def _apply_effective_context_guardrail(
+        self,
+        ctx: str,
+        trace: Dict,
+        small_model_mode: bool,
+        label: str,
+    ) -> str:
+        """
+        Full-mode context guardrail to cap extreme prompt growth.
+        Keeps head+tail with a truncation marker for debuggability.
+        """
+        if small_model_mode:
+            return ctx
+        from config import get_effective_context_guardrail_chars
+        cap = get_effective_context_guardrail_chars()
+        if cap <= 0 or len(ctx) <= cap:
+            return ctx
+
+        marker = "\n[...context truncated by guardrail...]\n"
+        keep_head = max(0, int(cap * 0.7))
+        keep_tail = max(0, cap - keep_head - len(marker))
+        if keep_tail <= 0:
+            clipped = ctx[:cap]
+        else:
+            clipped = ctx[:keep_head] + marker + ctx[-keep_tail:]
+
+        trace["context_chars_final"] = len(clipped)
+        if "guardrail_ctx" not in trace["context_sources"]:
+            trace["context_sources"].append("guardrail_ctx")
+        log_warn(
+            f"[CTX] guardrail enforced ({label}): {len(ctx)} → {len(clipped)} chars "
+            f"(cap={cap})"
+        )
+        return clipped
+
+    @staticmethod
+    def _compact_json_value(
+        value: Any,
+        *,
+        max_items: int,
+        max_str_len: int,
+        max_depth: int,
+        _depth: int = 0,
+    ) -> Any:
+        """Recursively compact JSON-like values while preserving valid structure."""
+        if _depth >= max_depth:
+            return "...truncated(depth)"
+        if isinstance(value, dict):
+            out: Dict[str, Any] = {}
+            for idx, (k, v) in enumerate(value.items()):
+                if idx >= max_items:
+                    out["_truncated_keys"] = len(value) - max_items
+                    break
+                out[str(k)] = PipelineOrchestrator._compact_json_value(
+                    v,
+                    max_items=max_items,
+                    max_str_len=max_str_len,
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                )
+            return out
+        if isinstance(value, list):
+            out = [
+                PipelineOrchestrator._compact_json_value(
+                    item,
+                    max_items=max_items,
+                    max_str_len=max_str_len,
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                )
+                for item in value[:max_items]
+            ]
+            if len(value) > max_items:
+                out.append(f"...truncated {len(value) - max_items} item(s)")
+            return out
+        if isinstance(value, str) and len(value) > max_str_len:
+            cut = len(value) - max_str_len
+            return value[:max_str_len] + f"... (truncated {cut} chars)"
+        return value
+
+    def _clip_json_text(self, json_text: str, cap: int) -> str:
+        """Return valid clipped JSON text with length <= cap whenever possible."""
+        if cap <= 0:
+            return ""
+        try:
+            payload = json.loads(json_text)
+        except Exception:
+            return ""
+
+        profiles = [
+            (12, 1200, 5),
+            (8, 600, 4),
+            (4, 240, 3),
+            (2, 120, 2),
+            (1, 60, 1),
+        ]
+        for max_items, max_str_len, max_depth in profiles:
+            compact = self._compact_json_value(
+                payload,
+                max_items=max_items,
+                max_str_len=max_str_len,
+                max_depth=max_depth,
+            )
+            candidate = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+            if len(candidate) <= cap:
+                return candidate
+
+        # Last-resort valid JSON summaries per type.
+        if isinstance(payload, dict):
+            fallback = json.dumps(
+                {"_truncated": True, "type": "object", "keys": len(payload)},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        elif isinstance(payload, list):
+            fallback = json.dumps(
+                ["_truncated", "array", len(payload)],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        elif isinstance(payload, str):
+            fallback = json.dumps(
+                payload[: max(0, min(len(payload), cap - 2))],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        else:
+            fallback = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+        if len(fallback) <= cap:
+            return fallback
+        if cap >= 2:
+            return "{}"
+        return ""
+
+    @staticmethod
+    def _is_tool_context_block_header(line: str) -> bool:
+        h = line.lstrip()
+        return (
+            h.startswith("[COMPACT-CONTEXT-ON-FAILURE]")
+            or h.startswith("[TOOL-CARD:")
+            or h.startswith("### ")
+            or h.startswith("[request_container]:")
+        )
+
+    def _split_tool_context_blocks(self, tool_context: str) -> List[str]:
+        """Split tool context into logical blocks to avoid mid-structure cuts."""
+        if not tool_context:
+            return []
+        lines = tool_context.splitlines(keepends=True)
+        blocks: List[str] = []
+        current: List[str] = []
+        for line in lines:
+            if current and self._is_tool_context_block_header(line):
+                blocks.append("".join(current))
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            blocks.append("".join(current))
+        return blocks
+
+    def _clip_tool_context_line(self, line: str, max_chars: int) -> str:
+        """Clip a single line; if line is JSON, keep it syntactically valid."""
+        if max_chars <= 0:
+            return ""
+        if len(line) <= max_chars:
+            return line
+
+        has_nl = line.endswith("\n")
+        base = line[:-1] if has_nl else line
+        left_ws = base[: len(base) - len(base.lstrip())]
+        core = base[len(left_ws):]
+        core_stripped = core.strip()
+        nl_len = 1 if has_nl else 0
+        core_budget = max_chars - len(left_ws) - nl_len
+
+        if (
+            core_budget > 2
+            and core_stripped
+            and core_stripped[0] in "{["
+            and core_stripped[-1] in "}]"
+        ):
+            clipped_json = self._clip_json_text(core_stripped, core_budget)
+            if clipped_json:
+                out = left_ws + clipped_json
+                if has_nl and len(out) + 1 <= max_chars:
+                    out += "\n"
+                return out
+
+        if core_budget <= 0:
+            return ""
+        marker = "... [truncated]"
+        if core_budget <= len(marker):
+            short = core[:core_budget]
+        else:
+            keep = core_budget - len(marker)
+            dropped = max(0, len(core) - keep)
+            marker = f"... [truncated {dropped} chars]"
+            if len(marker) > core_budget:
+                marker = "... [truncated]"
+                keep = max(0, core_budget - len(marker))
+            short = core[:keep] + marker
+        out = left_ws + short
+        if has_nl and len(out) + 1 <= max_chars:
+            out += "\n"
+        return out
+
+    def _compact_tool_context_block(self, block: str, max_chars: int) -> str:
+        """Compact a block into max_chars while preserving line/JSON structure."""
+        if max_chars <= 0:
+            return ""
+        if len(block) <= max_chars:
+            return block
+
+        lines = block.splitlines(keepends=True)
+        out: List[str] = []
+        used = 0
+        for line in lines:
+            if used >= max_chars:
+                break
+            remaining = max_chars - used
+            if len(line) <= remaining:
+                out.append(line)
+                used += len(line)
+                continue
+            clipped = self._clip_tool_context_line(line, remaining)
+            if clipped:
+                out.append(clipped)
+                used += len(clipped)
+            break
+
+        suffix = "\n[...block truncated]\n"
+        if used < len(block) and used + len(suffix) <= max_chars:
+            out.append(suffix)
+        return "".join(out)
+
+    def _clip_tool_context_structured(self, tool_context: str, cap: int) -> str:
+        """
+        Structured clipping that preserves block boundaries and avoids blind cuts.
+        Keeps the newest blocks first (tail-priority) under budget.
+        """
+        marker = "\n[...tool_context truncated...]\n"
+        body_cap = cap - len(marker)
+        if body_cap <= 0:
+            return tool_context[:cap]
+
+        blocks = self._split_tool_context_blocks(tool_context)
+        if not blocks:
+            return tool_context[:cap]
+
+        chosen: List[str] = []
+        used = 0
+        for idx in range(len(blocks) - 1, -1, -1):
+            block = blocks[idx]
+            remaining = body_cap - used
+            if remaining <= 0:
+                break
+            if len(block) <= remaining:
+                chosen.append(block)
+                used += len(block)
+                continue
+            compact = self._compact_tool_context_block(block, remaining)
+            if compact:
+                chosen.append(compact)
+                used += len(compact)
+            break
+
+        body = "".join(reversed(chosen))
+        if not body:
+            body = tool_context[-body_cap:]
+        if len(body) > body_cap:
+            body = body[-body_cap:]
+        return marker + body
+
+    @staticmethod
+    def _prepend_with_cap(prefix: str, content: str, cap: int) -> str:
+        """Prepend prefix while guaranteeing final length <= cap."""
+        if cap <= 0:
+            return ""
+        if len(prefix) >= cap:
+            return prefix[:cap]
+        keep = max(0, cap - len(prefix))
+        return prefix + content[:keep]
+
     # ── Phase 1.5 Commit 2: Clip tool_context to budget (small mode only) ──
     def _clip_tool_context(self, tool_context: str, small_model_mode: bool) -> str:
         """
@@ -1363,15 +2503,54 @@ class PipelineOrchestrator:
         cap = get_small_model_tool_ctx_cap()
         if cap <= 0 or len(tool_context) <= cap:
             return tool_context
-        clipped = len(tool_context) - cap
-        marker = f"\n[...truncated: {clipped} chars]"
-        keep = cap - len(marker)
-        if keep <= 0:
-            # Marker alone exceeds cap — hard-cut without marker
-            tool_context = tool_context[:cap]
+
+        had_failure_or_skip = self._tool_context_has_failures_or_skips(tool_context)
+
+        # Case 1: JSON-only context → keep valid JSON after clipping.
+        stripped = tool_context.strip()
+        if stripped and stripped[0] in "{[" and stripped[-1] in "}]":
+            clipped_json = self._clip_json_text(stripped, cap)
+            if clipped_json:
+                tool_context = clipped_json
+                log_warn(
+                    f"[CTX] tool_context clipped to {cap} chars (json-aware, {len(tool_context)} kept)"
+                )
+            else:
+                tool_context = tool_context[:cap]
+                log_warn(f"[CTX] tool_context clipped to {cap} chars (json-fallback hard-cut)")
         else:
-            tool_context = tool_context[:keep] + marker
-        log_warn(f"[CTX] tool_context clipped to {cap} chars ({clipped} truncated)")
+            # Case 2: Structured context with cards/headings → clip block-wise.
+            looks_structured = bool(
+                re.search(
+                    r"(?m)^(?:\[COMPACT-CONTEXT-ON-FAILURE\]|\[TOOL-CARD:|### |\[request_container\]:)",
+                    tool_context,
+                )
+            )
+            if looks_structured:
+                tool_context = self._clip_tool_context_structured(tool_context, cap)
+                log_warn(
+                    f"[CTX] tool_context clipped to {cap} chars (structured, {len(tool_context)} kept)"
+                )
+            else:
+                # Case 3: Plain text fallback (legacy behavior, deterministic marker).
+                clipped = len(tool_context) - cap
+                marker = f"\n[...truncated: {clipped} chars]"
+                keep = cap - len(marker)
+                if keep <= 0:
+                    tool_context = tool_context[:cap]
+                else:
+                    tool_context = tool_context[:keep] + marker
+                log_warn(f"[CTX] tool_context clipped to {cap} chars ({clipped} truncated)")
+
+        # Safety guard: clipping must never erase evidence of failures/skips.
+        if had_failure_or_skip and not self._tool_context_has_failures_or_skips(tool_context):
+            failure_guard = (
+                "\n### TOOL-FEHLER (truncated): Frühere Fehler/Skips wurden "
+                "wegen Context-Limit gekürzt.\n"
+            )
+            tool_context = self._prepend_with_cap(failure_guard, tool_context, cap)
+            log_warn("[CTX] tool_context failure marker re-injected after clipping")
+
         return tool_context
 
     # ── Commit 2: Tool Result Card + Full Payload in workspace_events ──
@@ -1415,7 +2594,27 @@ class PipelineOrchestrator:
         if len(card) > self._TOOL_CARD_CHAR_CAP:
             card = card[:self._TOOL_CARD_CHAR_CAP] + "\n[...card truncated]\n"
 
-        # Save full payload as workspace_event (audit channel)
+        # Save full payload as workspace_event (audit channel).
+        # C7: detect approval_requested events so context_cleanup populates pending_approvals.
+        _entry_type = "tool_result"
+        _extra_fields: dict = {}
+        try:
+            _parsed = json.loads(raw_result)
+            if isinstance(_parsed, dict):
+                _evt = (
+                    _parsed.get("event_type")
+                    or _parsed.get("action_taken")
+                    or _parsed.get("action")
+                )
+                if _evt in ("approval_requested", "pending_package_approval"):
+                    _entry_type = "approval_requested"
+                    _extra_fields = {
+                        "skill_name": _parsed.get("skill_name") or tool_name,
+                        "missing_packages": _parsed.get("missing_packages", []),
+                        "non_allowlisted_packages": _parsed.get("non_allowlisted_packages", []),
+                    }
+        except Exception:
+            pass
         try:
             self._save_workspace_entry(
                 conversation_id,
@@ -1426,8 +2625,9 @@ class PipelineOrchestrator:
                     "timestamp": timestamp,
                     "key_facts": key_facts,
                     "payload": raw_result[:50_000],  # large payload cap (50 KB); full raw result for audit
+                    **_extra_fields,
                 }, ensure_ascii=False, default=str),
-                "tool_result",
+                _entry_type,
                 "orchestrator",
             )
         except Exception as _ce:
@@ -1498,7 +2698,16 @@ class PipelineOrchestrator:
         Returns (skill_context_str, mode_str) for ThinkingLayer prefetch.
         mode: "off" | "thin" | "full"
 
-        small_model_mode=False → always fetch full list (current behaviour).
+        C6 Single-Truth-Channel: all skill fetching routes through
+        self.context._get_skill_context() — never calls _search_skill_graph directly.
+
+        SKILL_CONTEXT_RENDERER=typedstate (default):
+            Full mode → fetches via C5 TypedState pipeline; thin mode → same.
+        SKILL_CONTEXT_RENDERER=legacy:
+            Full mode → fetches via _search_skill_graph (old header format).
+            Thin mode → line-truncated to top-1 skill + char cap.
+
+        small_model_mode=False → always fetch (full).
         small_model_mode=True  → default off; exception for explicit skill-intent
                                   signals (list_skills / autonomous_skill_task) → thin.
         """
@@ -1506,11 +2715,14 @@ class PipelineOrchestrator:
             get_small_model_mode,
             get_small_model_skill_prefetch_policy,
             get_small_model_skill_prefetch_thin_cap,
+            get_skill_context_renderer,
         )
 
+        renderer = get_skill_context_renderer()
+
         if not get_small_model_mode():
-            # Full mode: unconditional fetch
-            ctx = self.context._search_skill_graph(user_text)
+            # Full mode: unconditional fetch via centralized authority
+            ctx = self.context._get_skill_context(user_text)
             return ctx, "full"
 
         policy = get_small_model_skill_prefetch_policy()
@@ -1528,20 +2740,25 @@ class PipelineOrchestrator:
         if policy == "off" and not _has_skill_intent:
             return "", "off"
 
-        # thin: fetch but cap to top-1 equivalent
-        ctx = self.context._search_skill_graph(user_text)
+        # thin: fetch via centralized authority
+        ctx = self.context._get_skill_context(user_text)
         if not ctx:
             return "", "off"
 
-        thin_cap = get_small_model_skill_prefetch_thin_cap()
-        lines = ctx.splitlines()
-        header = lines[0] if lines else ""
-        skill_lines = [l for l in lines[1:] if l.strip().startswith("-")]
-        thin_ctx = "\n".join([header] + skill_lines[:1]).strip()
-        thin_ctx = thin_ctx[:thin_cap]
+        # Legacy renderer: apply line-based thin-cap (header + top-1 skill line)
+        if renderer == "legacy":
+            thin_cap = get_small_model_skill_prefetch_thin_cap()
+            lines = ctx.splitlines()
+            header = lines[0] if lines else ""
+            skill_lines = [l for l in lines[1:] if l.strip().startswith("-")]
+            thin_ctx = "\n".join([header] + skill_lines[:1]).strip()
+            thin_ctx = thin_ctx[:thin_cap]
+            log_debug(f"[Orchestrator] Skill prefetch thin (legacy): {len(thin_ctx)} chars (cap={thin_cap})")
+            return thin_ctx, "thin"
 
-        log_debug(f"[Orchestrator] Skill prefetch thin: {len(thin_ctx)} chars (cap={thin_cap})")
-        return thin_ctx, "thin"
+        # TypedState renderer: C5 pipeline already applies top_k + budget; no additional cap
+        log_debug(f"[Orchestrator] Skill prefetch (typedstate): {len(ctx)} chars")
+        return ctx, "thin"
 
     def _extract_workspace_observations(self, thinking_plan: Dict) -> Optional[str]:
         """Extract noteworthy observations from thinking plan for workspace."""
@@ -1587,39 +2804,77 @@ class PipelineOrchestrator:
         
         intent = pending[-1]
         text_lower = user_text.lower().strip()
+        normalized_tokens = "".join(
+            ch if (ch.isalnum() or ch.isspace()) else " "
+            for ch in text_lower
+        ).split()
+        first_token = normalized_tokens[0] if normalized_tokens else ""
         
         # skill_clarification: Jede Antwort die nicht explizit "nein" ist → Bestätigung mit Info
         _negative = {"nein", "no", "abbrechen", "cancel", "stop", "nee"}
+        is_negative = text_lower in _negative or first_token in _negative
+        is_positive = (
+            text_lower in ["ja", "yes", "ok", "bestaetigen", "mach", "los", "ja bitte", "klar"]
+            or first_token in {"ja", "yes", "ok", "bestaetigen", "mach", "los", "klar"}
+        )
+
         if (getattr(intent, "intent_type", "") == "skill_clarification"
-                and text_lower not in _negative):
+                and not is_negative):
             # Behandle als Bestätigung + Info-Antwort
             text_lower = "ja"  # Weiterleitung zu Positive-Pfad
+            is_positive = True
+            is_negative = False
 
         # Positive confirmation
-        if text_lower in ["ja", "yes", "ok", "bestaetigen", "mach", "los", "ja bitte", "klar"]:
+        if is_positive:
             intent.confirm()
             try:
                 hub = get_hub()
-                log_info(f"[Orchestrator-Intent] Using autonomous_skill_task for: {intent.user_text[:50]}...")
+                trace_id = self._normalize_trace_id(f"intent:{getattr(intent, 'id', '')}:{uuid.uuid4().hex[:8]}")
+                _intent_user_text = str(getattr(intent, "user_text", "") or "").strip()
+                if not _intent_user_text:
+                    _intent_user_text = f"Erstelle den Skill {intent.skill_name}".strip()
+                _complexity_raw = getattr(intent, "complexity", 5)
+                try:
+                    _complexity = int(_complexity_raw)
+                except Exception:
+                    _complexity = 5
+                _complexity = max(1, min(10, _complexity))
+                log_info(
+                    f"[Orchestrator-Intent][trace={trace_id}] Using autonomous_skill_task "
+                    f"for: {_intent_user_text[:50]}..."
+                )
                 
                 task_args = {
-                    "user_text": intent.user_text,
-                    "intent": intent.reason or intent.skill_name,
-                    "complexity": getattr(intent, "complexity", 5),
+                    "user_text": self._safe_str(_intent_user_text, max_len=4000),
+                    "intent": self._safe_str(_intent_user_text, max_len=4000),
+                    "complexity": _complexity,
                     "allow_auto_create": True,
-                    "execute_after_create": True
+                    "execute_after_create": True,
+                    "prefer_create": True,
+                    "_trace_id": trace_id,
                 }
 
                 # skill_clarification: User-Antwort in den ursprünglichen Intent einweben
                 if getattr(intent, "intent_type", "") == "skill_clarification":
                     enriched = intent.user_text + f"\nHinweis vom User: {user_text}"
-                    task_args["user_text"] = enriched
-                    task_args["intent"]    = enriched
+                    safe_enriched = self._safe_str(enriched, max_len=4000)
+                    task_args["user_text"] = safe_enriched
+                    task_args["intent"] = safe_enriched
                     task_args["complexity"] = 3  # explizite Erstellung → immer unter Threshold
-                    log_info(f"[Orchestrator-Intent] Enriched skill_clarification with user answer")
+                    log_info(f"[Orchestrator-Intent][trace={trace_id}] Enriched skill_clarification with user answer")
 
                 if hasattr(intent, "thinking_plan") and intent.thinking_plan:
-                    task_args["thinking_plan"] = intent.thinking_plan
+                    safe_thinking_plan = self._sanitize_intent_thinking_plan_for_skill_task(intent.thinking_plan)
+                    if safe_thinking_plan:
+                        task_args["thinking_plan"] = safe_thinking_plan
+
+                _plan = task_args.get("thinking_plan") if isinstance(task_args.get("thinking_plan"), dict) else {}
+                _plan_keys = sorted(_plan.keys())[:12] if _plan else []
+                log_info(
+                    f"[Orchestrator-Intent][trace={trace_id}] Calling autonomous_skill_task "
+                    f"complexity={task_args.get('complexity')} plan_keys={_plan_keys}"
+                )
                 
                 result = hub.call_tool("autonomous_skill_task", task_args)
                 
@@ -1632,7 +2887,10 @@ class PipelineOrchestrator:
                         exec_result = result.get("execution_result", {})
                         validation_score = result.get("validation_score", 0)
                         
-                        log_info(f"[Orchestrator-Intent] Skill {skill_name} created (score: {validation_score})")
+                        log_info(
+                            f"[Orchestrator-Intent][trace={trace_id}] Skill {skill_name} "
+                            f"created (score: {validation_score})"
+                        )
                         
                         response_text = f"✅ Skill **{skill_name}** wurde erstellt und ausgeführt!\n\n"
                         response_text += f"**Validation Score:** {validation_score:.0%}\n\n"
@@ -1645,13 +2903,31 @@ class PipelineOrchestrator:
                             conversation_id=conversation_id
                         )
                     else:
+                        if result.get("skill_created"):
+                            skill_name = result.get("skill_name", intent.skill_name)
+                            run_error = result.get("error", "Unbekannter Laufzeitfehler")
+                            intent.mark_executed()
+                            store.update_state(intent.id, IntentState.EXECUTED)
+                            log_warn(
+                                f"[Orchestrator-Intent][trace={trace_id}] Skill {skill_name} created, "
+                                f"but first execution failed: {run_error}"
+                            )
+                            return CoreChatResponse(
+                                model="system",
+                                content=(
+                                    f"✅ Skill **{skill_name}** wurde erstellt.\n\n"
+                                    f"⚠️ Der erste Testlauf ist fehlgeschlagen: {run_error}\n"
+                                    f"(trace: {trace_id})"
+                                ),
+                                conversation_id=conversation_id
+                            )
                         error = result.get("error", "Unknown error")
-                        log_error(f"[Orchestrator-Intent] autonomous_skill_task failed: {error}")
+                        log_error(f"[Orchestrator-Intent][trace={trace_id}] autonomous_skill_task failed: {error}")
                         intent.mark_failed()
                         store.update_state(intent.id, IntentState.FAILED)
                         return CoreChatResponse(
                             model="system",
-                            content=f"❌ Skill-Erstellung fehlgeschlagen: {error}",
+                            content=f"❌ Skill-Erstellung fehlgeschlagen: {error} (trace: {trace_id})",
                             conversation_id=conversation_id
                         )
                 
@@ -1672,7 +2948,7 @@ class PipelineOrchestrator:
                 )
         
         # Negative response
-        elif text_lower in ["nein", "no", "abbrechen", "cancel", "stop", "nee"]:
+        elif is_negative:
             intent.reject()
             store.update_state(intent.id, IntentState.REJECTED)
             log_info(f"[Orchestrator-Intent] Skill {intent.skill_name} creation rejected")
@@ -1753,6 +3029,8 @@ class PipelineOrchestrator:
         
         user_text = request.get_last_user_message()
         conversation_id = request.conversation_id
+        forced_response_mode = self._requested_response_mode(request)
+        request_retrieval_cache: Dict[str, Any] = {}
         
         # ===============================================================
         # STEP 1: Intent Confirmation Check
@@ -1772,6 +3050,9 @@ class PipelineOrchestrator:
         # STEP 1.5: Tool Selector (Layer 0)
         # ===============================================================
         selected_tools = await self.tool_selector.select_tools(user_text)
+        selected_tools = self._filter_tool_selector_candidates(
+            selected_tools, user_text, forced_mode=forced_response_mode
+        )
         
         # ===============================================================
         # STEP 2: Thinking Layer
@@ -1807,12 +3088,55 @@ class PipelineOrchestrator:
                 log_info(f"[Orchestrator] ThinkingLayer plan cached (sync) prefetch={_sync_prefetch_mode}")
 
         # ===============================================================
+        # STEP 2.1: RESPONSE MODE POLICY (interactive | deep)
+        # ===============================================================
+        response_mode = self._apply_response_mode_policy(
+            user_text,
+            thinking_plan,
+            forced_mode=forced_response_mode,
+        )
+        log_info(f"[Orchestrator] response_mode={response_mode} (sync)")
+
+        # ===============================================================
+        # STEP 1.7: SKILL DEDUP GATE (Sync-Pfad, fail-closed)
+        # ===============================================================
+        if "autonomous_skill_task" in thinking_plan.get("suggested_tools", []):
+            _skill_decision_sync = self._route_skill_request(user_text, thinking_plan)
+            if _skill_decision_sync and _skill_decision_sync.get("blocked"):
+                thinking_plan["_skill_gate_blocked"] = True
+                thinking_plan["_skill_gate_reason"] = _skill_decision_sync.get("reason", "skill_router_unavailable")
+                thinking_plan["suggested_tools"] = [
+                    t for t in thinking_plan.get("suggested_tools", [])
+                    if t not in {"autonomous_skill_task", "run_skill", "create_skill"}
+                ]
+                log_warn(
+                    "[Orchestrator-Sync] Skill gate blocked — "
+                    f"reason={thinking_plan['_skill_gate_reason']}"
+                )
+            elif _skill_decision_sync:
+                thinking_plan["suggested_tools"] = ["run_skill"]
+                thinking_plan["_skill_router"] = _skill_decision_sync
+                log_info(
+                    f"[Orchestrator-Sync] Skill Dedup Gate: '{_skill_decision_sync['skill_name']}' "
+                    f"(score={_skill_decision_sync['score']:.2f}) — run_skill statt create"
+                )
+
+        # ===============================================================
         # STEP 1.8: BLUEPRINT ROUTER (Sync-Pfad)
         # Identisch zu Streaming-Pfad — keine Divergenz.
         # ===============================================================
         if "request_container" in thinking_plan.get("suggested_tools", []):
             _bp_decision_sync = self._route_blueprint_request(user_text, thinking_plan)
-            if _bp_decision_sync and not _bp_decision_sync.get("suggest"):
+            if _bp_decision_sync and _bp_decision_sync.get("blocked"):
+                thinking_plan["_blueprint_gate_blocked"] = True
+                thinking_plan["_blueprint_gate_reason"] = _bp_decision_sync.get(
+                    "reason", "blueprint_router_unavailable"
+                )
+                log_warn(
+                    "[Orchestrator-Sync] Blueprint gate blocked — "
+                    f"reason={thinking_plan['_blueprint_gate_reason']}"
+                )
+            elif _bp_decision_sync and not _bp_decision_sync.get("suggest"):
                 # Auto-route: score >= STRICT
                 thinking_plan["_blueprint_router"] = _bp_decision_sync
                 log_info(f"[Orchestrator-Sync] Blueprint auto-routed: '{_bp_decision_sync['blueprint_id']}' (score={_bp_decision_sync['score']:.2f})")
@@ -1841,6 +3165,7 @@ class PipelineOrchestrator:
                 "skills_prefetch_mode": thinking_plan.get("_trace_skills_prefetch_mode", "off" if _smm else "full"),
                 "detection_rules_used": thinking_plan.get("_trace_detection_rules_mode", "false"),
             },
+            request_cache=request_retrieval_cache,
         )
         memory_used = ctx_trace.get("memory_used", False)
         # NOTE: context_text_chars = background context only (NOW/RULES/NEXT, capped).
@@ -1860,24 +3185,26 @@ class PipelineOrchestrator:
             retrieved_memory,
             conversation_id
         )
+
+        # Skill confirmation must short-circuit the sync pipeline just like stream mode.
+        if verified_plan.get("_pending_intent"):
+            pending = verified_plan["_pending_intent"]
+            return CoreChatResponse(
+                model=request.model,
+                content=f"🛠️ Möchtest du den Skill **{pending.get('skill_name')}** erstellen? (Ja/Nein)",
+                conversation_id=conversation_id,
+                done=True,
+                done_reason="confirmation_pending",
+                memory_used=memory_used,
+                validation_passed=True,
+            )
         
         # ── ControlLayer Tool-Decision (sync-Pfad) ──
-        _ctrl_decisions_sync: Dict[str, Dict] = {}
-        _gate_override = verified_plan.get("_gate_tools_override")
-        if _gate_override:
-            # Hardware-Gate oder anderer Safety-Gate hat Tool-Liste erzwungen → decide_tools() überspringen
-            log_info(f"[Orchestrator] Gate override active — skipping decide_tools(): {_gate_override}")
-            for tool_name in _gate_override:
-                _ctrl_decisions_sync[tool_name] = self._build_tool_args(tool_name, user_text)
-        else:
-            try:
-                _dec = await self.control.decide_tools(user_text, verified_plan)
-                for d in _dec:
-                    _ctrl_decisions_sync[d["name"]] = d.get("arguments", {})
-                if _ctrl_decisions_sync:
-                    log_info(f"[Orchestrator] ControlLayer tool args (sync): {list(_ctrl_decisions_sync.keys())}")
-            except Exception as _e:
-                log_error(f"[Orchestrator] decide_tools (sync) error: {_e}")
+        _ctrl_decisions_sync = await self._collect_control_tool_decisions(
+            user_text,
+            verified_plan,
+            stream=False,
+        )
 
         # Blocked check - Self-Aware Error Handling
         # None = ControlLayer hat nicht entschieden → erlauben. Nur explizit False = blocken.
@@ -1902,7 +3229,28 @@ class PipelineOrchestrator:
         
         # Extra memory lookup if Control corrected — gated by retrieval budget (Commit 4)
         if verification.get("corrections", {}).get("memory_keys"):
-            extra_keys = verification["corrections"]["memory_keys"]
+            from config import get_control_corrections_memory_keys_max
+            _extra_limit = get_control_corrections_memory_keys_max()
+            _raw_extra_keys = verification["corrections"]["memory_keys"] or []
+            if not isinstance(_raw_extra_keys, (list, tuple)):
+                _raw_extra_keys = []
+            _seen_extra = set()
+            extra_keys = []
+            for _k in _raw_extra_keys:
+                _nk = str(_k or "").strip()
+                if not _nk or _nk in _seen_extra:
+                    continue
+                extra_keys.append(_nk)
+                _seen_extra.add(_nk)
+                if len(extra_keys) >= _extra_limit:
+                    break
+            if _extra_limit == 0:
+                extra_keys = []
+            if len(_raw_extra_keys) > len(extra_keys):
+                log_info(
+                    f"[CTX] extra-lookup keys capped: kept={len(extra_keys)} "
+                    f"dropped={len(_raw_extra_keys) - len(extra_keys)} limit={_extra_limit}"
+                )
             _policy = self._compute_retrieval_policy(thinking_plan, verified_plan)
             _retrieval_budget = _policy["max_retrievals"]
             for key in extra_keys:
@@ -1920,6 +3268,7 @@ class PipelineOrchestrator:
                         small_model_mode=_smm,
                         cleanup_payload={"needs_memory": True, "memory_keys": [key]},
                         include_blocks={"compact": False, "system_tools": False, "memory_data": True},
+                        request_cache=request_retrieval_cache,
                     )
                     if extra_text:
                         retrieved_memory = self._append_context_block(
@@ -1936,26 +3285,13 @@ class PipelineOrchestrator:
         # ===============================================================
         # STEP 4.5: TOOL EXECUTION
         # ===============================================================
-        # ── ControlLayer ist autoritativ ──
-        # ControlLayer.decide_tools() hat via Semantic Search + Function Calling entschieden.
-        # Kein Override mehr — wer entscheidet, trägt Verantwortung.
-        if _ctrl_decisions_sync:
-            suggested_tools = list(_ctrl_decisions_sync.keys())
-            log_info(f"[Orchestrator] ControlLayer tools (authoritative): {suggested_tools}")
-        else:
-            # Fallback: ThinkingLayer-Suggestions falls ControlLayer nichts entschieden hat
-            suggested_tools = verified_plan.get("suggested_tools", [])
-            if suggested_tools:
-                log_info(f"[Orchestrator] Fallback: ThinkingLayer suggested_tools: {suggested_tools}")
-
-        # Validate + Normalize: filtert invalide Tools, konvertiert Skill-Namen → run_skill
-        suggested_tools = self._normalize_tools(suggested_tools)
-
-        if not suggested_tools:
-            suggested_tools = self._detect_tools_by_keyword(user_text)
-            if suggested_tools:
-                suggested_tools = self._normalize_tools(suggested_tools)
-                log_info(f"[Orchestrator] Last-resort keyword fallback: {suggested_tools}")
+        suggested_tools = self._resolve_execution_suggested_tools(
+            user_text,
+            verified_plan,
+            _ctrl_decisions_sync,
+            stream=False,
+            enable_skill_trigger_router=False,
+        )
 
         tool_context = ""
         if suggested_tools:
@@ -1997,6 +3333,12 @@ class PipelineOrchestrator:
                 retrieved_memory, tool_context, "tool_ctx", ctx_trace
             )
             verified_plan["_tool_results"] = tool_context
+            has_failures_or_skips = self._tool_context_has_failures_or_skips(tool_context)
+            has_success = self._tool_context_has_success(tool_context)
+            if has_failures_or_skips:
+                verified_plan["_tool_failure"] = True
+            if has_success and not has_failures_or_skips:
+                verified_plan["_tool_confidence"] = "high"
             if _smm:
                 log_info(
                     f"[CTX] total context after tool_context: {len(retrieved_memory)} chars "
@@ -2006,6 +3348,9 @@ class PipelineOrchestrator:
         # ── Phase 1.5 Commit 1: Final hard cap (always active in small mode) ──
         # Falls back to SMALL_MODEL_CHAR_CAP when SMALL_MODEL_FINAL_CAP=0 (no longer optional).
         retrieved_memory = self._apply_final_cap(retrieved_memory, ctx_trace, _smm, "sync")
+        retrieved_memory = self._apply_effective_context_guardrail(
+            retrieved_memory, ctx_trace, _smm, "sync"
+        )
 
         # ── Finalize orchestrator-side trace and hand off to OutputLayer ──
         # [CTX-PRE-OUTPUT]: orchestrator context string before OutputLayer adds persona/instructions/history.
@@ -2018,6 +3363,14 @@ class PipelineOrchestrator:
             f"retrieval_count={ctx_trace['retrieval_count']}"
         )
         verified_plan["_ctx_trace"] = ctx_trace
+        verified_plan["_response_mode"] = response_mode
+        try:
+            from config import get_output_timeout_interactive_s, get_output_timeout_deep_s
+            verified_plan["_output_time_budget_s"] = (
+                get_output_timeout_deep_s() if response_mode == "deep" else get_output_timeout_interactive_s()
+            )
+        except Exception:
+            pass
 
         # ===============================================================
         # STEP 5: Output Layer
@@ -2089,6 +3442,8 @@ class PipelineOrchestrator:
         
         user_text = request.get_last_user_message()
         conversation_id = request.conversation_id
+        forced_response_mode = self._requested_response_mode(request)
+        request_retrieval_cache: Dict[str, Any] = {}
         
         # ═══════════════════════════════════════════════════
         # STEP 0: INTENT CONFIRMATION
@@ -2177,6 +3532,9 @@ class PipelineOrchestrator:
             
             # Layer 0: Tool Selection
             selected_tools = await self.tool_selector.select_tools(user_text)
+            selected_tools = self._filter_tool_selector_candidates(
+                selected_tools, user_text, forced_mode=forced_response_mode
+            )
             if selected_tools:
                 yield ("", False, {"type": "tool_selection", "tools": selected_tools})
 
@@ -2248,6 +3606,15 @@ class PipelineOrchestrator:
                             "needs_sequential_thinking": thinking_plan.get("needs_sequential_thinking", False),
                         }
                     })
+
+        # Response mode policy (interactive | deep)
+        response_mode_stream = self._apply_response_mode_policy(
+            user_text,
+            thinking_plan,
+            forced_mode=forced_response_mode,
+        )
+        log_info(f"[Orchestrator] response_mode={response_mode_stream} (stream)")
+        yield ("", False, {"type": "response_mode", "mode": response_mode_stream})
         
         # ═══════════════════════════════════════════════════
         # WORKSPACE: Save thinking observations
@@ -2277,6 +3644,7 @@ class PipelineOrchestrator:
                 "skills_prefetch_mode": thinking_plan.get("_trace_skills_prefetch_mode", "off" if _smm_stream else "full"),
                 "detection_rules_used": thinking_plan.get("_trace_detection_rules_mode", "false"),
             },
+            request_cache=request_retrieval_cache,
         )
         memory_used = ctx_trace_stream.get("memory_used", False)
         # NOTE: context_text_chars = background context only (NOW/RULES/NEXT, capped).
@@ -2306,7 +3674,22 @@ class PipelineOrchestrator:
         # ═══════════════════════════════════════════════════
         if "autonomous_skill_task" in thinking_plan.get("suggested_tools", []):
             skill_decision = self._route_skill_request(user_text, thinking_plan)
-            if skill_decision:
+            if skill_decision and skill_decision.get("blocked"):
+                thinking_plan["_skill_gate_blocked"] = True
+                thinking_plan["_skill_gate_reason"] = skill_decision.get("reason", "skill_router_unavailable")
+                thinking_plan["suggested_tools"] = [
+                    t for t in thinking_plan.get("suggested_tools", [])
+                    if t not in {"autonomous_skill_task", "run_skill", "create_skill"}
+                ]
+                log_warn(
+                    "[Orchestrator] Skill gate blocked — "
+                    f"reason={thinking_plan['_skill_gate_reason']}"
+                )
+                yield ("", False, {
+                    "type": "skill_blocked",
+                    "reason": thinking_plan["_skill_gate_reason"],
+                })
+            elif skill_decision:
                 # Existing skill gefunden → suggested_tools überschreiben
                 thinking_plan["suggested_tools"] = ["run_skill"]
                 thinking_plan["_skill_router"] = skill_decision
@@ -2329,7 +3712,20 @@ class PipelineOrchestrator:
         # ═══════════════════════════════════════════════════
         if "request_container" in thinking_plan.get("suggested_tools", []):
             blueprint_decision = self._route_blueprint_request(user_text, thinking_plan)
-            if blueprint_decision and not blueprint_decision.get("suggest"):
+            if blueprint_decision and blueprint_decision.get("blocked"):
+                thinking_plan["_blueprint_gate_blocked"] = True
+                thinking_plan["_blueprint_gate_reason"] = blueprint_decision.get(
+                    "reason", "blueprint_router_unavailable"
+                )
+                log_warn(
+                    "[Orchestrator] Blueprint gate blocked — "
+                    f"reason={thinking_plan['_blueprint_gate_reason']}"
+                )
+                yield ("", False, {
+                    "type": "blueprint_blocked",
+                    "reason": thinking_plan["_blueprint_gate_reason"],
+                })
+            elif blueprint_decision and not blueprint_decision.get("suggest"):
                 # Auto-route: score >= STRICT
                 thinking_plan["_blueprint_router"] = blueprint_decision
                 log_info(
@@ -2381,23 +3777,34 @@ class PipelineOrchestrator:
                     })
                 else:
                     _seq_steps_collected = []
-                    async for event in self.control._check_sequential_thinking_stream(
-                        user_text=sequential_input,
-                        thinking_plan=thinking_plan
-                    ):
-                        # Sammle Steps für Cache
-                        if event.get("type") == "sequential_step":
-                            _seq_steps_collected.append(event.get("step", {}))
-                        elif event.get("type") == "sequential_done":
-                            # Im Cache speichern
-                            _seq_result = {
-                                "steps": _seq_steps_collected,
-                                "summary": event.get("summary", ""),
-                            }
-                            thinking_plan["_sequential_result"] = _seq_result
-                            _sequential_result_cache.set(_seq_cache_key, _seq_result)
-                            log_info(f"[Orchestrator] Sequential result cached ({len(_seq_steps_collected)} steps)")
-                        yield ("", False, event)
+                    from config import get_sequential_timeout_s
+                    _seq_timeout_s = float(get_sequential_timeout_s())
+                    try:
+                        async with asyncio.timeout(_seq_timeout_s):
+                            async for event in self.control._check_sequential_thinking_stream(
+                                user_text=sequential_input,
+                                thinking_plan=thinking_plan
+                            ):
+                                # Sammle Steps für Cache
+                                if event.get("type") == "sequential_step":
+                                    _seq_steps_collected.append(event.get("step", {}))
+                                elif event.get("type") == "sequential_done":
+                                    # Im Cache speichern
+                                    _seq_result = {
+                                        "steps": _seq_steps_collected,
+                                        "summary": event.get("summary", ""),
+                                    }
+                                    thinking_plan["_sequential_result"] = _seq_result
+                                    _sequential_result_cache.set(_seq_cache_key, _seq_result)
+                                    log_info(f"[Orchestrator] Sequential result cached ({len(_seq_steps_collected)} steps)")
+                                yield ("", False, event)
+                    except TimeoutError:
+                        thinking_plan["_sequential_timed_out"] = True
+                        log_warn(f"[Orchestrator] Sequential stream timeout after {_seq_timeout_s:.0f}s")
+                        yield ("", False, {
+                            "type": "sequential_error",
+                            "error": f"timeout_after_{int(_seq_timeout_s)}s",
+                        })
             except Exception as e:
                 log_info(f"[Orchestrator] Sequential error: {e}")
         
@@ -2406,12 +3813,11 @@ class PipelineOrchestrator:
         # ═══════════════════════════════════════════════════
         log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: LAYER 2 CONTROL")
         
-        skip_control = not ENABLE_CONTROL_LAYER
-        if not skip_control and SKIP_CONTROL_ON_LOW_RISK and thinking_plan.get("hallucination_risk") == "low":
-            skill_keywords = ["skill", "erstelle", "create", "programmier"]
-            if not any(kw in user_text.lower() for kw in skill_keywords):
-                skip_control = True
-                log_info("[Orchestrator] Layer 2 SKIPPED (low-risk)")
+        skip_control, _skip_reason_stream = self._should_skip_control_layer(user_text, thinking_plan)
+        if skip_control:
+            log_info(f"[Orchestrator] Layer 2 SKIPPED ({_skip_reason_stream})")
+        else:
+            log_info(f"[Orchestrator] Layer 2 CONTROL REQUIRED ({_skip_reason_stream})")
         
         if skip_control:
             verified_plan = thinking_plan.copy()
@@ -2421,13 +3827,52 @@ class PipelineOrchestrator:
             log_info("[Orchestrator] === LAYER 2: CONTROL ===")
             verification = await self.control.verify(user_text, thinking_plan, full_context)
             verified_plan = self.control.apply_corrections(thinking_plan, verification)
+            # Skill Confirmation Handling (stream parity with sync path)
+            if verification.get("_needs_skill_confirmation") and INTENT_SYSTEM_AVAILABLE:
+                skill_name = verification.get("_skill_name", "unknown")
+                log_info(f"[Orchestrator] Creating SkillCreationIntent for '{skill_name}' (stream)")
+                intent = SkillCreationIntent(
+                    skill_name=skill_name,
+                    origin=IntentOrigin.USER,
+                    reason=verification.get("_cim_decision", {}).get("pattern_id", "control_layer"),
+                    user_text=user_text,
+                    conversation_id=conversation_id,
+                    thinking_plan=thinking_plan,
+                    complexity=thinking_plan.get("sequential_complexity", 5),
+                )
+                store = get_intent_store()
+                store.add(intent)
+                verified_plan["_pending_intent"] = intent.to_dict()
+                log_info(f"[Orchestrator] Intent {intent.id[:8]} added to verified_plan (stream)")
 
         log_info(f"[Orchestrator] Control approved={verification.get('approved')}")
 
         # ── Stream extra-lookup — gated by retrieval budget (Commit 4 parity) ──
         # Mirror of sync path (core/orchestrator.py:1848): budget check before each lookup.
         if verification.get("corrections", {}).get("memory_keys"):
-            _extra_keys_stream = verification["corrections"]["memory_keys"]
+            from config import get_control_corrections_memory_keys_max
+            _extra_limit_stream = get_control_corrections_memory_keys_max()
+            _raw_extra_keys_stream = verification["corrections"]["memory_keys"] or []
+            if not isinstance(_raw_extra_keys_stream, (list, tuple)):
+                _raw_extra_keys_stream = []
+            _seen_extra_stream = set()
+            _extra_keys_stream = []
+            for _key_raw in _raw_extra_keys_stream:
+                _nk_stream = str(_key_raw or "").strip()
+                if not _nk_stream or _nk_stream in _seen_extra_stream:
+                    continue
+                _extra_keys_stream.append(_nk_stream)
+                _seen_extra_stream.add(_nk_stream)
+                if len(_extra_keys_stream) >= _extra_limit_stream:
+                    break
+            if _extra_limit_stream == 0:
+                _extra_keys_stream = []
+            if len(_raw_extra_keys_stream) > len(_extra_keys_stream):
+                log_info(
+                    f"[CTX] stream extra-lookup keys capped: kept={len(_extra_keys_stream)} "
+                    f"dropped={len(_raw_extra_keys_stream) - len(_extra_keys_stream)} "
+                    f"limit={_extra_limit_stream}"
+                )
             _policy_stream = self._compute_retrieval_policy(thinking_plan, verified_plan)
             _budget_stream = _policy_stream["max_retrievals"]
             for _key in _extra_keys_stream:
@@ -2445,6 +3890,7 @@ class PipelineOrchestrator:
                         small_model_mode=_smm_stream,
                         cleanup_payload={"needs_memory": True, "memory_keys": [_key]},
                         include_blocks={"compact": False, "system_tools": False, "memory_data": True},
+                        request_cache=request_retrieval_cache,
                     )
                     if _extra_text_s:
                         full_context = self._append_context_block(
@@ -2459,22 +3905,11 @@ class PipelineOrchestrator:
                         )
 
         # ── ControlLayer Tool-Decision: Args via Function Calling ──
-        # ControlLayer (qwen3:4b) füllt die Tool-Parameter — kein _build_tool_args nötig.
-        _control_tool_decisions: Dict[str, Dict] = {}
-        _gate_override_stream = verified_plan.get("_gate_tools_override")
-        if _gate_override_stream:
-            log_info(f"[Orchestrator-Stream] Gate override active — skipping decide_tools(): {_gate_override_stream}")
-            for _gt in _gate_override_stream:
-                _control_tool_decisions[_gt] = self._build_tool_args(_gt, user_text)
-        else:
-            try:
-                _decisions = await self.control.decide_tools(user_text, verified_plan)
-                for d in _decisions:
-                    _control_tool_decisions[d["name"]] = d.get("arguments", {})
-                if _control_tool_decisions:
-                    log_info(f"[Orchestrator] ControlLayer tool args: {list(_control_tool_decisions.keys())}")
-            except Exception as _e:
-                log_error(f"[Orchestrator] decide_tools error: {_e}")
+        _control_tool_decisions = await self._collect_control_tool_decisions(
+            user_text,
+            verified_plan,
+            stream=True,
+        )
         
         # Self-Aware Error Handling
         if verification.get("approved") == False:
@@ -2503,12 +3938,18 @@ class PipelineOrchestrator:
         _loop_tools_count = len(_raw_suggested)
         # autonomous_skill_task braucht keinen LoopEngine — hat eigene Pipeline
         _autonomous_task = "autonomous_skill_task" in _raw_suggested
+        from config import get_loop_engine_trigger_complexity, get_loop_engine_min_tools
+        _loop_complexity_threshold = int(get_loop_engine_trigger_complexity())
+        _loop_min_tools = int(get_loop_engine_min_tools())
+        _loop_candidate = (
+            _loop_complexity >= _loop_complexity_threshold
+            or (_loop_sequential and _loop_tools_count >= 2)
+        )
         use_loop_engine = (
             not _autonomous_task
-            and (
-                _loop_complexity >= 7
-                or (_loop_sequential and _loop_tools_count >= 2)
-            )
+            and response_mode_stream == "deep"
+            and _loop_tools_count >= _loop_min_tools
+            and _loop_candidate
         )
         # ── Phase 1.5 Commit 4: LoopEngine guard in small-model-mode ──
         # LoopEngine prompt grows unbounded across iterations — incompatible with small-model budget.
@@ -2516,9 +3957,16 @@ class PipelineOrchestrator:
             use_loop_engine = False
             log_info("[Orchestrator] LoopEngine SKIP — small-model-mode (unbounded prompt growth risk)")
         if use_loop_engine:
-            log_info(f"[Orchestrator] LoopEngine trigger: complexity={_loop_complexity}, sequential={_loop_sequential}, tools={_loop_tools_count}")
+            log_info(
+                "[Orchestrator] LoopEngine trigger: "
+                f"complexity={_loop_complexity}/{_loop_complexity_threshold}, "
+                f"sequential={_loop_sequential}, tools={_loop_tools_count}/{_loop_min_tools}, "
+                f"response_mode={response_mode_stream}"
+            )
         elif _autonomous_task:
             log_info(f"[Orchestrator] LoopEngine SKIP — autonomous_skill_task hat eigene Pipeline")
+        elif response_mode_stream != "deep":
+            log_info("[Orchestrator] LoopEngine SKIP — response_mode!=deep")
 
         # WORKSPACE: Save control layer decision if not skipped
         if not skip_control:
@@ -2552,31 +4000,13 @@ class PipelineOrchestrator:
         # ═══════════════════════════════════════════════════
         tool_context = ""
 
-        # ── ControlLayer ist autoritativ (Streaming) ──
-        if _control_tool_decisions:
-            suggested_tools = list(_control_tool_decisions.keys())
-            log_info(f"[Orchestrator-Stream] ControlLayer tools (authoritative): {suggested_tools}")
-        else:
-            # Fallback: ThinkingLayer-Suggestions falls ControlLayer nichts entschieden hat
-            suggested_tools = verified_plan.get("suggested_tools", [])
-            if suggested_tools:
-                log_info(f"[Orchestrator-Stream] Fallback: ThinkingLayer suggested_tools: {suggested_tools}")
-
-        # Validate + Normalize: filtert invalide Tools, konvertiert Skill-Namen → run_skill
-        suggested_tools = self._normalize_tools(suggested_tools)
-
-        if not suggested_tools:
-            suggested_tools = self._detect_tools_by_keyword(user_text)
-            if suggested_tools:
-                suggested_tools = self._normalize_tools(suggested_tools)
-                log_info(f"[Orchestrator-Stream] Last-resort keyword fallback: {suggested_tools}")
-
-        # ── Skill Trigger Router: Trigger-Keywords gegen installierte Skills matchen ──
-        if not suggested_tools:
-            trigger_matches = self._detect_skill_by_trigger(user_text)
-            if trigger_matches:
-                suggested_tools = self._normalize_tools(trigger_matches)
-                log_info(f"[Orchestrator] Skill Trigger Router: {trigger_matches}")
+        suggested_tools = self._resolve_execution_suggested_tools(
+            user_text,
+            verified_plan,
+            _control_tool_decisions,
+            stream=True,
+            enable_skill_trigger_router=True,
+        )
 
         if suggested_tools:
             log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: TOOL EXECUTION")
@@ -2638,6 +4068,23 @@ class PipelineOrchestrator:
                         log_info("[Orchestrator-Stream] Blocking home_write — not in ThinkingLayer suggested_tools (ControlLayer hallucination)")
                         continue
 
+                    # Fail-closed: bei Skill-Router-Ausfall keine Skill-Ausführung zulassen.
+                    if tool_name in {"autonomous_skill_task", "create_skill", "run_skill"} and thinking_plan.get("_skill_gate_blocked"):
+                        _skill_reason = thinking_plan.get("_skill_gate_reason", "skill_router_unavailable")
+                        log_warn(f"[Orchestrator-Stream] Blocking {tool_name} — reason={_skill_reason}")
+                        tool_context += (
+                            f"\n[{tool_name}]: FEHLER: Skill-Router nicht verfügbar ({_skill_reason}). "
+                            "Skill-Operation aus Sicherheitsgründen blockiert."
+                        )
+                        yield ("", False, {
+                            "type": "tool_result",
+                            "tool": tool_name,
+                            "success": False,
+                            "error": _skill_reason,
+                            "skipped": True,
+                        })
+                        continue
+
                     # Blueprint Gate + Router (Stream):
                     # Handles both: pre-planned gate (Step 1.8) AND keyword-fallback path (JIT check).
                     if tool_name == "request_container":
@@ -2661,7 +4108,12 @@ class PipelineOrchestrator:
                             # Keyword-fallback path: JIT router check
                             try:
                                 _jit_d = self._route_blueprint_request(user_text, thinking_plan)
-                                if _jit_d and not _jit_d.get("suggest"):
+                                if _jit_d and _jit_d.get("blocked"):
+                                    _jit_reason = _jit_d.get("reason", "blueprint_router_unavailable")
+                                    log_warn(f"[Orchestrator-Stream] JIT router blocked request_container — reason={_jit_reason}")
+                                    tool_context += "\n[request_container]: FEHLER: Blueprint-Router nicht verfügbar. Kein Freestyle-Container erlaubt."
+                                    continue
+                                elif _jit_d and not _jit_d.get("suggest"):
                                     tool_args["blueprint_id"] = _jit_d["blueprint_id"]
                                     tool_args["session_id"] = conversation_id or ""
                                     tool_args["conversation_id"] = conversation_id or ""
@@ -2685,6 +4137,21 @@ class PipelineOrchestrator:
                         tool_args["container_id"] = _last_container_id
                     elif tool_args.get("container_id") == "PENDING":
                         log_info(f"[Orchestrator] Skipping {tool_name} - no container_id yet")
+                        continue
+
+                    _valid, tool_args, _arg_reason = self._validate_tool_args(
+                        tool_hub, tool_name, tool_args, user_text
+                    )
+                    if not _valid:
+                        log_warn(f"[Orchestrator-Stream] Skipping {tool_name} due to invalid args: {_arg_reason}")
+                        tool_context += f"\n### TOOL-SKIP ({tool_name}): {_arg_reason}\n"
+                        yield ("", False, {
+                            "type": "tool_result",
+                            "tool": tool_name,
+                            "success": False,
+                            "error": _arg_reason,
+                            "skipped": True,
+                        })
                         continue
 
                     # ── Fast Lane: home_read/write/list nativ ausführen ──
@@ -3042,8 +4509,13 @@ class PipelineOrchestrator:
                     f"(tool_context={len(tool_context)}, failure_ctx merged if any)"
                 )
 
-            # Confidence Override: saubere Tool-Daten → kein Halluzinations-Lock
-            if "TOOL-FEHLER" not in tool_context and "VERIFY-FEHLER" not in tool_context:
+            has_failures_or_skips = self._tool_context_has_failures_or_skips(tool_context)
+            has_success = self._tool_context_has_success(tool_context)
+            if has_failures_or_skips:
+                verified_plan["_tool_failure"] = True
+            # Confidence Override: only when we have explicit successful tool evidence
+            # and no skip/failure markers.
+            if has_success and not has_failures_or_skips:
                 verified_plan["_tool_confidence"] = "high"
                 log_info("[Orchestrator] Tool confidence: HIGH — OutputLayer wird nicht gebremst")
 
@@ -3073,6 +4545,9 @@ class PipelineOrchestrator:
         # ── Phase 1.5 Commit 1: Final hard cap (always active in small mode) ──
         # Falls back to SMALL_MODEL_CHAR_CAP when SMALL_MODEL_FINAL_CAP=0 (no longer optional).
         full_context = self._apply_final_cap(full_context, ctx_trace_stream, _smm_stream, "stream")
+        full_context = self._apply_effective_context_guardrail(
+            full_context, ctx_trace_stream, _smm_stream, "stream"
+        )
 
         # ── Finalize orchestrator-side trace and hand off to OutputLayer ──
         # [CTX-PRE-OUTPUT]: orchestrator context string before OutputLayer adds persona/instructions/history.
@@ -3085,10 +4560,21 @@ class PipelineOrchestrator:
             f"retrieval_count={ctx_trace_stream['retrieval_count']}"
         )
         verified_plan["_ctx_trace"] = ctx_trace_stream
+        verified_plan["_response_mode"] = response_mode_stream
+        try:
+            from config import get_output_timeout_interactive_s, get_output_timeout_deep_s
+            verified_plan["_output_time_budget_s"] = (
+                get_output_timeout_deep_s()
+                if response_mode_stream == "deep"
+                else get_output_timeout_interactive_s()
+            )
+        except Exception:
+            pass
 
         if use_loop_engine:
             # ── LOOP ENGINE: OutputLayer bleibt aktiv, ruft Tools autonom auf ──
             from core.autonomous.loop_engine import LoopEngine
+            from config import get_loop_engine_output_char_cap, get_loop_engine_max_predict
             log_info("[Orchestrator] LoopEngine aktiv")
             yield ("", False, {
                 "type": "loop_engine_start",
@@ -3096,6 +4582,12 @@ class PipelineOrchestrator:
                 "sequential": _loop_sequential,
             })
             loop_engine = LoopEngine(model=request.model or None)
+            _loop_output_char_cap = int(get_loop_engine_output_char_cap())
+            _loop_max_predict = int(get_loop_engine_max_predict())
+            log_info(
+                f"[Orchestrator] LoopEngine budgets: char_cap={_loop_output_char_cap} "
+                f"num_predict={_loop_max_predict}"
+            )
             sys_prompt = self.output._build_system_prompt(verified_plan, full_context)
             # [CTX-FINAL] for LoopEngine path: sys_prompt + user_text + initial tool_context
             # (LoopEngine bypasses OutputLayer.generate_stream, so we measure here)
@@ -3111,6 +4603,8 @@ class PipelineOrchestrator:
                 system_prompt=sys_prompt,
                 initial_tool_context=tool_context,
                 max_iterations=5,
+                output_char_cap=_loop_output_char_cap,
+                output_num_predict=_loop_max_predict,
             ):
                 if le_meta.get("type") == "content" and le_chunk:
                     if first_chunk:
@@ -3321,28 +4815,37 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
     ) -> Tuple[Dict, Dict]:
         """Execute Control Layer (Step 2)."""
         
-        # Skip logic
-        skip_control = False
-        hallucination_risk = thinking_plan.get("hallucination_risk", "medium")
+        # Skip logic (shared with stream path)
+        skip_control, _skip_reason_sync = self._should_skip_control_layer(user_text, thinking_plan)
+        if skip_control:
+            log_info(f"[Orchestrator] === LAYER 2: CONTROL === SKIPPED ({_skip_reason_sync})")
         
-        if not ENABLE_CONTROL_LAYER:
-            skip_control = True
-            log_info("[Orchestrator] === LAYER 2: CONTROL === DISABLED (config)")
-        elif SKIP_CONTROL_ON_LOW_RISK and hallucination_risk == "low":
-            skip_control = True
-            log_info("[Orchestrator] === LAYER 2: CONTROL === SKIPPED (low-risk)")
-        
+        if thinking_plan.get("_sequential_deferred"):
+            log_info(
+                f"[Orchestrator] Sequential deferred: "
+                f"{thinking_plan.get('_sequential_deferred_reason', 'interactive_mode')}"
+            )
+
         # Sequential Thinking Check (BEFORE Control!)
         if thinking_plan.get("needs_sequential_thinking") or thinking_plan.get("sequential_thinking_required"):
             log_info("[Orchestrator] Sequential Thinking detected - executing BEFORE Control...")
-            sequential_result = await self.control._check_sequential_thinking(
-                user_text=user_text,
-                thinking_plan=thinking_plan
-            )
-            if sequential_result:
-                thinking_plan["_sequential_result"] = sequential_result
-                log_info(f"[Orchestrator] Sequential completed: {len(sequential_result.get('steps', []))} steps")
-        
+            from config import get_sequential_timeout_s
+            _seq_timeout = get_sequential_timeout_s()
+            try:
+                sequential_result = await asyncio.wait_for(
+                    self.control._check_sequential_thinking(
+                        user_text=user_text,
+                        thinking_plan=thinking_plan
+                    ),
+                    timeout=float(_seq_timeout),
+                )
+                if sequential_result:
+                    thinking_plan["_sequential_result"] = sequential_result
+                    log_info(f"[Orchestrator] Sequential completed: {len(sequential_result.get('steps', []))} steps")
+            except asyncio.TimeoutError:
+                log_warn(f"[Orchestrator] Sequential timeout after {_seq_timeout}s — continuing without sequential result")
+                thinking_plan["_sequential_timed_out"] = True
+
         if skip_control:
             verified_plan = thinking_plan.copy()
             verified_plan["_verified"] = False
@@ -3370,6 +4873,7 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
                     skill_name=skill_name,
                     origin=IntentOrigin.USER,
                     reason=verification.get("_cim_decision", {}).get("pattern_id", "control_layer"),
+                    user_text=user_text,
                     
                     conversation_id=conversation_id,
                     thinking_plan=thinking_plan,
@@ -3437,6 +4941,21 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
                     log_error(f"[Orchestrator-Save] Error: {e}")
         
         # Autosave assistant response
+        # Guard against self-reinforcement of low-quality outputs after failed/skipped tool phases.
+        tool_ctx = str(verified_plan.get("_tool_results", "") or "")
+        skip_autosave = False
+        skip_reason = ""
+        if verified_plan.get("_pending_intent"):
+            skip_autosave = True
+            skip_reason = "pending_intent_confirmation"
+        elif verified_plan.get("_tool_failure") or self._tool_context_has_failures_or_skips(tool_ctx):
+            skip_autosave = True
+            skip_reason = "tool_failure_or_skip"
+
+        if skip_autosave:
+            log_warn(f"[Orchestrator-Autosave] Skipped assistant autosave ({skip_reason})")
+            return
+
         try:
             autosave_assistant(
                 conversation_id=conversation_id,

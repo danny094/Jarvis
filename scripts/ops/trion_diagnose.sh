@@ -224,7 +224,7 @@ else
 fi
 
 # Whitelisted env snapshot
-whitelist_env="$(env | rg '^(DIGEST_|TYPEDSTATE_|TRION_|COMPOSE_PROFILES=)' || true)"
+whitelist_env="$(env | grep -E '^(DIGEST_|TYPEDSTATE_|TRION_|COMPOSE_PROFILES=)' || true)"
 if [ -n "${whitelist_env}" ]; then
   add_meta "env_whitelist" "$(echo "${whitelist_env}" | tr '\n' ';' | sed 's/;$/ /')"
   add_finding "PASS" "ENV_WHITELIST" "Captured whitelisted env keys" ""
@@ -294,7 +294,7 @@ if $docker_ok; then
   done
 
   if [ -n "${restart_candidates}" ]; then
-    top3="$(echo "${restart_candidates}" | tr ' ' '\n' | rg ':' | sort -t: -k1,1nr | head -n3 | tr '\n' ' ')"
+    top3="$(echo "${restart_candidates}" | tr ' ' '\n' | grep ':' | sort -t: -k1,1nr | head -n3 | tr '\n' ' ')"
     add_finding "MEDIUM" "RESTART_CANDIDATES" "Restart-loop candidates: ${top3}" "docker compose -f ${COMPOSE_FILE} ps"
     add_meta "restart_candidates_top3" "${top3}"
   fi
@@ -458,7 +458,7 @@ if $docker_ok; then
   admin_mounts="$(docker inspect -f '{{range .Mounts}}{{.Destination}}={{.Source}};{{end}}' jarvis-admin-api 2>/dev/null || true)"
   add_meta "admin_mounts" "${admin_mounts}"
   for m in /app/memory_speicher /app/memory /app/data /trion-home; do
-    if echo "${admin_mounts}" | rg -q "${m}="; then
+    if echo "${admin_mounts}" | grep -Fq "${m}="; then
       add_finding "PASS" "MOUNT_${m//\//_}" "Mount present: ${m}" ""
     else
       add_finding "HIGH" "MOUNT_${m//\//_}" "Mount missing: ${m}" "docker inspect jarvis-admin-api"
@@ -467,7 +467,7 @@ if $docker_ok; then
 fi
 
 log "Intra-container DNS checks"
-if $docker_ok && docker ps --format '{{.Names}}' | rg -qx 'jarvis-admin-api'; then
+if $docker_ok && docker ps --format '{{.Names}}' | grep -Fxq 'jarvis-admin-api'; then
   dns_res="$(docker exec -i jarvis-admin-api python3 - <<'PY' 2>/dev/null || true
 import socket
 for host in ('mcp-sql-memory','cim-server','sequential-thinking','document-processor'):
@@ -479,7 +479,7 @@ for host in ('mcp-sql-memory','cim-server','sequential-thinking','document-proce
 PY
 )"
   add_meta "dns_resolution" "$(echo "${dns_res}" | tr '\n' ';')"
-  if echo "${dns_res}" | rg -q 'ERR:'; then
+  if echo "${dns_res}" | grep -q 'ERR:'; then
     add_finding "HIGH" "DNS_RESOLUTION" "Admin container has DNS resolution errors" "docker network inspect ${NETWORK_NAME}"
   else
     add_finding "PASS" "DNS_RESOLUTION" "Admin container DNS resolution OK" ""
@@ -491,17 +491,17 @@ fi
 if [ "${MODE}" = "full" ] && ! $NO_LOGS && $docker_ok; then
   log "Log sampling"
   for svc in jarvis-admin-api mcp-sql-memory digest-worker; do
-    if docker ps -a --format '{{.Names}}' | rg -qx "${svc}"; then
+    if docker ps -a --format '{{.Names}}' | grep -Fxq "${svc}"; then
       log_file="${TMP_LOGS_DIR}/${svc}.log"
       if docker logs --since "${SINCE}" "${svc}" > "${log_file}" 2>&1; then
         if $REDACT; then
           sanitize_line < "${log_file}" > "${log_file}.redacted"
           mv "${log_file}.redacted" "${log_file}"
         fi
-        err_count="$(rg -i 'error|exception|traceback|failed|critical' "${log_file}" | wc -l | tr -d ' ')"
+        err_count="$(grep -Ei 'error|exception|traceback|failed|critical' "${log_file}" | wc -l | tr -d ' ' || true)"
         add_meta "log_errors_${svc}" "${err_count}"
         if [ "${err_count}" -gt 0 ] 2>/dev/null; then
-          sample="$(rg -i 'error|exception|traceback|failed|critical' "${log_file}" | head -n3 | tr '\n' ' ' | cut -c1-350)"
+          sample="$(grep -Ei 'error|exception|traceback|failed|critical' "${log_file}" | head -n3 | tr '\n' ' ' | cut -c1-350 || true)"
           add_finding "MEDIUM" "LOG_ERRORS_${svc}" "${svc} shows ${err_count} error-like lines (sample: ${sample})" "docker logs --since ${SINCE} ${svc}"
         else
           add_finding "PASS" "LOG_ERRORS_${svc}" "${svc} log sample has no error-like lines" ""

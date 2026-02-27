@@ -55,6 +55,12 @@ quick_gate() {
 
     dataset_gate
 
+    section "Mini Control Sync Gate"
+    run_step "mini_control_core_parity_check" \
+        python scripts/sync_mini_control_core.py --check
+    run_step "mini_control_core_sync_test" \
+        python -m pytest -q tests/unit/test_mini_control_core_sync.py --tb=short
+
     info "Running harness smoke tests..."
     run_step "harness_smoke" \
         python -m pytest -q \

@@ -1,0 +1,127 @@
+{
+  "query": "Nenne kurz die wichtigsten Schritte f\u00fcr ein sicheres TRION Update.",
+  "mode": "LightGraphBuilder",
+  "source": "auto_selector",
+  "graph": {
+    "nodes": [
+      {
+        "node_id": "STEP_1",
+        "name": "1. Identify if gradient exists (more X \u2192 more Y)",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC012"
+        }
+      },
+      {
+        "node_id": "STEP_2",
+        "name": "2. Check monotonicity",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC012"
+        }
+      },
+      {
+        "node_id": "STEP_3",
+        "name": "3. Look for thresholds",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC012"
+        }
+      },
+      {
+        "node_id": "STEP_4",
+        "name": "4. Identify plateaus or saturation",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC012"
+        }
+      },
+      {
+        "node_id": "STEP_5",
+        "name": "5. Consider U-shaped relationships",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC012"
+        }
+      },
+      {
+        "node_id": "STEP_6",
+        "name": "6. Evaluate against causal expectation",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "procedure_id": "PROC012"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source": "STEP_1",
+        "target": "STEP_2",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_2",
+        "target": "STEP_3",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_3",
+        "target": "STEP_4",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_4",
+        "target": "STEP_5",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_5",
+        "target": "STEP_6",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      }
+    ],
+    "metrics": {
+      "node_count": 6,
+      "edge_count": 5,
+      "is_dag": true,
+      "density": 0.16666666666666666
+    }
+  }
+}

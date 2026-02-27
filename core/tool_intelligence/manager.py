@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional
 from .error_detector import detect_tool_error, classify_error
 from .auto_search import AutoSearch
 # from .auto_retry import AutoRetry  # Phase 3
+from utils.logger import log_debug
 
 
 class ToolIntelligenceManager:
@@ -50,10 +51,11 @@ class ToolIntelligenceManager:
         
         # Step 2: Search for solutions
         solutions = self.auto_search.search_past_solutions(tool_name, error_msg)
+        error_classification = classify_error(error_msg or "", tool_name)
         
         # Step 3: Attempt auto-retry
         retry_result = None
-        if tool_hub and tool_args is not None:
+        if error_classification.get('retryable') and tool_hub and tool_args is not None:
             # Lazy initialize auto_retry
             if self.auto_retry is None:
                 from .auto_retry import AutoRetry
@@ -66,10 +68,17 @@ class ToolIntelligenceManager:
                 original_args=tool_args,
                 tool_hub=tool_hub
             )
+        elif not error_classification.get('retryable'):
+            log_debug(
+                f"[ToolIntelligence] Skip auto-retry for {tool_name}: "
+                f"{error_classification.get('error_type', 'unknown')} "
+                f"(confidence={error_classification.get('confidence', 0.0)})"
+            )
         
         return {
             'is_error': True,
             'error_msg': error_msg,
             'solutions': solutions,
+            'error_classification': error_classification,
             'retry_result': retry_result
         }

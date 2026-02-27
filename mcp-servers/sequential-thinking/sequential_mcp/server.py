@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 import sys
+import re
 # FIX 1: Dynamic path resolution (portable)
 import os
 from pathlib import Path
@@ -58,6 +59,83 @@ class ToolCallResponse(BaseModel):
     content: List[Dict[str, Any]]
     isError: Optional[bool] = False
 
+
+WORKFLOW_TEMPLATES: Dict[str, List[str]] = {
+    "data_analysis": [
+        "Define objective and expected output for {dataset}.",
+        "Validate data quality and identify missing or inconsistent fields.",
+        "Run exploratory analysis and summarize high-impact findings.",
+        "Build and validate a baseline model or statistical comparison.",
+        "Produce final report with recommendations and risks.",
+    ],
+    "research": [
+        "Define research question and scope for {topic}.",
+        "Collect and classify primary and secondary sources.",
+        "Extract evidence and group by claims and counter-claims.",
+        "Synthesize findings into a consistent argument structure.",
+        "Deliver concise conclusion with open questions.",
+    ],
+    "code_review": [
+        "Identify scope and critical paths in {repository}.",
+        "Review correctness risks, edge cases, and failure handling.",
+        "Check security, input validation, and dependency exposure.",
+        "Assess test coverage and missing regression scenarios.",
+        "Propose prioritized fixes with implementation notes.",
+    ],
+    "decision_making": [
+        "Define decision objective and non-negotiable constraints.",
+        "List options with assumptions, cost, and feasibility.",
+        "Evaluate risk, reversibility, and expected impact per option.",
+        "Select preferred option and define fallback trigger.",
+        "Create execution and monitoring checklist.",
+    ],
+}
+
+
+class _SafeTemplateVars(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def _generate_steps_from_description(description: str, max_steps: int) -> List[Dict[str, Any]]:
+    """Generate a deterministic step plan from free-form task text."""
+    clean = " ".join((description or "").strip().split())
+    if not clean:
+        clean = "Execute the requested task."
+
+    parts = re.split(r"(?:[.;\n]+|\s+(?:and then|then|dann|anschließend|anschliessend)\s+)", clean, flags=re.IGNORECASE)
+    normalized = [p.strip(" -") for p in parts if isinstance(p, str) and p.strip()]
+    if not normalized:
+        normalized = [clean]
+
+    limited = normalized[: max(1, int(max_steps))]
+    steps: List[Dict[str, Any]] = []
+    for idx, text in enumerate(limited):
+        step_id = f"step_{idx + 1}"
+        deps = [f"step_{idx}"] if idx > 0 else []
+        steps.append({"id": step_id, "description": text, "dependencies": deps})
+    return steps
+
+
+def _render_workflow_steps(template_id: str, variables: Dict[str, Any]) -> List[Dict[str, Any]]:
+    template = WORKFLOW_TEMPLATES.get(template_id)
+    if not template:
+        available = ", ".join(sorted(WORKFLOW_TEMPLATES.keys()))
+        raise ValueError(f"Unknown workflow template '{template_id}'. Available: {available}")
+
+    safe_vars = _SafeTemplateVars(**(variables or {}))
+    steps: List[Dict[str, Any]] = []
+    for idx, step_text in enumerate(template):
+        step_id = f"wf_step_{idx + 1}"
+        deps = [f"wf_step_{idx}"] if idx > 0 else []
+        steps.append(
+            {
+                "id": step_id,
+                "description": step_text.format_map(safe_vars),
+                "dependencies": deps,
+            }
+        )
+    return steps
 
 # === MCP PROTOCOL ENDPOINTS ===
 
@@ -180,11 +258,19 @@ async def handle_sequential_thinking(args: Dict[str, Any]) -> Dict[str, Any]:
             steps=steps
         )
     else:
-        # Auto-generate steps (simple for now, TODO: use LLM)
+        # Auto-generate deterministic steps from free-form description.
+        generated = _generate_steps_from_description(description, max_steps)
         task = create_task(
             task_id=f"seq_{uuid4()}",
             description=description,
-            steps=[create_step(step_id="step_1", query=description)]
+            steps=[
+                create_step(
+                    step_id=item["id"],
+                    query=item["description"],
+                    dependencies=item.get("dependencies", []),
+                )
+                for item in generated
+            ],
         )
     
     # Execute via Sequential Engine
@@ -214,16 +300,18 @@ async def handle_sequential_workflow(args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Handle sequential_workflow tool call
     
-    Placeholder for Task 3 (Workflow Engine)
+    Resolve a predefined workflow template into executable sequential steps.
     """
-    template_id = args["template_id"]
+    template_id = str(args["template_id"]).strip().lower()
     variables = args.get("variables", {})
-    
-    # TODO: Implement in Task 3
+    steps = _render_workflow_steps(template_id, variables)
+
     return {
         "success": True,
         "template_id": template_id,
-        "message": "Workflow templates coming in Task 3!"
+        "variables": variables,
+        "steps": steps,
+        "step_count": len(steps),
     }
 
 

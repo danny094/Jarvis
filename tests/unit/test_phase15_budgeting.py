@@ -16,6 +16,7 @@ from unittest.mock import Mock, AsyncMock, patch, MagicMock
 import sys
 import os
 import types
+import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -176,6 +177,75 @@ class TestClipToolContext:
             pytest.skip("Cannot import PipelineOrchestrator")
         result = orch._clip_tool_context("", small_model_mode=True)
         assert result == ""
+
+    def test_json_only_context_stays_valid_json_when_clipped(self):
+        """JSON-only tool_context must remain parseable JSON after clipping."""
+        orch = _make_orchestrator()
+        if orch is None:
+            pytest.skip("Cannot import PipelineOrchestrator")
+
+        payload = {
+            "tool": "memory_graph_search",
+            "results": [{"id": i, "text": "x" * 800} for i in range(20)],
+            "meta": {"source": "test", "ok": True},
+        }
+        json_ctx = json.dumps(payload, ensure_ascii=False)
+
+        with patch("config.get_small_model_tool_ctx_cap", return_value=280):
+            result = orch._clip_tool_context(json_ctx, small_model_mode=True)
+
+        assert len(result) <= 280
+        parsed = json.loads(result)
+        assert isinstance(parsed, (dict, list))
+
+    def test_structured_context_does_not_cut_json_line_blindly(self):
+        """Structured clipping should keep JSON lines parseable when they are retained."""
+        orch = _make_orchestrator()
+        if orch is None:
+            pytest.skip("Cannot import PipelineOrchestrator")
+
+        json_line = json.dumps(
+            {"path": "/tmp/data", "items": [{"name": "a", "value": "y" * 1200}]},
+            ensure_ascii=False,
+        )
+        structured = (
+            "\n### TOOL-ERGEBNIS (home_list):\n"
+            f"{json_line}\n"
+            "\n[TOOL-CARD: home_list | ✅ ok | ref:abc123]\n"
+            "- done\n"
+            "ts:2026-02-26T10:00:00Z\n"
+        )
+
+        with patch("config.get_small_model_tool_ctx_cap", return_value=260):
+            result = orch._clip_tool_context(structured, small_model_mode=True)
+
+        assert len(result) <= 260
+        for line in result.splitlines():
+            s = line.strip()
+            if s.startswith("{") and s.endswith("}"):
+                json.loads(s)
+
+    def test_failure_marker_preserved_even_if_failure_block_is_clipped(self):
+        """
+        Clipping must not erase failure evidence, otherwise confidence logic can be wrong.
+        """
+        orch = _make_orchestrator()
+        if orch is None:
+            pytest.skip("Cannot import PipelineOrchestrator")
+
+        failing = (
+            "\n### TOOL-FEHLER (create_skill): missing_required=['code']\n"
+            + ("A" * 1200)
+            + "\n[TOOL-CARD: run_skill | ✅ ok | ref:ok123]\n"
+            + "- executed\n"
+            + "ts:2026-02-26T10:00:00Z\n"
+        )
+
+        with patch("config.get_small_model_tool_ctx_cap", return_value=200):
+            result = orch._clip_tool_context(failing, small_model_mode=True)
+
+        assert len(result) <= 200
+        assert orch._tool_context_has_failures_or_skips(result) is True
 
 
 # ─── Commit 3: Unified failure-compact (sync path) ──────────────────────────
@@ -345,16 +415,22 @@ class TestLoopEngineSmallModelGuard:
         # Test the guard logic directly (simulates lines 2321-2325 in orchestrator.py)
         _autonomous_task = False
         _loop_complexity = 8  # would trigger LoopEngine
+        _loop_complexity_threshold = 8
+        _loop_min_tools = 1
         _loop_sequential = False
-        _loop_tools_count = 0
+        _loop_tools_count = 1
+        _response_mode_stream = "deep"
         _smm_stream = True  # small-model-mode
 
+        _loop_candidate = (
+            _loop_complexity >= _loop_complexity_threshold
+            or (_loop_sequential and _loop_tools_count >= 2)
+        )
         use_loop_engine = (
             not _autonomous_task
-            and (
-                _loop_complexity >= 7
-                or (_loop_sequential and _loop_tools_count >= 2)
-            )
+            and _response_mode_stream == "deep"
+            and _loop_tools_count >= _loop_min_tools
+            and _loop_candidate
         )
         assert use_loop_engine is True  # would have triggered
 
@@ -368,16 +444,22 @@ class TestLoopEngineSmallModelGuard:
         """Full model mode: LoopEngine not disabled by the guard."""
         _autonomous_task = False
         _loop_complexity = 8
+        _loop_complexity_threshold = 8
+        _loop_min_tools = 1
         _loop_sequential = False
-        _loop_tools_count = 0
+        _loop_tools_count = 1
+        _response_mode_stream = "deep"
         _smm_stream = False  # full model
 
+        _loop_candidate = (
+            _loop_complexity >= _loop_complexity_threshold
+            or (_loop_sequential and _loop_tools_count >= 2)
+        )
         use_loop_engine = (
             not _autonomous_task
-            and (
-                _loop_complexity >= 7
-                or (_loop_sequential and _loop_tools_count >= 2)
-            )
+            and _response_mode_stream == "deep"
+            and _loop_tools_count >= _loop_min_tools
+            and _loop_candidate
         )
 
         if use_loop_engine and _smm_stream:
@@ -389,16 +471,22 @@ class TestLoopEngineSmallModelGuard:
         """autonomous_skill_task disables LoopEngine regardless of small mode."""
         _autonomous_task = True
         _loop_complexity = 9
+        _loop_complexity_threshold = 8
+        _loop_min_tools = 1
         _loop_sequential = True
         _loop_tools_count = 5
+        _response_mode_stream = "deep"
         _smm_stream = False  # doesn't matter
 
+        _loop_candidate = (
+            _loop_complexity >= _loop_complexity_threshold
+            or (_loop_sequential and _loop_tools_count >= 2)
+        )
         use_loop_engine = (
             not _autonomous_task
-            and (
-                _loop_complexity >= 7
-                or (_loop_sequential and _loop_tools_count >= 2)
-            )
+            and _response_mode_stream == "deep"
+            and _loop_tools_count >= _loop_min_tools
+            and _loop_candidate
         )
 
         assert use_loop_engine is False  # autonomous disables before guard
@@ -417,3 +505,7 @@ class TestLoopEngineSmallModelGuard:
             "Phase 1.5 guard missing: 'if use_loop_engine and _smm_stream' not found in process_stream"
         assert "use_loop_engine = False" in source, \
             "Phase 1.5 guard missing: 'use_loop_engine = False' not found in process_stream"
+        assert 'response_mode_stream == "deep"' in source, \
+            "LoopEngine gate missing deep-mode requirement"
+        assert "_loop_tools_count >= _loop_min_tools" in source, \
+            "LoopEngine gate missing minimum tool-count requirement"

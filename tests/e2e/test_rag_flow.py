@@ -4,6 +4,8 @@ import json
 import uuid
 import os
 import time
+import pytest
+from urllib.parse import urlparse
 
 # Configuration
 MEMORY_URL = os.environ.get("TEST_MEMORY_URL", "http://localhost:8081/mcp") 
@@ -62,7 +64,36 @@ async def mcp_rpc_call(client, base_url, method, params=None, session_id=None):
         return None, resp.headers
     return data.get("result"), resp.headers
 
+
+async def _endpoint_reachable(raw_url: str) -> bool:
+    """
+    Fast availability probe.
+    Accepts any HTTP status (including 404) as "reachable".
+    """
+    try:
+        parsed = urlparse(raw_url)
+        probe = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else raw_url
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            r = await client.get(probe)
+        return r.status_code < 600
+    except Exception:
+        return False
+
+@pytest.mark.asyncio
 async def test_rag_flow():
+    if os.getenv("RUN_RAG_E2E", "0") != "1":
+        pytest.skip("Set RUN_RAG_E2E=1 to run live RAG flow test")
+
+    mem_ok, seq_ok = await asyncio.gather(
+        _endpoint_reachable(MEMORY_URL),
+        _endpoint_reachable(SEQUENTIAL_URL),
+    )
+    if not mem_ok or not seq_ok:
+        pytest.skip(
+            f"RAG endpoints unreachable (memory={mem_ok}, sequential={seq_ok}) "
+            f"MEMORY_URL={MEMORY_URL} SEQUENTIAL_URL={SEQUENTIAL_URL}"
+        )
+
     print("🚀 Starting E2E RAG Flow Test (JSON-RPC)")
     print(f"Memory URL: {MEMORY_URL}")
     print(f"Sequential URL: {SEQUENTIAL_URL}")

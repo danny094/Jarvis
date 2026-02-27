@@ -1,7 +1,13 @@
 # server.py (Deluxe Edition)
 
 import json
+import os
 import time
+
+# FastMCP stateless mode must be configured before server construction.
+# Keep enabled for direct JSON-RPC callers that do not maintain sessions.
+os.environ.setdefault("FASTMCP_STATELESS_HTTP", "true")
+
 from fastmcp import FastMCP
 
 from .database import init_db, migrate_db
@@ -28,7 +34,8 @@ def main():
     # 2. MCP Server erzeugen
     # -------------------------------------------
     print("→ MCP Server wird erstellt…")
-    mcp = FastMCP("sql_memory", stateless_http=True)
+    # FastMCP >= 2 removed constructor kwarg `stateless_http`.
+    mcp = FastMCP("sql_memory")
     print("✓ MCP Instanz aktiv")
 
     # -------------------------------------------

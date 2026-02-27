@@ -10,6 +10,7 @@
 [![Version](https://img.shields.io/badge/Version-4.0-blue?style=flat-square)](https://github.com/your-repo/antigravity/releases)
 [![Python](https://img.shields.io/badge/Python-3.12+-yellow?style=flat-square)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-Required-blue?style=flat-square)](https://www.docker.com/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
 </div>
 

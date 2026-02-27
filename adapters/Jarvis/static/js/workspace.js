@@ -13,6 +13,78 @@
     let initialized = false;
     let entries = []; // local cache
 
+    function tryParseJson(value) {
+        if (typeof value !== "string") return value;
+        try {
+            return JSON.parse(value);
+        } catch {
+            return value;
+        }
+    }
+
+    function toText(value) {
+        if (value === null || value === undefined) return "";
+        if (typeof value === "string") return value;
+        try {
+            return JSON.stringify(value, null, 2);
+        } catch {
+            return String(value);
+        }
+    }
+
+    function pickEventArray(payload) {
+        if (Array.isArray(payload)) return payload;
+        if (!payload || typeof payload !== "object") return [];
+        if (Array.isArray(payload.events)) return payload.events;
+        if (Array.isArray(payload.content)) return payload.content;
+        const structured = payload.structuredContent;
+        if (structured && typeof structured === "object" && Array.isArray(structured.events)) {
+            return structured.events;
+        }
+        return [];
+    }
+
+    function summarizeEvent(eventType, eventData) {
+        const data = (eventData && typeof eventData === "object") ? eventData : {};
+        if (typeof data.content === "string" && data.content.trim()) return data.content;
+
+        if (eventType === "tool_result") {
+            const tool = data.tool_name || "tool";
+            const status = data.status || "unknown";
+            const facts = Array.isArray(data.key_facts) ? data.key_facts.slice(0, 2).join(" | ") : "";
+            const base = `Tool ${tool}: ${status}`;
+            return facts ? `${base}\n${facts}` : base;
+        }
+
+        if (eventType && eventType.startsWith("container_")) {
+            const bp = data.blueprint_id || "container";
+            const cid = data.container_id ? String(data.container_id).slice(0, 12) : "";
+            const detail = data.purpose || data.command || data.reason || "";
+            const head = cid ? `${bp}/${cid}` : bp;
+            return detail ? `${head}: ${detail}` : head;
+        }
+
+        return toText(data.message || data.error || data.reason || data);
+    }
+
+    function normalizeWorkspaceEvent(raw) {
+        if (!raw || typeof raw !== "object") return null;
+        const eventDataRaw = raw.event_data !== undefined ? raw.event_data : raw.data;
+        const eventData = tryParseJson(eventDataRaw);
+        const eventType = raw.event_type || raw.entry_type || "event";
+        const content = toText(raw.content || summarizeEvent(eventType, eventData));
+
+        return {
+            id: raw.id ?? raw.entry_id ?? `${eventType}-${raw.created_at || Date.now()}`,
+            conversation_id: raw.conversation_id || eventData?.conversation_id || "",
+            content,
+            entry_type: eventType,
+            source_layer: raw.source_layer || eventData?.source_layer || "orchestrator",
+            created_at: raw.created_at || raw.timestamp || new Date().toISOString(),
+            _source: "event",
+        };
+    }
+
     // ═══════════════════════════════════════════════════════════
     // API BASE (same detection as api.js)
     // ═══════════════════════════════════════════════════════════
@@ -42,23 +114,29 @@
         if (conversationId) eventUrl += `&conversation_id=${encodeURIComponent(conversationId)}`;
 
         try {
-            const [entryRes, eventRes] = await Promise.all([fetch(entryUrl), fetch(eventUrl)]);
-            const entryData = await entryRes.json();
-            const eventData = await eventRes.json();
+            const [entryResp, eventResp] = await Promise.allSettled([fetch(entryUrl), fetch(eventUrl)]);
+            const entryRes = entryResp.status === "fulfilled" ? entryResp.value : null;
+            const eventRes = eventResp.status === "fulfilled" ? eventResp.value : null;
 
-            const entryList = (entryData.entries || []).map(e => ({ ...e, _source: "entry" }));
-            const eventList = (eventData.events || []).map(e => ({
-                id: e.id,
-                conversation_id: e.conversation_id,
-                content: e.event_data?.content || "",
-                entry_type: e.event_type || "event",
-                source_layer: e.event_data?.source_layer || "",
-                created_at: e.created_at,
-                _source: "event",
-            }));
+            const entryData = entryRes ? await entryRes.json().catch(() => ({})) : {};
+            const eventData = eventRes ? await eventRes.json().catch(() => ({})) : {};
+
+            const entryList = Array.isArray(entryData.entries)
+                ? entryData.entries.map(e => ({ ...e, _source: "entry" }))
+                : [];
+            const eventList = pickEventArray(eventData)
+                .map(normalizeWorkspaceEvent)
+                .filter(Boolean);
+
+            // De-duplicate by source + id for mixed endpoint responses
+            const dedup = new Map();
+            [...entryList, ...eventList].forEach(item => {
+                const key = `${item._source}:${item.id}`;
+                if (!dedup.has(key)) dedup.set(key, item);
+            });
 
             // Merge and sort newest-first
-            return [...entryList, ...eventList].sort(
+            return [...dedup.values()].sort(
                 (a, b) => new Date(b.created_at) - new Date(a.created_at)
             );
         } catch (e) {
@@ -338,7 +416,7 @@
         const entry = {
             id: data.entry_id,
             conversation_id: data.conversation_id,
-            content: data.content || data.event_data?.content || "",
+            content: toText(data.content || data.event_data?.content || ""),
             entry_type: data.entry_type || data.event_type || "observation",
             source_layer: data.source_layer || data.event_data?.source_layer || "orchestrator",
             created_at: data.timestamp || new Date().toISOString(),

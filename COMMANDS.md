@@ -5,6 +5,7 @@ This file lists the available commands for:
 - `scripts/ops/trion_live_reset.sh` (live-operation reset for tests)
 - `scripts/ops/trion_restore.sh` (restore/clean-install)
 - `scripts/ops/trion_live_restore.sh` (live-operation restore/clean-install)
+- `scripts/ops/trion_release_clean.sh` (one-command developer release clean)
 - `scripts/ops/trion_permissions_doctor.sh` (permissions diagnostics/fix)
 - `scripts/ops/trion_diagnose.sh` (runtime diagnostics + safe fix plan)
 
@@ -236,4 +237,37 @@ bash scripts/ops/trion_diagnose.sh --full --fix-safe --export --since=4h
 
 # Privacy-oriented diagnosis
 bash scripts/ops/trion_diagnose.sh --full --no-logs --export
+```
+
+## 7) `scripts/ops/trion_release_clean.sh`
+
+### Help
+```bash
+bash scripts/ops/trion_release_clean.sh --help
+```
+
+### Options
+- `--plan` print full phase plan
+- `--dry-run` preview all actions only
+- `--yes --non-interactive` non-prompt execution
+- `--skip-smoke` skip restore smoke test
+- `--skip-diagnose` skip final quick diagnose
+- `--skip-skill-prune` keep all skill folders unchanged
+- `--skip-service-restart` do not restart services after prune
+- `--keep-digest-worker` do not pause digest-worker during restore
+- `--keep-protocol` keep protocol files (`memory/*.md`) in hard restore
+- `--keep-csv` keep digest csv/state/lock in hard restore
+- `--skip-home-start` do not auto-start TRION home container
+- `--no-pause-admin` keep admin API running during restore
+
+### Common Commands
+```bash
+# Print plan
+bash scripts/ops/trion_release_clean.sh --plan
+
+# Safe preview of complete release-clean flow
+bash scripts/ops/trion_release_clean.sh --dry-run --yes --non-interactive
+
+# Real one-command developer clean for release baseline
+bash scripts/ops/trion_release_clean.sh --yes --non-interactive
 ```

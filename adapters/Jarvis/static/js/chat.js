@@ -1,5 +1,5 @@
 // chat.js - Main Controller (Fixed v3: correct box types + thought field)
-import { streamChat, getApiBase } from "./api.js";
+import { streamChat, getApiBase, submitDeepChatJob, waitForDeepChatJob } from "./api.js";
 import { log } from "./debug.js";
 
 // Modules
@@ -61,7 +61,7 @@ export function clearChat() {
 // HANDLE USER MESSAGE (v3: 3 box types, thought field fix)
 // ═══════════════════════════════════════════════════════════
 
-export async function handleUserMessage(text) {
+export async function handleUserMessage(text, options = {}) {
     if (!text.trim() || State.isLoading()) return;
 
     const model = State.getModel();
@@ -87,6 +87,7 @@ export async function handleUserMessage(text) {
 
     // === State tracking ===
     const baseMsgId = Date.now();
+    const useDeepJob = Boolean(options.deepJob);
     let controlThinkingId = null;  // Box 1: "Control" (classifier plan)
     let seqThinkingId = null;      // Box 2: "Thinking" (deepseek thinking stream)
     let currentSeqId = null;       // Box 3: "Sequential Thinking" (structured steps)
@@ -96,6 +97,60 @@ export async function handleUserMessage(text) {
     let controlBlockId = null;
 
     try {
+        if (useDeepJob) {
+            if (!botMsgId) {
+                botMsgId = Render.renderMessage("assistant", "", true);
+            }
+
+            const deepIntro = "Deep job wird gestartet…";
+            Render.updateMessage(botMsgId, deepIntro, true);
+            log("info", `Starting deep chat job for conversation=${conversationId}`);
+
+            const job = await submitDeepChatJob(model, messagesToSend, conversationId);
+            const jobId = job?.job_id;
+            if (!jobId) {
+                throw new Error("Deep job submit returned no job_id");
+            }
+
+            const status = await waitForDeepChatJob(jobId, {
+                pollIntervalMs: 1500,
+                timeoutMs: 15 * 60 * 1000,
+                onProgress: (st) => {
+                    const phase = String(st?.status || "queued");
+                    const duration = Number(st?.duration_ms || 0);
+                    const sec = duration > 0 ? Math.round(duration / 1000) : 0;
+                    const progress = sec > 0
+                        ? `Deep job ${phase} · ${sec}s`
+                        : `Deep job ${phase}…`;
+                    Render.updateMessage(botMsgId, progress, true);
+                },
+            });
+
+            const result = status?.result || {};
+            const resultContent = String(result?.message?.content || "").trim();
+            usedModel = result?.model || usedModel;
+            fullResponse = resultContent || "Deep job completed without response content.";
+
+            Render.updateMessage(botMsgId, fullResponse, false);
+            State.addMessage({ role: "assistant", content: fullResponse });
+            State.saveChatToStorage();
+
+            fetch(`${getApiBase()}/api/protocol/append`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    user_message: text,
+                    ai_response: fullResponse,
+                    timestamp: new Date().toISOString(),
+                    conversation_id: conversationId,
+                })
+            }).catch(err => console.warn("[Chat] Protocol append failed:", err));
+
+            updateHistoryDisplay(State.getMessageCount(), messagesToSend.length);
+            log("info", `Deep response complete, total messages: ${State.getMessageCount()}, model: ${usedModel}`);
+            return;
+        }
+
         for await (const chunk of streamChat(model, messagesToSend, conversationId)) {
 
             // ═══════════════════════════════════════════

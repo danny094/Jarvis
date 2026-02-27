@@ -21,13 +21,18 @@ _HEADERS = {
 
 
 def _parse_sse_response(text: str) -> Optional[Dict]:
-    """Parse SSE response from FastMCP to extract JSON-RPC result."""
+    """Parse FastMCP response (SSE or plain JSON) to extract JSON-RPC payload."""
     for line in text.strip().split("\n"):
         if line.startswith("data: "):
             try:
                 return json.loads(line[6:])
             except json.JSONDecodeError:
                 pass
+    # Newer/alternative transports may return plain JSON instead of SSE frames.
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
     return None
 
 

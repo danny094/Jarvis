@@ -8,49 +8,36 @@ import { log } from "../../static/js/debug.js";
 
 const els = {
     pages: {
-        personas: document.getElementById('page-personas'),
+        memory: document.getElementById('page-memory'),
         models: document.getElementById('page-models'),
-        memory: document.getElementById('page-memory')
     }
 };
 
-// ── Init guard — listeners must be registered exactly once ────────────────────
-let _settingsInitialized = false;
-
 /**
  * Initialize Settings
- * Safe to call multiple times: listeners register only once, data always refreshes.
  */
 export async function initSettingsApp() {
-    if (!_settingsInitialized) {
-        _settingsInitialized = true;
-        log('info', 'Initializing Settings App (first call — registering listeners)...');
+    log('info', 'Initializing Settings App...');
 
-        // Setup Persona Button Handlers (once)
-        setupPersonaHandlers();
-
-        // Setup Navigation Listeners (once)
-        const navItems = document.querySelectorAll('.settings-category');
-        navItems.forEach(item => {
-            item.addEventListener('click', () => {
-                const category = item.dataset.category;
-                if (category === 'personas') loadPersonas();
-                if (category === 'models') loadModels();
-                if (category === 'plugins') loadPlugins();
-            });
+    // Setup Navigation Listeners (if Shell didn't already covers generic switching, 
+    // but we might need specific load triggers)
+    const navItems = document.querySelectorAll('.settings-category');
+    navItems.forEach(item => {
+        item.addEventListener('click', () => {
+            const category = item.dataset.category;
+            if (category === 'plugins') loadPlugins();
+            if (category === 'models') loadModels();
         });
+    });
 
-        // Initial load check for active category
-        const activeCat = document.querySelector('.settings-category.active');
-        if (activeCat && activeCat.dataset.category === 'plugins') {
-            loadPlugins();
-        }
-    } else {
-        log('info', 'Settings App already initialized — skipping listener setup.');
+    // Initial load check
+    const activeCat = document.querySelector('.settings-category.active');
+    if (activeCat && activeCat.dataset.category === 'plugins') {
+        loadPlugins();
     }
-
-    // Always refresh persona list on (re-)open so data is current
-    await loadPersonas();
+    if (activeCat && activeCat.dataset.category === 'models') {
+        loadModels();
+    }
 }
 
 /**
@@ -106,7 +93,6 @@ function handleEditPersona() {
  */
 async function openPersonaEditor(name) {
     log('info', `[Personas] Opening editor for: ${name}`);
-    const safeName = escapeHtml(name);
 
     try {
         // Fetch persona content
@@ -126,7 +112,7 @@ async function openPersonaEditor(name) {
                 <div class="flex items-center justify-between p-4 border-b border-[#333]">
                     <div class="flex items-center gap-3">
                         <i data-lucide="edit-3" class="w-5 h-5 text-accent-primary"></i>
-                        <h3 class="text-xl font-bold text-white">Edit Persona: ${safeName}</h3>
+                        <h3 class="text-xl font-bold text-white">Edit Persona: ${name}</h3>
                     </div>
                     <button onclick="closePersonaEditor()" class="p-2 hover:bg-[#222] rounded-lg transition-colors">
                         <i data-lucide="x" class="w-5 h-5 text-gray-400"></i>
@@ -245,12 +231,8 @@ async function savePersonaEdit(name) {
  */
 function escapeHtml(text) {
     const div = document.createElement('div');
-    div.textContent = text == null ? '' : String(text);
+    div.textContent = text;
     return div.innerHTML;
-}
-
-function encodeForOnclickArg(text) {
-    return encodeURIComponent(text == null ? '' : String(text));
 }
 
 async function handleUploadPersona() {
@@ -340,6 +322,7 @@ function parseIdentitySection(content) {
 }
 
 async function loadPersonas() {
+    if (!els.pages.personas) return;
     const container = els.pages.personas.querySelector('.grid');
     if (!container) return;
 
@@ -368,7 +351,7 @@ async function loadPersonas() {
 
     } catch (e) {
         log('error', `Personas Load Error: ${e.message}`);
-        container.innerHTML = `<div class="text-red-400">Error: ${escapeHtml(e.message)}</div>`;
+        container.innerHTML = `<div class="text-red-400">Error: ${e.message}</div>`;
     }
 }
 
@@ -387,11 +370,9 @@ function renderPersonas(list, activeName, activeIdentity, container) {
         .map(field => `
             <div class="flex items-center gap-2">
                 <span class="text-gray-500 text-sm w-24">${field.charAt(0).toUpperCase() + field.slice(1).replace('_', ' ')}:</span>
-                <span class="text-gray-300 text-sm font-medium">${escapeHtml(activeIdentity[field])}</span>
+                <span class="text-gray-300 text-sm font-medium">${activeIdentity[field]}</span>
             </div>
         `).join('');
-
-    const safeActive = escapeHtml(active || 'default');
 
     const html = `
         <!-- Active Persona (Featured) -->
@@ -406,7 +387,7 @@ function renderPersonas(list, activeName, activeIdentity, container) {
                         <i data-lucide="zap" class="w-8 h-8"></i>
                     </div>
                     <div>
-                        <h3 class="text-2xl font-bold text-white">${safeActive}</h3>
+                        <h3 class="text-2xl font-bold text-white">${active}</h3>
                         <p class="text-accent-primary text-sm font-mono uppercase tracking-wider">Active System Persona</p>
                     </div>
                 </div>
@@ -441,25 +422,19 @@ function renderPersonas(list, activeName, activeIdentity, container) {
         <div class="col-span-12 md:col-span-4 space-y-4 max-h-[60vh] overflow-y-auto pr-2">
             <h4 class="text-gray-500 font-medium px-1">Available Personas</h4>
             ${others.map(p => `
-                ${(() => {
-                    const safeDisplay = escapeHtml(p);
-                    const encoded = encodeForOnclickArg(p);
-                    return `
                 <div class="bg-[#0a0a0a] border border-[#222] hover:border-gray-600 rounded-lg p-4 cursor-pointer transition-all hover:translate-x-1 group"
-                     onclick="switchPersona(decodeURIComponent('${encoded}'))">
+                     onclick="switchPersona('${p}')">
                     <div class="flex items-center justify-between">
                         <div class="flex items-center gap-3">
                             <i data-lucide="user" class="w-5 h-5 text-gray-600 group-hover:text-white transition-colors"></i>
-                            <span class="text-gray-300 font-medium group-hover:text-white">${safeDisplay}</span>
+                            <span class="text-gray-300 font-medium group-hover:text-white">${p}</span>
                         </div>
                         <div class="flex items-center gap-2">
-                            ${p !== 'default' ? `<button onclick="event.stopPropagation(); window.deletePersona(decodeURIComponent('${encoded}'))" class="p-1.5 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors" title="Delete Persona"><i data-lucide="trash-2" class="w-4 h-4"></i></button>` : ''}
+                            ${p !== 'default' ? `<button onclick="event.stopPropagation(); window.deletePersona('${p}')" class="p-1.5 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors" title="Delete Persona"><i data-lucide="trash-2" class="w-4 h-4"></i></button>` : ''}
                             <i data-lucide="chevron-right" class="w-4 h-4 text-[#333] group-hover:text-white"></i>
                         </div>
                     </div>
                 </div>
-                    `;
-                })()}
             `).join('')}
              
              <!-- Add New -->
@@ -506,7 +481,7 @@ async function switchPersona(name) {
     if (!confirm(`Switch to persona '${name}'?`)) return;
 
     try {
-        const res = await fetch(`${getApiBase()}/api/personas/${encodeURIComponent(name)}/switch`, {
+        const res = await fetch(`${getApiBase()}/api/personas/${name}/switch`, {
             method: 'PUT'
         });
 
@@ -575,8 +550,11 @@ async function deletePersona(name) {
  * ═══════════════════════════════════════════════════════════
  */
 async function loadModels() {
+    // Guard: page-models is not in the DOM when the Models tab is hidden (Phase 1).
+    if (!els.pages.models) return;
     const page = els.pages.models;
-    // Inject Structure if empty
+
+    // Inject skeleton structure if empty
     if (!page.querySelector('.model-grid')) {
         page.innerHTML = `
             <h2 class="text-3xl font-light mb-8 border-b border-[#333] pb-4">Models & Intelligence</h2>
@@ -589,16 +567,48 @@ async function loadModels() {
         lucide.createIcons();
     }
 
-    try {
-        const res = await fetch(`${getApiBase()}/api/tags`);
-        if (!res.ok) throw new Error("Failed to fetch models");
-        const data = await res.json(); // { models: [ {name, ...} ] }
+    // Fetch installed models + effective config + compute routing in parallel
+    const [tagsResult, effectiveResult, routingResult, instancesResult] = await Promise.allSettled([
+        fetch(`${getApiBase()}/api/tags`),
+        fetch(`${getApiBase()}/api/settings/models/effective`),
+        fetch(`${getApiBase()}/api/runtime/compute/routing`),
+        fetch(`${getApiBase()}/api/runtime/compute/instances`),
+    ]);
 
-        renderModels(data.models || [], page.querySelector('.model-grid'));
-
-    } catch (e) {
-        log('error', `Models Load Error: ${e.message}`);
+    let models = [];
+    if (tagsResult.status === 'fulfilled' && tagsResult.value.ok) {
+        try { models = (await tagsResult.value.json()).models || []; }
+        catch (e) { log('error', `Models JSON parse: ${e.message}`); }
+    } else {
+        log('error', 'Models Load Error: failed to fetch /api/tags');
+        showToast('Could not load model list', 'error');
     }
+
+    let effective = {};
+    if (effectiveResult.status === 'fulfilled' && effectiveResult.value.ok) {
+        try { effective = (await effectiveResult.value.json()).effective || {}; }
+        catch (e) { log('error', `Effective config JSON parse: ${e.message}`); }
+    } else {
+        log('error', 'Models Load Error: failed to fetch /api/settings/models/effective');
+    }
+
+    let computeRouting = {};
+    if (routingResult.status === 'fulfilled' && routingResult.value.ok) {
+        try { computeRouting = await routingResult.value.json(); }
+        catch (e) { log('error', `Compute routing JSON parse: ${e.message}`); }
+    } else {
+        log('warn', 'Models Load Warning: failed to fetch /api/runtime/compute/routing');
+    }
+
+    let computeInstances = {};
+    if (instancesResult.status === 'fulfilled' && instancesResult.value.ok) {
+        try { computeInstances = await instancesResult.value.json(); }
+        catch (e) { log('error', `Compute instances JSON parse: ${e.message}`); }
+    } else {
+        log('warn', 'Models Load Warning: failed to fetch /api/runtime/compute/instances');
+    }
+
+    renderModels(models, page.querySelector('.model-grid'), effective, computeRouting, computeInstances);
 }
 
 window.testModel = (name) => alert(`Testing capability for ${name} coming soon!`);
@@ -606,63 +616,219 @@ window.testModel = (name) => alert(`Testing capability for ${name} coming soon!`
 // Bind global save
 window.saveModelSettings = saveModelSettings;
 
-function renderModels(models, container) {
-    if (models.length === 0) {
-        container.innerHTML = `<div class="p-4 text-gray-500">No models found in Ollama.</div>`;
-        return;
+/**
+ * Build <option> list for a model select.
+ * If the configured value is not in the installed list, prepend an extra option
+ * so the user can see what is configured even if it is not currently installed.
+ */
+function _modelOptions(models, configuredValue) {
+    const installedNames = new Set(models.map(m => m.name));
+    let extra = '';
+    if (configuredValue && !installedNames.has(configuredValue)) {
+        extra = `<option value="${escapeHtml(configuredValue)}">${escapeHtml(configuredValue)} (configured, not installed)</option>`;
     }
+    const installed = models
+        .map(m => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} (${(m.size / 1e9).toFixed(1)}GB)</option>`)
+        .join('');
+    return extra + installed;
+}
 
-    const encodedModelName = (name) => encodeURIComponent(name || '');
+const _ROUTING_ROLES = [
+    { key: "thinking", label: "Thinking Layer" },
+    { key: "control", label: "Control Layer" },
+    { key: "output", label: "Output Layer" },
+    { key: "tool_selector", label: "Tool Selector" },
+    { key: "embedding", label: "Embedding" },
+];
 
-    // Helper to create options
-    const createOptions = (current) =>
-        models
-            .map(m => `<option value="${encodedModelName(m.name)}" ${m.name === current ? 'selected' : ''}>${escapeHtml(m.name)} (${(m.size / 1e9).toFixed(1)}GB)</option>`)
-            .join('');
+function _formatTargetLabel(target, targetLabels = null) {
+    if (targetLabels && target && targetLabels[target]) return targetLabels[target];
+    if (target === "auto") return "Auto";
+    if (target === "cpu") return "CPU";
+    if (typeof target === "string" && target.startsWith("gpu")) return target.toUpperCase();
+    return String(target || "—");
+}
 
-    // Grid Layout for Settings
+function _gpuSlot(inst) {
+    const fromCap = inst?.capability?.gpu_device_id;
+    if (fromCap !== undefined && fromCap !== null && String(fromCap).trim() !== "") {
+        return String(fromCap).trim();
+    }
+    const id = String(inst?.id || "");
+    const m = id.match(/^gpu(\d+)$/i);
+    return m ? m[1] : "?";
+}
+
+function _gpuLabelFromInstance(inst) {
+    const slot = _gpuSlot(inst);
+    const name = String(inst?.capability?.gpu_name || "").trim();
+    const backend = String(inst?.capability?.gpu_backend || "").trim().toUpperCase();
+    const prefix = `GPU ${slot}`;
+    if (name && backend) return `${prefix} - ${name} [${backend}]`;
+    if (name) return `${prefix} - ${name}`;
+    if (backend) return `${prefix} [${backend}]`;
+    return prefix;
+}
+
+function _routingOptions(allowedTargets, selected, targetLabels = null) {
+    const safeAllowed = Array.isArray(allowedTargets) && allowedTargets.length
+        ? allowedTargets
+        : ["auto", "cpu"];
+
+    const values = [...safeAllowed];
+    if (selected && !values.includes(selected)) values.unshift(selected);
+
+    return values.map((target) => {
+        const isSelected = target === selected ? "selected" : "";
+        const label = _formatTargetLabel(target, targetLabels);
+        return `<option value="${escapeHtml(target)}" ${isSelected}>${escapeHtml(label)}</option>`;
+    }).join("");
+}
+
+function _routeSummary(routeInfo, targetLabels = null) {
+    if (!routeInfo || typeof routeInfo !== "object") return "Effective: —";
+    const eff = routeInfo.effective_target || "—";
+    const reason = routeInfo.fallback_reason ? ` · fallback=${routeInfo.fallback_reason}` : "";
+    return `Effective: ${_formatTargetLabel(eff, targetLabels)}${reason}`;
+}
+
+function _renderInstanceStatus(instancesPayload) {
+    const instances = Array.isArray(instancesPayload?.instances) ? instancesPayload.instances : [];
+    if (!instances.length) {
+        return `<div class="text-xs text-gray-500">No managed compute instances available.</div>`;
+    }
+    return instances.map((inst) => {
+        const id = inst.id || "unknown";
+        const endpoint = inst.endpoint || "—";
+        const running = Boolean(inst.running);
+        const healthy = Boolean(inst.health?.ok);
+        const isGpu = String(inst?.target || "") === "gpu";
+        const friendly = isGpu ? _gpuLabelFromInstance(inst) : "CPU";
+        const statusClass = running && healthy
+            ? "text-green-400"
+            : running
+                ? "text-yellow-400"
+                : "text-gray-500";
+        const status = running && healthy ? "running/healthy" : running ? "running/unhealthy" : "stopped";
+        return `
+            <div class="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-xs">
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-300">${escapeHtml(friendly)}</span>
+                    <span class="${statusClass}">${status}</span>
+                </div>
+                <div class="text-gray-500 mt-1 font-mono">id: ${escapeHtml(id)}</div>
+                <div class="text-gray-500 mt-1">${escapeHtml(endpoint)}</div>
+            </div>
+        `;
+    }).join("");
+}
+
+function _buildTargetLabels(instancesPayload) {
+    const out = { auto: "Auto", cpu: "CPU" };
+    const instances = Array.isArray(instancesPayload?.instances) ? instancesPayload.instances : [];
+    for (const inst of instances) {
+        const id = String(inst?.id || "").trim();
+        if (!id || id === "cpu") continue;
+        out[id] = _gpuLabelFromInstance(inst);
+    }
+    return out;
+}
+
+function renderModels(models, container, effective, computeRouting = {}, computeInstances = {}) {
+    if (!container) return;
+    effective = effective || {};
+
+    const thinkingVal  = effective.THINKING_MODEL  ? effective.THINKING_MODEL.value  : '';
+    const controlVal   = effective.CONTROL_MODEL   ? effective.CONTROL_MODEL.value   : '';
+    const outputVal    = effective.OUTPUT_MODEL    ? effective.OUTPUT_MODEL.value    : '';
+    const embeddingVal = effective.EMBEDDING_MODEL ? effective.EMBEDDING_MODEL.value : '';
+
+    const allowedTargets = (
+        Array.isArray(computeRouting.allowed_targets) && computeRouting.allowed_targets.length
+            ? computeRouting.allowed_targets
+            : (Array.isArray(computeInstances.allowed_targets) && computeInstances.allowed_targets.length
+                ? computeInstances.allowed_targets
+                : ["auto", "cpu"])
+    );
+    const layerRouting = (computeRouting.layer_routing && typeof computeRouting.layer_routing === "object")
+        ? computeRouting.layer_routing
+        : {};
+    const effectiveRouting = (computeRouting.effective && typeof computeRouting.effective === "object")
+        ? computeRouting.effective
+        : {};
+    const targetLabels = _buildTargetLabels(computeInstances);
+    const allowedTargetsFriendly = allowedTargets.map((t) => _formatTargetLabel(t, targetLabels));
+
+    const sourceLabel = (key) => {
+        const src = effective[key] ? effective[key].source : 'default';
+        const colors = { override: 'text-accent-primary', env: 'text-blue-400', default: 'text-gray-500' };
+        return `<span class="text-xs ${colors[src] || 'text-gray-500'} font-mono ml-1">[${src}]</span>`;
+    };
+
     const html = `
         <div class="space-y-8 max-w-4xl">
-            
             <!-- Model Layers Configuration -->
             <div class="bg-[#111] border border-dark-border rounded-xl p-6">
                 <h3 class="text-xl font-bold text-gray-200 mb-6 flex items-center gap-2">
                     <i data-lucide="layers" class="text-accent-primary"></i>
                     Cognitive Layers
                 </h3>
-                
+
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <!-- Thinking Layer -->
                     <div class="space-y-2">
-                        <label class="text-sm text-gray-400 font-mono uppercase">Thinking Model (System 2)</label>
+                        <label class="text-sm text-gray-400 font-mono uppercase">
+                            Thinking Model (System 2)${sourceLabel('THINKING_MODEL')}
+                        </label>
                         <select id="setting-thinking-model" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
                             <option value="">(Disabled)</option>
-                            ${createOptions('deepseek-r1:8b')} <!-- TODO: Fetch actual current setting -->
+                            ${_modelOptions(models, thinkingVal)}
                         </select>
                         <p class="text-xs text-gray-500">Handles deep reasoning and planning.</p>
                     </div>
 
                     <!-- Control Layer -->
                     <div class="space-y-2">
-                        <label class="text-sm text-gray-400 font-mono uppercase">Control Model (System 1)</label>
+                        <label class="text-sm text-gray-400 font-mono uppercase">
+                            Control Model (System 1)${sourceLabel('CONTROL_MODEL')}
+                        </label>
                         <select id="setting-control-model" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
-                            ${createOptions('qwen3:4b')}
+                            ${_modelOptions(models, controlVal)}
                         </select>
                         <p class="text-xs text-gray-500">Orchestrates tools and memory access.</p>
                     </div>
 
                     <!-- Output Layer -->
                     <div class="space-y-2">
-                        <label class="text-sm text-gray-400 font-mono uppercase">Output Model (Generator)</label>
+                        <label class="text-sm text-gray-400 font-mono uppercase">
+                            Output Model (Generator)${sourceLabel('OUTPUT_MODEL')}
+                        </label>
                         <select id="setting-output-model" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
-                             ${createOptions('llama3.2:3b')}
+                            ${_modelOptions(models, outputVal)}
                         </select>
                         <p class="text-xs text-gray-500">Generates the final user response.</p>
                     </div>
+
+                    <!-- Embedding -->
+                    <div class="space-y-2">
+                        <label class="text-sm text-gray-400 font-mono uppercase">
+                            Embedding Model${sourceLabel('EMBEDDING_MODEL')}
+                        </label>
+                        <select id="setting-embedding-model" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
+                            ${_modelOptions(models, embeddingVal)}
+                        </select>
+                        <p class="text-xs text-gray-500">Used for semantic memory/search embeddings.</p>
+                    </div>
+                </div>
+
+                <div class="mt-6 bg-dark-bg border border-dark-border rounded-lg px-4 py-3 text-xs text-gray-400">
+                    Honest scope: only runtime-wired model keys are editable here
+                    (thinking, control, output, embedding).
+                    Compute routing is live below.
                 </div>
 
                 <div class="mt-8 flex justify-end">
-                    <button onclick="saveModelSettings()" 
+                    <button onclick="saveModelSettings()"
                             class="px-6 py-2 bg-accent-primary hover:bg-orange-500 text-black font-bold rounded-lg transition-colors flex items-center gap-2">
                         <i data-lucide="save" class="w-4 h-4"></i>
                         Save Configuration
@@ -670,17 +836,62 @@ function renderModels(models, container) {
                 </div>
             </div>
 
+            <!-- Compute Routing -->
+            <div class="bg-[#111] border border-dark-border rounded-xl p-6">
+                <h3 class="text-xl font-bold text-gray-200 mb-6 flex items-center gap-2">
+                    <i data-lucide="cpu" class="text-accent-primary"></i>
+                    Compute Target Routing
+                </h3>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    ${_ROUTING_ROLES.map((role) => {
+                        const requested = layerRouting[role.key] || "auto";
+                        const routeInfo = effectiveRouting[role.key] || {};
+                        return `
+                            <div class="space-y-2">
+                                <label class="text-sm text-gray-400 font-mono uppercase">
+                                    ${role.label}
+                                </label>
+                                <select id="setting-route-${role.key}" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
+                                    ${_routingOptions(allowedTargets, requested, targetLabels)}
+                                </select>
+                                <p class="text-xs text-gray-500">${escapeHtml(_routeSummary(routeInfo, targetLabels))}</p>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+
+                <div class="mt-6 bg-dark-bg border border-dark-border rounded-lg px-4 py-3 text-xs text-gray-400">
+                    Allowed targets: <span class="text-gray-300">${escapeHtml(allowedTargetsFriendly.join(" | "))}</span>
+                </div>
+
+                <div class="mt-4">
+                    <h4 class="text-gray-500 font-medium mb-3 text-sm">Managed Compute Instances</h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        ${_renderInstanceStatus(computeInstances)}
+                    </div>
+                </div>
+
+                <div class="mt-8 flex justify-end">
+                    <button id="save-compute-routing"
+                            class="px-6 py-2 bg-accent-primary hover:bg-orange-500 text-black font-bold rounded-lg transition-colors flex items-center gap-2">
+                        <i data-lucide="save" class="w-4 h-4"></i>
+                        Save Compute Routing
+                    </button>
+                </div>
+            </div>
+
             <!-- Model List (Read Only) -->
             <div>
-                 <h4 class="text-gray-500 font-medium mb-4">Installed Models</h4>
-                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <h4 class="text-gray-500 font-medium mb-4">Installed Models</h4>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     ${models.map(m => `
                         <div class="bg-dark-card border border-dark-border rounded-lg p-4 flex justify-between items-center opacity-70 hover:opacity-100 transition-opacity">
                             <span class="font-mono text-sm text-gray-300">${escapeHtml(m.name)}</span>
                             <span class="text-xs text-gray-500">${(m.size / 1e9).toFixed(1)} GB</span>
                         </div>
                     `).join('')}
-                 </div>
+                </div>
             </div>
         </div>
     `;
@@ -688,35 +899,98 @@ function renderModels(models, container) {
     container.innerHTML = html;
     lucide.createIcons();
 
-    // TODO: We should fetch current settings to pre-select!
-    // fetchSettings().then(applyToSelectors)
+    // Apply effective values to selects
+    const selMap = {
+        'setting-thinking-model': thinkingVal,
+        'setting-control-model':  controlVal,
+        'setting-output-model':   outputVal,
+        'setting-embedding-model': embeddingVal,
+    };
+    for (const [elId, val] of Object.entries(selMap)) {
+        if (!val) continue;
+        const sel = document.getElementById(elId);
+        if (sel) sel.value = val;
+    }
+
+    const saveRoutingBtn = document.getElementById("save-compute-routing");
+    if (saveRoutingBtn) {
+        saveRoutingBtn.addEventListener("click", saveComputeRoutingSettings);
+    }
 }
 
 async function saveModelSettings() {
-    const decode = (id) => {
+    const val = (id) => {
         const el = document.getElementById(id);
-        return el && el.value ? decodeURIComponent(el.value) : '';
+        return el ? el.value.trim() : '';
     };
-    const changes = {
-        THINKING_MODEL: decode('setting-thinking-model'),
-        CONTROL_MODEL: decode('setting-control-model'),
-        OUTPUT_MODEL: decode('setting-output-model')
-    };
+    const changes = {};
+    const thinking = val('setting-thinking-model');
+    const control  = val('setting-control-model');
+    const output   = val('setting-output-model');
+    const embedding = val('setting-embedding-model');
+    if (thinking) changes.THINKING_MODEL = thinking;
+    if (control)  changes.CONTROL_MODEL  = control;
+    if (output)   changes.OUTPUT_MODEL   = output;
+    if (embedding) changes.EMBEDDING_MODEL = embedding;
 
-    showToast("Saving settings...", "info");
+    if (!Object.keys(changes).length) {
+        showToast('Nothing to save', 'info');
+        return;
+    }
+
+    showToast('Saving settings...', 'info');
 
     try {
-        const res = await fetch(`${getApiBase()}/api/settings/`, {
+        const res = await fetch(`${getApiBase()}/api/settings/models`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(changes)
+            body: JSON.stringify(changes),
         });
 
-        if (!res.ok) throw new Error("Save failed");
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
 
-        showToast("Configuration saved!", "success");
+        window.dispatchEvent(new CustomEvent('jarvis:model-settings-updated', {
+            detail: { ...changes, source: 'settings-models' }
+        }));
+        showToast('Configuration saved!', 'success');
     } catch (e) {
-        showToast(`Error: ${e.message}`, "error");
+        showToast(`Error: ${e.message}`, 'error');
+    }
+}
+
+async function saveComputeRoutingSettings() {
+    const layerRouting = {};
+    for (const role of _ROUTING_ROLES) {
+        const el = document.getElementById(`setting-route-${role.key}`);
+        if (!el || !el.value) continue;
+        layerRouting[role.key] = el.value;
+    }
+
+    if (!Object.keys(layerRouting).length) {
+        showToast('Nothing to save', 'info');
+        return;
+    }
+
+    showToast('Saving compute routing...', 'info');
+    try {
+        const res = await fetch(`${getApiBase()}/api/runtime/compute/routing`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ layer_routing: layerRouting }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        showToast('Compute routing saved!', 'success');
+        await loadModels();
+    } catch (e) {
+        showToast(`Routing save failed: ${e.message}`, 'error');
     }
 }
 
@@ -746,7 +1020,7 @@ async function loadPlugins() {
         const plugins = await window.TRIONBridge.getPlugins(); // request('plugin:list')
         renderPlugins(plugins, container);
     } catch (e) {
-        container.innerHTML = `<div class="p-4 text-red-400">Failed to load plugins: ${escapeHtml(e.message)}</div>`;
+        container.innerHTML = `<div class="p-4 text-red-400">Failed to load plugins: ${e.message}</div>`;
     }
 }
 
@@ -756,27 +1030,17 @@ function renderPlugins(plugins, container) {
         return;
     }
 
-    const html = plugins.map(p => {
-        const manifest = p.manifest || {};
-        const pluginId = manifest.id || '';
-        const safeId = encodeForOnclickArg(pluginId);
-        const safeName = escapeHtml(manifest.name || pluginId || 'unknown');
-        const safeVersion = escapeHtml(manifest.version || '1.0.0');
-        const safeDescription = escapeHtml(manifest.description || 'No description available.');
-        const permissionTags = (manifest.permissions ? Object.keys(manifest.permissions) : [])
-            .map(c => `<span class="bg-dark-bg border border-dark-border px-2 py-1 rounded text-xs text-gray-500 font-mono">${escapeHtml(c)}</span>`)
-            .join('');
-        return `
+    const html = plugins.map(p => `
         <div class="bg-[#111] border border-dark-border rounded-xl p-6 flex items-start justify-between">
             <div class="flex items-start gap-4">
                 <div class="w-12 h-12 bg-dark-bg rounded-lg flex items-center justify-center border border-dark-border">
                     <i data-lucide="puzzle" class="w-6 h-6 text-accent-primary"></i>
                 </div>
                 <div>
-                    <h3 class="text-lg font-bold text-gray-200">${safeName} <span class="text-xs text-gray-500 font-normal ml-2">v${safeVersion}</span></h3>
-                    <p class="text-sm text-gray-400 mt-1">${safeDescription}</p>
+                    <h3 class="text-lg font-bold text-gray-200">${p.manifest?.name || p.manifest?.id} <span class="text-xs text-gray-500 font-normal ml-2">v${p.manifest?.version || '1.0.0'}</span></h3>
+                    <p class="text-sm text-gray-400 mt-1">${p.manifest?.description || 'No description available.'}</p>
                     <div class="flex flex-wrap gap-2 mt-3">
-                        ${permissionTags}
+                        ${(p.manifest?.permissions ? Object.keys(p.manifest.permissions) : [] || []).map(c => `<span class="bg-dark-bg border border-dark-border px-2 py-1 rounded text-xs text-gray-500 font-mono">${c}</span>`).join('')}
                     </div>
                 </div>
             </div>
@@ -785,15 +1049,14 @@ function renderPlugins(plugins, container) {
                 <span class="text-xs font-mono uppercase ${p.enabled ? 'text-green-500' : 'text-gray-600'}">
                     ${p.enabled ? 'Enabled' : 'Disabled'}
                 </span>
-                <button onclick="togglePlugin(decodeURIComponent('${safeId}'), ${!p.enabled})" 
+                <button onclick="togglePlugin('${p.manifest?.id}', ${!p.enabled})" 
                     class="w-12 h-6 rounded-full transition-colors relative ${p.enabled ? 'bg-accent-primary' : 'bg-gray-700'}"
                     title="${p.enabled ? 'Disable' : 'Enable'}">
                     <div class="absolute top-1 left-1 bg-white w-4 h-4 rounded-full transition-transform ${p.enabled ? 'translate-x-6' : 'translate-x-0'}"></div>
                 </button>
             </div>
         </div>
-    `;
-    }).join('');
+    `).join('');
 
     container.innerHTML = html;
     lucide.createIcons();
@@ -824,10 +1087,7 @@ function showToast(msg, type = 'info') {
     const toast = document.createElement('div');
     const colors = { info: 'border-accent-primary', success: 'border-green-500 text-green-400', error: 'border-red-500' };
     toast.className = `px-4 py-3 rounded-lg border-l-4 shadow-xl flex items-center gap-3 transform transition-all duration-300 translate-y-2 opacity-0 bg-dark-card ${colors[type] || colors.info} text-gray-200`;
-    const label = document.createElement("span");
-    label.className = "font-mono text-sm";
-    label.textContent = msg;
-    toast.appendChild(label);
+    toast.innerHTML = `<span class="font-mono text-sm">${msg}</span>`;
     container.appendChild(toast);
     requestAnimationFrame(() => toast.classList.remove('translate-y-2', 'opacity-0'));
     setTimeout(() => { toast.classList.add('translate-y-2', 'opacity-0'); setTimeout(() => toast.remove(), 300); }, 3000);
@@ -938,16 +1198,8 @@ async function loadCompressionSettings() {
         const s = await r.json();
         const enabledEl = document.getElementById('compression-enabled');
         const modeEl = document.getElementById('compression-mode');
-        const thresholdEl = document.getElementById('compression-threshold');
-        const thresholdValueEl = document.getElementById('compression-threshold-value');
-        const phase2ThresholdEl = document.getElementById('compression-phase2-threshold');
-        const keepMessagesEl = document.getElementById('compression-keep-messages');
         if (enabledEl) enabledEl.checked = s.enabled;
         if (modeEl) modeEl.value = s.mode;
-        if (thresholdEl && Number.isFinite(s.threshold)) thresholdEl.value = String(s.threshold);
-        if (thresholdValueEl && Number.isFinite(s.threshold)) thresholdValueEl.textContent = String(s.threshold);
-        if (phase2ThresholdEl && Number.isFinite(s.phase2_threshold)) phase2ThresholdEl.value = String(s.phase2_threshold);
-        if (keepMessagesEl && Number.isFinite(s.keep_messages)) keepMessagesEl.value = String(s.keep_messages);
         log('info', 'Compression settings loaded', s);
     } catch (e) {
         log('error', `Failed to load compression settings: ${e.message}`);
@@ -957,25 +1209,10 @@ async function loadCompressionSettings() {
 async function saveCompressionSettings() {
     const enabledEl = document.getElementById('compression-enabled');
     const modeEl = document.getElementById('compression-mode');
-    const thresholdEl = document.getElementById('compression-threshold');
-    const phase2ThresholdEl = document.getElementById('compression-phase2-threshold');
-    const keepMessagesEl = document.getElementById('compression-keep-messages');
     const payload = {
         enabled: enabledEl ? enabledEl.checked : true,
         mode: modeEl ? modeEl.value : 'sync',
     };
-    if (thresholdEl) {
-        const threshold = parseInt(thresholdEl.value, 10);
-        if (Number.isFinite(threshold)) payload.threshold = threshold;
-    }
-    if (phase2ThresholdEl) {
-        const phase2Threshold = parseInt(phase2ThresholdEl.value, 10);
-        if (Number.isFinite(phase2Threshold)) payload.phase2_threshold = phase2Threshold;
-    }
-    if (keepMessagesEl) {
-        const keepMessages = parseInt(keepMessagesEl.value, 10);
-        if (Number.isFinite(keepMessages)) payload.keep_messages = keepMessages;
-    }
     try {
         const r = await fetch(`${getApiBase()}/api/settings/compression`, {
             method: 'POST',
@@ -1006,6 +1243,73 @@ function setupCompressionHandlers() {
 }
 
 // ═══════════════════════════════════════════════════════
+// EMBEDDING RUNTIME (Phase 4 — GPU/CPU routing)
+// ═══════════════════════════════════════════════════════
+
+async function loadEmbeddingRuntime() {
+    try {
+        const r = await fetch(`${getApiBase()}/api/settings/embeddings/runtime`);
+        if (!r.ok) return;
+        const d = await r.json();
+        const eff = d.effective || {};
+        const modeEl = document.getElementById('embedding-runtime-policy');
+        const policyEl = document.getElementById('embedding-fallback-policy');
+        const policyValueEl = document.getElementById('embedding-effective-policy');
+        const policySourceEl = document.getElementById('embedding-policy-source');
+        const targetEl = document.getElementById('embedding-effective-target');
+        const reasonEl = document.getElementById('embedding-effective-reason');
+        const policyEntry = eff.embedding_runtime_policy || {};
+        if (modeEl) modeEl.value = policyEntry.value || (eff.EMBEDDING_EXECUTION_MODE || {}).value || 'auto';
+        if (policyEl) policyEl.value = (eff.EMBEDDING_FALLBACK_POLICY || {}).value || 'best_effort';
+        if (policyValueEl) policyValueEl.textContent = (d.runtime && d.runtime.active_policy) || policyEntry.value || 'auto';
+        if (policySourceEl) policySourceEl.textContent = policyEntry.source || 'default';
+        if (targetEl && d.runtime) targetEl.textContent = d.runtime.target || '—';
+        if (reasonEl && d.runtime) reasonEl.textContent = d.runtime.reason || '';
+        log('info', '[EmbeddingRuntime] loaded', d.runtime);
+    } catch (e) {
+        log('error', `[EmbeddingRuntime] load failed: ${e.message}`);
+    }
+}
+
+async function saveEmbeddingRuntime() {
+    const modeEl = document.getElementById('embedding-runtime-policy');
+    const policyEl = document.getElementById('embedding-fallback-policy');
+    const payload = {
+        embedding_runtime_policy: modeEl ? modeEl.value : 'auto',
+        EMBEDDING_FALLBACK_POLICY: policyEl ? policyEl.value : 'best_effort',
+    };
+    try {
+        const r = await fetch(`${getApiBase()}/api/settings/embeddings/runtime`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (r.ok) {
+            showToast('Embedding settings saved!', 'success');
+            await loadEmbeddingRuntime();
+        } else {
+            const err = await r.json().catch(() => ({}));
+            showToast(`Save failed: ${err.detail || r.status}`, 'error');
+        }
+    } catch (e) {
+        showToast('Failed to save embedding settings', 'error');
+    }
+}
+
+function setupEmbeddingRuntimeHandlers() {
+    const saveBtn = document.getElementById('save-embedding-runtime');
+    if (saveBtn) saveBtn.addEventListener('click', saveEmbeddingRuntime);
+
+    // Load when Advanced tab is opened
+    const advancedNav = document.querySelector('.settings-category[data-category="advanced"]');
+    if (advancedNav) {
+        advancedNav.addEventListener('click', () => {
+            setTimeout(loadEmbeddingRuntime, 150);
+        });
+    }
+}
+
+// ═══════════════════════════════════════════════════════
 // DIGEST PIPELINE STATUS PANEL (Phase 8 — DIGEST_UI_ENABLE)
 // ═══════════════════════════════════════════════════════
 
@@ -1014,8 +1318,7 @@ window.DigestUI = (() => {
         ok:      'text-green-400',
         error:   'text-red-400',
         running: 'text-yellow-400',
-        skip:    'text-gray-400',   // API returns "skip" (not "skipped")
-        skipped: 'text-gray-400',   // legacy alias kept for safety
+        skipped: 'text-gray-400',
         never:   'text-gray-500',
     };
 
@@ -1033,13 +1336,7 @@ window.DigestUI = (() => {
         const parts = [];
         if (data && data.last_run) parts.push(data.last_run.slice(0, 16).replace('T', ' '));
         if (data && data.digest_written != null) parts.push(`wrote ${data.digest_written}`);
-        if (data && data.input_events != null) parts.push(`in: ${data.input_events}`);
         if (data && data.duration_s != null) parts.push(`${data.duration_s}s`);
-        if (data && data.reason) parts.push(`reason: ${data.reason}`);
-        if (data && data.digest_key) {
-            const k = String(data.digest_key);
-            parts.push(`key: ${k.length > 12 ? k.slice(0, 6) + '\u2026' + k.slice(-6) : k}`);
-        }
         metaEl.textContent = parts.join(' | ');
     }
 
@@ -1213,10 +1510,12 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         setupMasterSettingsHandlers();
         setupCompressionHandlers();
+        setupEmbeddingRuntimeHandlers();
         setupDigestUIHandlers();
     });
 } else {
     setupMasterSettingsHandlers();
     setupCompressionHandlers();
+    setupEmbeddingRuntimeHandlers();
     setupDigestUIHandlers();
 }

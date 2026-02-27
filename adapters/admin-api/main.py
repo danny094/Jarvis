@@ -11,6 +11,10 @@ Provides:
 
 import json
 import requests
+import asyncio
+import time
+import traceback
+import uuid
 from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -84,6 +88,104 @@ app.include_router(secrets_router, prefix="/api/secrets")
 # Runtime telemetry (Phase 8 Operational — digest pipeline state)
 from runtime_routes import router as runtime_router
 app.include_router(runtime_router)
+
+# ============================================================
+# DEEP JOBS (async long-running chat execution)
+# ============================================================
+
+_DEEP_JOB_MAX_ITEMS = 200
+_DEEP_JOB_RETENTION_S = 6 * 60 * 60
+_deep_jobs = {}
+_deep_jobs_lock = asyncio.Lock()
+
+
+def _iso_now() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+async def _prune_deep_jobs() -> None:
+    now = time.time()
+    expired = [
+        job_id
+        for job_id, job in _deep_jobs.items()
+        if (now - float(job.get("created_ts", now))) > _DEEP_JOB_RETENTION_S
+    ]
+    for job_id in expired:
+        _deep_jobs.pop(job_id, None)
+
+    if len(_deep_jobs) > _DEEP_JOB_MAX_ITEMS:
+        ordered = sorted(
+            _deep_jobs.items(),
+            key=lambda kv: float(kv[1].get("created_ts", 0.0)),
+        )
+        remove_count = len(_deep_jobs) - _DEEP_JOB_MAX_ITEMS
+        for job_id, _ in ordered[:remove_count]:
+            _deep_jobs.pop(job_id, None)
+
+
+async def _run_deep_job(job_id: str, raw_data: dict) -> None:
+    adapter = get_adapter()
+    bridge = get_bridge()
+    started_ts = time.time()
+
+    async with _deep_jobs_lock:
+        job = _deep_jobs.get(job_id)
+        if not job:
+            return
+        job["status"] = "running"
+        job["started_at"] = _iso_now()
+        job["started_ts"] = started_ts
+
+    try:
+        force_data = dict(raw_data)
+        force_data["stream"] = False
+        force_data["response_mode"] = "deep"
+
+        core_request = adapter.transform_request(force_data)
+        core_response = await bridge.process(core_request)
+        response_data = adapter.transform_response(core_response)
+
+        finished_ts = time.time()
+        async with _deep_jobs_lock:
+            job = _deep_jobs.get(job_id)
+            if not job:
+                return
+            job["status"] = "succeeded"
+            job["finished_at"] = _iso_now()
+            job["finished_ts"] = finished_ts
+            job["duration_ms"] = round((finished_ts - started_ts) * 1000.0, 2)
+            job["result"] = response_data
+            job["error"] = None
+            await _prune_deep_jobs()
+    except Exception as e:
+        finished_ts = time.time()
+        async with _deep_jobs_lock:
+            job = _deep_jobs.get(job_id)
+            if not job:
+                return
+            job["status"] = "failed"
+            job["finished_at"] = _iso_now()
+            job["finished_ts"] = finished_ts
+            job["duration_ms"] = round((finished_ts - started_ts) * 1000.0, 2)
+            job["error"] = str(e)
+            job["traceback"] = traceback.format_exc(limit=12)
+            await _prune_deep_jobs()
+        log_error(f"[Admin-API-Chat] Deep job failed job_id={job_id}: {e}")
+
+
+def _public_job_view(job: dict) -> dict:
+    return {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "model": job.get("model", ""),
+        "conversation_id": job.get("conversation_id"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "duration_ms": job.get("duration_ms"),
+        "error": job.get("error"),
+        "result": job.get("result"),
+    }
 
 
 # ============================================================
@@ -178,6 +280,55 @@ async def workspace_events_list(
 ):
     """List internal workspace events (read-only telemetry from workspace_events table)."""
     from mcp.hub import get_hub
+
+    def _extract_events_payload(result_obj):
+        # Fast-Lane ToolResult path
+        if hasattr(result_obj, "content"):
+            content = result_obj.content
+            if isinstance(content, list):
+                return content
+            if isinstance(content, dict):
+                return (
+                    content.get("events")
+                    or content.get("content")
+                    or content.get("structuredContent", {}).get("events", [])
+                )
+            if isinstance(content, str):
+                try:
+                    parsed = json.loads(content)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return parsed
+                if isinstance(parsed, dict):
+                    return (
+                        parsed.get("events")
+                        or parsed.get("content")
+                        or parsed.get("structuredContent", {}).get("events", [])
+                    )
+
+        # Generic dict payload path (MCP HTTP/SSE adapters)
+        if isinstance(result_obj, dict):
+            structured = result_obj.get("structuredContent", {})
+            payload = (
+                result_obj.get("events")
+                or result_obj.get("content")
+                or (structured.get("events") if isinstance(structured, dict) else None)
+                or []
+            )
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = []
+            return payload
+
+        # Legacy direct list path
+        if isinstance(result_obj, list):
+            return result_obj
+
+        return []
+
     try:
         hub = get_hub()
         hub.initialize()
@@ -187,13 +338,10 @@ async def workspace_events_list(
         if event_type:
             args["event_type"] = event_type
         result = hub.call_tool("workspace_event_list", args)
-        # Fast-Lane ToolResult: .content is the list
-        if hasattr(result, "content"):
-            events = result.content if isinstance(result.content, list) else []
-            return JSONResponse({"events": events, "count": len(events)})
-        if isinstance(result, list):
-            return JSONResponse({"events": result, "count": len(result)})
-        return JSONResponse({"events": [], "count": 0})
+        events = _extract_events_payload(result)
+        if not isinstance(events, list):
+            events = []
+        return JSONResponse({"events": events, "count": len(events)})
     except Exception as e:
         log_error(f"[WorkspaceEvents] List error: {e}")
         return JSONResponse({"error": str(e), "events": [], "count": 0}, status_code=500)
@@ -202,6 +350,60 @@ async def workspace_events_list(
 # ============================================================
 # CHAT ENDPOINT (From lobechat-adapter)
 # ============================================================
+
+
+@app.post("/api/chat/deep-jobs")
+async def chat_deep_jobs(request: Request):
+    """
+    Submit a deep-mode chat request as async background job.
+    Always forces:
+      - response_mode=deep
+      - stream=false
+    """
+    raw_data = await request.json()
+    messages = raw_data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return JSONResponse({"error": "messages[] is required"}, status_code=400)
+
+    job_id = uuid.uuid4().hex
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "model": raw_data.get("model", ""),
+        "conversation_id": raw_data.get("conversation_id") or raw_data.get("session_id") or "global",
+        "created_at": _iso_now(),
+        "created_ts": time.time(),
+        "started_at": None,
+        "finished_at": None,
+        "duration_ms": None,
+        "result": None,
+        "error": None,
+        "traceback": None,
+    }
+
+    async with _deep_jobs_lock:
+        _deep_jobs[job_id] = job
+        await _prune_deep_jobs()
+
+    asyncio.create_task(_run_deep_job(job_id, raw_data))
+    return JSONResponse(
+        {
+            "job_id": job_id,
+            "status": "queued",
+            "poll_url": f"/api/chat/deep-jobs/{job_id}",
+        },
+        status_code=202,
+    )
+
+
+@app.get("/api/chat/deep-jobs/{job_id}")
+async def chat_deep_job_status(job_id: str):
+    """Get status/result of an async deep-mode chat job."""
+    async with _deep_jobs_lock:
+        job = _deep_jobs.get(job_id)
+        if not job:
+            return JSONResponse({"error": "job_not_found", "job_id": job_id}, status_code=404)
+        return JSONResponse(_public_job_view(job))
 
 @app.post("/api/chat")
 async def chat(request: Request):
@@ -241,8 +443,22 @@ async def chat(request: Request):
                         created_at = datetime.utcnow().isoformat() + "Z"
                         chunk_type = metadata.get("type", "content")
                         
+                        # Final stream event must remain terminal for clients/harness.
+                        if is_done:
+                            response_data = {
+                                "model": model,
+                                "created_at": created_at,
+                                "message": {"role": "assistant", "content": ""},
+                                "done": True,
+                                "done_reason": metadata.get("done_reason", "stop"),
+                                "memory_used": metadata.get("memory_used", False),
+                            }
+                            # Keep event type if present (e.g. {"type":"done"}).
+                            if metadata.get("type"):
+                                response_data["type"] = metadata.get("type")
+
                         # Live Thinking Stream
-                        if chunk_type == "thinking_stream":
+                        elif chunk_type == "thinking_stream":
                             response_data = {
                                 "model": model,
                                 "created_at": created_at,
@@ -266,19 +482,9 @@ async def chat(request: Request):
                                 "model": model,
                                 "created_at": created_at,
                                 **metadata,  # Include all metadata fields
-                                "done": False,
+                                "done": bool(metadata.get("done", False)),
                             }
-                        
-                        elif is_done:
-                            response_data = {
-                                "model": model,
-                                "created_at": created_at,
-                                "message": {"role": "assistant", "content": ""},
-                                "done": True,
-                                "done_reason": metadata.get("done_reason", "stop"),
-                                "memory_used": metadata.get("memory_used", False),
-                            }
-                        
+
                         # Content Chunk
                         else:
                             response_data = {
@@ -365,9 +571,11 @@ async def tags():
     We forward the request to the actual Ollama server.
     """
     from config import OLLAMA_BASE
+    from utils.role_endpoint_resolver import resolve_ollama_base_endpoint
     
     try:
-        resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=10)
+        endpoint = resolve_ollama_base_endpoint(default_endpoint=OLLAMA_BASE)
+        resp = requests.get(f"{endpoint}/api/tags", timeout=10)
         resp.raise_for_status()
         return JSONResponse(resp.json())
     except Exception as e:

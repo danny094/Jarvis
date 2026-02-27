@@ -1,6 +1,8 @@
 import json
+import os
 from typing import Any, Dict, Optional
 import requests
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -14,11 +16,13 @@ from utils.logger import (
 )
 
 router = APIRouter()
+_MCP_CLIENT_MAX_WORKERS = max(4, min(64, int(os.getenv("MCP_CLIENT_MAX_WORKERS", "16"))))
+_MCP_EXECUTOR = ThreadPoolExecutor(max_workers=_MCP_CLIENT_MAX_WORKERS, thread_name_prefix="mcp-client")
 
 # ------------------------------------------------------
 # Low-level MCP request
 # ------------------------------------------------------
-def _call_mcp_raw(payload: Dict[str, Any], timeout: int = 5) -> Optional[Dict[str, Any]]:
+def _call_mcp_raw(payload: Dict[str, Any], timeout: float = 5.0) -> Optional[Dict[str, Any]]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -68,7 +72,7 @@ def _call_mcp_raw(payload: Dict[str, Any], timeout: int = 5) -> Optional[Dict[st
 # ------------------------------------------------------
 # Wrapper für alle Tools
 # ------------------------------------------------------
-def call_tool(name: str, arguments: Dict[str, Any], timeout: int = 5) -> Optional[Dict[str, Any]]:
+def call_tool(name: str, arguments: Dict[str, Any], timeout: float = 5.0) -> Optional[Dict[str, Any]]:
     """
     Ruft ein MCP-Tool auf.
     
@@ -77,9 +81,12 @@ def call_tool(name: str, arguments: Dict[str, Any], timeout: int = 5) -> Optiona
     """
     # Versuche Hub (aggregiert alle MCPs)
     try:
+        timeout_s = max(0.2, float(timeout))
         from mcp.hub import get_hub
         hub = get_hub()
-        result = hub.call_tool(name, arguments)
+
+        future = _MCP_EXECUTOR.submit(hub.call_tool, name, arguments)
+        result = future.result(timeout=timeout_s)
         
         # Wrap result in standard format
         if result and not isinstance(result, dict):
@@ -89,6 +96,9 @@ def call_tool(name: str, arguments: Dict[str, Any], timeout: int = 5) -> Optiona
             
         return result
         
+    except FuturesTimeout:
+        log_error(f"[MCP] Hub call timeout: tool={name} timeout={timeout}s")
+        return {"error": f"mcp_timeout:{name}:{timeout}s"}
     except Exception as e:
         log_debug(f"[MCP] Hub not available, falling back to direct call: {e}")
     
@@ -164,7 +174,7 @@ def autosave_assistant(
 # ------------------------------------------------------
 # Structured Fact Retrieval (NEU)
 # ------------------------------------------------------
-def get_fact_for_query(conversation_id: str, key: str) -> Optional[str]:
+def get_fact_for_query(conversation_id: str, key: str, timeout_s: Optional[float] = None) -> Optional[str]:
     args = {
         "conversation_id": conversation_id or "global",
         "key": key
@@ -172,7 +182,11 @@ def get_fact_for_query(conversation_id: str, key: str) -> Optional[str]:
 
     log_info(f"[Fact] → Suche Fakt key='{key}' conv='{conversation_id}'")
 
-    resp = call_tool("memory_fact_load", args)
+    if timeout_s is None:
+        from config import get_memory_lookup_timeout_s
+        timeout_s = get_memory_lookup_timeout_s()
+
+    resp = call_tool("memory_fact_load", args, timeout=timeout_s)
     log_debug(f"[Fact] Raw response: {resp}")
 
     if not resp:
@@ -221,7 +235,7 @@ def get_fact_for_query(conversation_id: str, key: str) -> Optional[str]:
 # ------------------------------------------------------
 # Text-Fallback Memory (für ältere Einträge)
 # ------------------------------------------------------
-def search_memory_fallback(conversation_id: str, key: str) -> str:
+def search_memory_fallback(conversation_id: str, key: str, timeout_s: Optional[float] = None) -> str:
     """
     Falls kein strukturierter Fakt gefunden wurde:
     → klassische Textsuche in memory_search_layered
@@ -233,7 +247,11 @@ def search_memory_fallback(conversation_id: str, key: str) -> str:
 
     log_info(f"[Fallback] Suche Text-Memory für '{key}'")
 
-    resp = call_tool("memory_search_layered", args, timeout=5)
+    if timeout_s is None:
+        from config import get_memory_lookup_timeout_s
+        timeout_s = get_memory_lookup_timeout_s()
+
+    resp = call_tool("memory_search_layered", args, timeout=timeout_s)
     if not resp:
         return ""
 
@@ -250,7 +268,12 @@ def search_memory_fallback(conversation_id: str, key: str) -> str:
         log_error(f"[Fallback] Fehler: {e}")
         return ""
 
-def semantic_search(conversation_id: str, query: str, limit: int = 5) -> list:
+def semantic_search(
+    conversation_id: str,
+    query: str,
+    limit: int = 5,
+    timeout_s: Optional[float] = None
+) -> list:
     """
     Semantische Suche im Memory.
     Findet Einträge nach BEDEUTUNG, nicht nur Keywords.
@@ -264,7 +287,11 @@ def semantic_search(conversation_id: str, query: str, limit: int = 5) -> list:
     
     log_info(f"[Semantic] Suche: '{query}' in conv='{conversation_id}'")
     
-    resp = call_tool("memory_semantic_search", args)
+    if timeout_s is None:
+        from config import get_memory_lookup_timeout_s
+        timeout_s = get_memory_lookup_timeout_s()
+
+    resp = call_tool("memory_semantic_search", args, timeout=timeout_s)
 
     if not resp:
         return []
@@ -278,7 +305,12 @@ def semantic_search(conversation_id: str, query: str, limit: int = 5) -> list:
     
     return []
 
-def skill_semantic_search(query: str, limit: int = 5, min_similarity: float = 0.0) -> list:
+def skill_semantic_search(
+    query: str,
+    limit: int = 5,
+    min_similarity: float = 0.0,
+    timeout_s: Optional[float] = None
+) -> list:
     """
     Semantische Skill-Suche MIT Similarity-Score.
     Nutzt memory_semantic_search direkt auf conversation_id="_skills".
@@ -294,7 +326,11 @@ def skill_semantic_search(query: str, limit: int = 5, min_similarity: float = 0.
         "min_similarity": min_similarity,
     }
     log_info(f"[SkillSearch] Embedding-Suche: '{query[:60]}'")
-    resp = call_tool("memory_semantic_search", args)
+    if timeout_s is None:
+        from config import get_memory_lookup_timeout_s
+        timeout_s = get_memory_lookup_timeout_s()
+
+    resp = call_tool("memory_semantic_search", args, timeout=timeout_s)
     if not resp:
         return []
     result = resp.get("result", resp)
@@ -305,7 +341,12 @@ def skill_semantic_search(query: str, limit: int = 5, min_similarity: float = 0.
     return []
 
 
-def blueprint_semantic_search(query: str, limit: int = 5, min_similarity: float = 0.0) -> list:
+def blueprint_semantic_search(
+    query: str,
+    limit: int = 5,
+    min_similarity: float = 0.0,
+    timeout_s: Optional[float] = None
+) -> list:
     """
     Semantische Blueprint-Suche MIT Similarity-Score.
     Nutzt memory_semantic_search direkt auf conversation_id="_blueprints".
@@ -321,7 +362,11 @@ def blueprint_semantic_search(query: str, limit: int = 5, min_similarity: float 
         "min_similarity": min_similarity,
     }
     log_info(f"[BlueprintSearch] Embedding-Suche: '{query[:60]}'")
-    resp = call_tool("memory_semantic_search", args)
+    if timeout_s is None:
+        from config import get_memory_lookup_timeout_s
+        timeout_s = get_memory_lookup_timeout_s()
+
+    resp = call_tool("memory_semantic_search", args, timeout=timeout_s)
     if not resp:
         return []
     result = resp.get("result", resp)
@@ -332,7 +377,13 @@ def blueprint_semantic_search(query: str, limit: int = 5, min_similarity: float 
     return []
 
 
-def graph_search(conversation_id: str, query: str, depth: int = 2, limit: int = 10) -> list:
+def graph_search(
+    conversation_id: str,
+    query: str,
+    depth: int = 2,
+    limit: int = 10,
+    timeout_s: Optional[float] = None
+) -> list:
     """
     Graph-basierte Such.
     Findet verbundene Infirmationen über Graph-walk
@@ -346,7 +397,11 @@ def graph_search(conversation_id: str, query: str, depth: int = 2, limit: int = 
 
     log_info(f"[Graph] Suche: '{query}' in conv='{conversation_id}'")
     
-    resp = call_tool("memory_graph_search", args)
+    if timeout_s is None:
+        from config import get_memory_lookup_timeout_s
+        timeout_s = get_memory_lookup_timeout_s()
+
+    resp = call_tool("memory_graph_search", args, timeout=timeout_s)
 
     if not resp:
         return []
