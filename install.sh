@@ -7,6 +7,7 @@ set -Eeuo pipefail
 REPO_URL="${JARVIS_REPO_URL:-https://github.com/danny094/Jarvis.git}"
 BRANCH="${JARVIS_BRANCH:-main}"
 INSTALL_DIR="${JARVIS_INSTALL_DIR:-$HOME/Jarvis}"
+FORCE_UPDATE="${JARVIS_FORCE_UPDATE:-0}"
 SKIP_PREREQS="0"
 NO_START="0"
 NO_BUILD="0"
@@ -30,16 +31,18 @@ Options:
   --repo-url <url>        Git repository URL (default: ${REPO_URL})
   --branch <name>         Git branch/tag to checkout (default: ${BRANCH})
   --install-dir <path>    Install directory (default: ${INSTALL_DIR})
+  --force-update          Force-sync repo to origin/<branch> (discards local git changes)
   --skip-prereqs          Do not install/check OS prerequisites
   --no-build              Skip docker compose build
   --no-start              Do not start stack (only prepare and pull)
   -h, --help              Show this help
 
 Environment variables:
-  JARVIS_REPO_URL, JARVIS_BRANCH, JARVIS_INSTALL_DIR
+  JARVIS_REPO_URL, JARVIS_BRANCH, JARVIS_INSTALL_DIR, JARVIS_FORCE_UPDATE
 
 Examples:
   bash install.sh
+  bash install.sh --force-update
   bash install.sh --install-dir /opt/jarvis
   curl -fsSL https://raw.githubusercontent.com/danny094/Jarvis/main/install.sh | bash
 USAGE
@@ -95,6 +98,8 @@ parse_args() {
         BRANCH="$2"; shift 2 ;;
       --install-dir)
         INSTALL_DIR="$2"; shift 2 ;;
+      --force-update)
+        FORCE_UPDATE="1"; shift ;;
       --skip-prereqs)
         SKIP_PREREQS="1"; shift ;;
       --no-start)
@@ -109,6 +114,33 @@ parse_args() {
         exit 1 ;;
     esac
   done
+}
+
+repo_has_local_changes() {
+  if ! git -C "${INSTALL_DIR}" diff --quiet --ignore-submodules --; then
+    return 0
+  fi
+  if ! git -C "${INSTALL_DIR}" diff --cached --quiet --ignore-submodules --; then
+    return 0
+  fi
+  return 1
+}
+
+auto_stash_local_changes() {
+  local stash_name
+  stash_name="jarvis-install-autostash-$(date +%Y%m%d_%H%M%S)"
+  warn "Local tracked git changes detected in ${INSTALL_DIR}."
+  warn "Creating stash '${stash_name}' so update can continue."
+  run_cmd git -C "${INSTALL_DIR}" stash push -m "${stash_name}"
+  warn "Local changes were stashed."
+  warn "Reapply manually if needed: git -C ${INSTALL_DIR} stash pop"
+}
+
+force_update_repo() {
+  warn "Force update enabled. Discarding local git changes and syncing to origin/${BRANCH}."
+  run_cmd git -C "${INSTALL_DIR}" checkout -f -B "${BRANCH}" "origin/${BRANCH}"
+  run_cmd git -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH}"
+  run_cmd git -C "${INSTALL_DIR}" clean -fd -e .env
 }
 
 install_prereqs_debian() {
@@ -183,8 +215,26 @@ clone_or_update_repo() {
   if [[ -d "${INSTALL_DIR}/.git" ]]; then
     log "Existing git repository found. Updating..."
     run_cmd git -C "${INSTALL_DIR}" fetch --all --prune
-    run_cmd git -C "${INSTALL_DIR}" checkout "${BRANCH}"
-    run_cmd git -C "${INSTALL_DIR}" pull --ff-only origin "${BRANCH}"
+
+    if [[ "${FORCE_UPDATE}" == "1" ]]; then
+      force_update_repo
+    else
+      if repo_has_local_changes; then
+        auto_stash_local_changes
+      fi
+
+      if ! run_cmd git -C "${INSTALL_DIR}" checkout "${BRANCH}"; then
+        err "Failed to checkout branch '${BRANCH}' in ${INSTALL_DIR}."
+        err "Rerun with --force-update to discard local git changes and force-sync."
+        exit 1
+      fi
+
+      if ! run_cmd git -C "${INSTALL_DIR}" pull --ff-only origin "${BRANCH}"; then
+        err "Fast-forward update failed for '${BRANCH}'."
+        err "If you want a hard sync to origin/${BRANCH}, rerun install with --force-update."
+        exit 1
+      fi
+    fi
   elif [[ -d "${INSTALL_DIR}" ]] && [[ -n "$(ls -A "${INSTALL_DIR}" 2>/dev/null || true)" ]]; then
     err "Install directory is not empty and not a git repo: ${INSTALL_DIR}"
     err "Use an empty directory or set --install-dir to another path."
