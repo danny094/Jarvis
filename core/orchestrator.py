@@ -29,6 +29,7 @@ from core.context_manager import ContextManager, ContextResult
 from core.layers.thinking import ThinkingLayer
 from core.layers.control import ControlLayer
 from core.layers.output import OutputLayer
+from core.tone_hybrid import ToneHybridClassifier
 from core.tool_selector import ToolSelector
 from config import (
     OLLAMA_BASE,
@@ -48,7 +49,11 @@ from core.lifecycle.task import TaskLifecycleManager
 from core.tools.tool_result import ToolResult
 from core.lifecycle.archive import get_archive_manager
 from core.master import get_master_orchestrator
-from core.tool_intelligence import ToolIntelligenceManager
+from core.tool_intelligence import ToolIntelligenceManager, detect_tool_error
+from core.grounding_policy import load_grounding_policy
+from core.tool_execution_policy import load_tool_execution_policy
+from utils.role_endpoint_resolver import resolve_role_endpoint
+from utils.model_runtime_resolver import resolve_runtime_chat_model
 
 # Intent System (optional)
 try:
@@ -510,10 +515,12 @@ class PipelineOrchestrator:
         self.control = ControlLayer()
         self.output = OutputLayer()
         self.tool_selector = ToolSelector()
+        self.tone_hybrid = ToneHybridClassifier()
         self.registry = get_registry()
         self.lifecycle = TaskLifecycleManager()
         self.archive_manager = get_archive_manager()
         self.tool_intelligence = ToolIntelligenceManager(self.archive_manager)
+        self.tool_execution_policy = load_tool_execution_policy()
         
         # Master Orchestrator (Phase 1 - Composition Pattern!)
         # Master is CLIENT of Pipeline (not parallel!)
@@ -523,6 +530,8 @@ class PipelineOrchestrator:
         hub = get_hub()
         self.control.set_mcp_hub(hub)
         self.ollama_base = OLLAMA_BASE
+        self._conversation_grounding_state: Dict[str, Dict[str, Any]] = {}
+        self._conversation_grounding_lock = threading.Lock()
         
         log_info("[PipelineOrchestrator] Initialized with 3 layers + ContextManager")
 
@@ -544,6 +553,71 @@ class PipelineOrchestrator:
         "neue funktion",
         "new function",
     )
+    _TOOL_INTENT_KEYWORDS = (
+        "tool",
+        "tools",
+        "skill",
+        "skills",
+        "memory",
+        "speicher",
+        "speichern",
+        "erinner",
+        "container",
+        "blueprint",
+        "run_skill",
+        "list_skills",
+        "get_system_info",
+        "logs",
+    )
+    _FOLLOWUP_FACT_PREFIXES = (
+        "und",
+        "und was",
+        "und welche",
+        "und welcher",
+        "und welches",
+        "welche",
+        "welcher",
+        "welches",
+        "was sagt",
+        "was bedeutet das",
+        "was sagt das",
+        "davon",
+        "darüber",
+        "darauf",
+    )
+    _FOLLOWUP_FACT_MARKERS = (
+        "das",
+        "diese",
+        "dieser",
+        "dieses",
+        "davon",
+        "darüber",
+        "darauf",
+        "oben",
+        "vorhin",
+    )
+    _TEMPORAL_CONTEXT_MARKERS = (
+        "heute",
+        "gestern",
+        "vorgestern",
+        "protokoll",
+        "tagebuch",
+        "was haben wir",
+        "was hatten wir",
+        "was war",
+        "besprochen",
+        "gesagt",
+        "chatverlauf",
+    )
+    # RECALL-Tools (lesen) dürfen NIE supprimiert werden — nur ACTION-Tools (schreiben/ausführen).
+    _LOW_SIGNAL_ACTION_TOOLS = frozenset({
+        "memory_save",
+        "memory_fact_save",
+        "analyze",
+        "think",
+    })
+    # Backward-compat alias — Referenzen auf _LOW_SIGNAL_TOOLS bleiben stabil.
+    _LOW_SIGNAL_TOOLS = _LOW_SIGNAL_ACTION_TOOLS
 
     @classmethod
     def _extract_suggested_tool_names(cls, thinking_plan: Dict[str, Any]) -> List[str]:
@@ -572,6 +646,603 @@ class PipelineOrchestrator:
         if len(text) > max_len:
             return text[:max_len]
         return text
+
+    @staticmethod
+    def _message_role_value(msg: Any) -> str:
+        role = getattr(msg, "role", None)
+        if hasattr(role, "value"):
+            return str(role.value).strip().lower()
+        if role is not None:
+            return str(role).strip().lower()
+        if isinstance(msg, dict):
+            return str(msg.get("role", "")).strip().lower()
+        return ""
+
+    @staticmethod
+    def _message_content_value(msg: Any) -> str:
+        content = getattr(msg, "content", None)
+        if content is not None:
+            return str(content)
+        if isinstance(msg, dict):
+            return str(msg.get("content", ""))
+        return ""
+
+    @classmethod
+    def _last_assistant_message(cls, chat_history: Optional[list]) -> str:
+        if not isinstance(chat_history, list):
+            return ""
+        for item in reversed(chat_history):
+            if cls._message_role_value(item) == "assistant":
+                return cls._message_content_value(item).strip()
+        return ""
+
+    @classmethod
+    def _recent_user_messages(cls, chat_history: Optional[list], limit: int = 3) -> List[str]:
+        if not isinstance(chat_history, list):
+            return []
+        out: List[str] = []
+        for item in reversed(chat_history):
+            if cls._message_role_value(item) != "user":
+                continue
+            content = cls._message_content_value(item).strip()
+            if content:
+                out.append(content)
+            if len(out) >= max(1, limit):
+                break
+        return out
+
+    @classmethod
+    def _looks_like_short_fact_followup(
+        cls,
+        user_text: str,
+        chat_history: Optional[list],
+    ) -> bool:
+        text = str(user_text or "").strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        if len(lowered) > 220:
+            return False
+        if lowered.startswith(cls._FOLLOWUP_FACT_PREFIXES):
+            return True
+
+        has_followup_marker = any(tok in lowered for tok in cls._FOLLOWUP_FACT_MARKERS)
+        if not has_followup_marker:
+            return False
+
+        # Require preceding assistant answer to reduce false positives.
+        prev_assistant = cls._last_assistant_message(chat_history)
+        if not prev_assistant:
+            return False
+        if "verifizierte fakten" in prev_assistant.lower():
+            return True
+        return len(lowered) <= 100 and "?" in lowered
+
+    @classmethod
+    def _sanitize_tool_args_for_state(cls, value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        safe: Dict[str, Any] = {}
+        for k, v in value.items():
+            key = str(k or "").strip()
+            if not key:
+                continue
+            try:
+                json.dumps(v, ensure_ascii=False, default=str)
+                safe[key] = v
+            except Exception:
+                safe[key] = cls._safe_str(v, max_len=200)
+        return safe
+
+    @staticmethod
+    def _grounding_evidence_has_content(item: Dict[str, Any]) -> bool:
+        if not isinstance(item, dict):
+            return False
+        facts = item.get("key_facts")
+        if isinstance(facts, list):
+            for f in facts:
+                if str(f or "").strip():
+                    return True
+        structured = item.get("structured")
+        if isinstance(structured, dict):
+            output_text = str(structured.get("output") or structured.get("result") or "").strip()
+            if output_text:
+                return True
+        metrics = item.get("metrics")
+        if isinstance(metrics, dict):
+            return bool(metrics)
+        if isinstance(metrics, list):
+            return any(isinstance(m, dict) and str(m.get("key") or m.get("name") or "").strip() for m in metrics)
+        return False
+
+    def _get_recent_grounding_state(
+        self,
+        conversation_id: str,
+        history_len: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        from config import (
+            get_followup_tool_reuse_ttl_s,
+            get_followup_tool_reuse_ttl_turns,
+        )
+
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id:
+            return None
+        ttl_s = int(get_followup_tool_reuse_ttl_s())
+        ttl_turns = int(get_followup_tool_reuse_ttl_turns())
+        with self._conversation_grounding_lock:
+            state = self._conversation_grounding_state.get(conv_id)
+            if not isinstance(state, dict):
+                return None
+            age_s = time.time() - float(state.get("updated_at", 0.0) or 0.0)
+            if age_s > ttl_s:
+                self._conversation_grounding_state.pop(conv_id, None)
+                return None
+            state_history_len = int(state.get("history_len", 0) or 0)
+            if history_len > 0 and state_history_len > 0 and history_len >= state_history_len:
+                # +2 per user turn (assistant+user pair in request history)
+                max_delta = max(2, ttl_turns * 2)
+                if (history_len - state_history_len) > max_delta:
+                    self._conversation_grounding_state.pop(conv_id, None)
+                    return None
+            return {
+                "tool_runs": list(state.get("tool_runs") or []),
+                "evidence": list(state.get("evidence") or []),
+                "history_len": state_history_len,
+                "updated_at": float(state.get("updated_at", 0.0) or 0.0),
+            }
+
+    def _remember_conversation_grounding_state(
+        self,
+        conversation_id: str,
+        verified_plan: Dict[str, Any],
+        *,
+        history_len: int = 0,
+    ) -> None:
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id or not isinstance(verified_plan, dict):
+            return
+        evidence = verified_plan.get("_grounding_evidence") or []
+        if not isinstance(evidence, list):
+            evidence = []
+        usable_evidence = [
+            item for item in evidence
+            if isinstance(item, dict)
+            and str(item.get("status", "")).strip().lower() == "ok"
+            and self._grounding_evidence_has_content(item)
+        ][:8]
+
+        tool_runs_raw = verified_plan.get("_successful_tool_runs") or []
+        tool_runs = []
+        if isinstance(tool_runs_raw, list):
+            for row in tool_runs_raw:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("tool_name", "")).strip()
+                if not name:
+                    continue
+                tool_runs.append({
+                    "tool_name": name,
+                    "args": self._sanitize_tool_args_for_state(row.get("args") or {}),
+                })
+                if len(tool_runs) >= 6:
+                    break
+        if not tool_runs:
+            for item in usable_evidence:
+                name = str(item.get("tool_name", "")).strip()
+                if not name:
+                    continue
+                tool_runs.append({"tool_name": name, "args": {}})
+                if len(tool_runs) >= 4:
+                    break
+
+        if not usable_evidence and not tool_runs:
+            return
+
+        with self._conversation_grounding_lock:
+            self._conversation_grounding_state[conv_id] = {
+                "updated_at": time.time(),
+                "history_len": int(history_len or 0),
+                "tool_runs": tool_runs,
+                "evidence": usable_evidence,
+            }
+
+    def _inject_carryover_grounding_evidence(
+        self,
+        conversation_id: str,
+        verified_plan: Dict[str, Any],
+        *,
+        history_len: int = 0,
+    ) -> None:
+        if not isinstance(verified_plan, dict):
+            return
+        if not bool(verified_plan.get("is_fact_query", False)):
+            return
+
+        current_evidence = verified_plan.get("_grounding_evidence") or []
+        if isinstance(current_evidence, list):
+            has_current_usable = any(
+                isinstance(item, dict)
+                and str(item.get("status", "")).strip().lower() == "ok"
+                and self._grounding_evidence_has_content(item)
+                for item in current_evidence
+            )
+            if has_current_usable:
+                return
+
+        state = self._get_recent_grounding_state(conversation_id, history_len=history_len)
+        if not state:
+            return
+        carry = list(state.get("evidence") or [])
+        if not carry:
+            return
+        verified_plan["_carryover_grounding_evidence"] = carry[:8]
+        verified_plan["needs_chat_history"] = True
+        if not verified_plan.get("_selected_tools_for_prompt"):
+            names = []
+            seen = set()
+            for row in state.get("tool_runs") or []:
+                name = str((row or {}).get("tool_name", "")).strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                names.append(name)
+                if len(names) >= 4:
+                    break
+            if names:
+                verified_plan["_selected_tools_for_prompt"] = names
+        log_info("[Orchestrator] Carry-over grounding evidence injected from recent turn")
+
+    def _has_usable_grounding_evidence(self, verified_plan: Dict[str, Any]) -> bool:
+        if not isinstance(verified_plan, dict):
+            return False
+        merged = []
+        current = verified_plan.get("_grounding_evidence") or []
+        carry = verified_plan.get("_carryover_grounding_evidence") or []
+        if isinstance(current, list):
+            merged.extend(current)
+        if isinstance(carry, list):
+            merged.extend(carry)
+        for item in merged:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("status", "")).strip().lower() != "ok":
+                continue
+            if self._grounding_evidence_has_content(item):
+                return True
+        return False
+
+    async def _maybe_auto_recover_grounding_once(
+        self,
+        *,
+        conversation_id: str,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        thinking_plan: Dict[str, Any],
+        history_len: int,
+        session_id: str = "",
+    ) -> str:
+        from config import (
+            get_grounding_auto_recovery_enable,
+            get_grounding_auto_recovery_timeout_s,
+            get_grounding_auto_recovery_whitelist,
+        )
+
+        if not get_grounding_auto_recovery_enable():
+            return ""
+        if not isinstance(verified_plan, dict):
+            return ""
+        if verified_plan.get("_grounding_auto_recovery_attempted"):
+            return ""
+        if not bool(verified_plan.get("is_fact_query", False)):
+            return ""
+        if self._has_usable_grounding_evidence(verified_plan):
+            return ""
+
+        state = self._get_recent_grounding_state(conversation_id, history_len=history_len)
+        if not state:
+            return ""
+        whitelist = {str(x).strip() for x in get_grounding_auto_recovery_whitelist() if str(x).strip()}
+        if not whitelist:
+            return ""
+
+        candidate = None
+        for row in state.get("tool_runs") or []:
+            name = str((row or {}).get("tool_name", "")).strip()
+            if name in whitelist:
+                candidate = row
+                break
+        if not candidate:
+            return ""
+
+        tool_name = str(candidate.get("tool_name", "")).strip()
+        tool_args = self._sanitize_tool_args_for_state(candidate.get("args") or {})
+        if not tool_name:
+            return ""
+
+        spec = {"tool": tool_name, "args": tool_args}
+        verified_plan["_grounding_auto_recovery_attempted"] = True
+        verified_plan["needs_chat_history"] = True
+        log_info(f"[Orchestrator] Auto-recovery grounding re-run: tool={tool_name}")
+        timeout_s = float(get_grounding_auto_recovery_timeout_s())
+        try:
+            recovery_ctx = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._execute_tools_sync,
+                    [spec],
+                    user_text,
+                    {},
+                    thinking_plan.get("time_reference"),
+                    thinking_plan.get("suggested_tools", []),
+                    False,
+                    None,
+                    "",
+                    session_id or "",
+                    verified_plan,
+                ),
+                timeout=timeout_s,
+            )
+            if recovery_ctx:
+                verified_plan["_grounding_auto_recovery_used"] = True
+                return str(recovery_ctx)
+        except asyncio.TimeoutError:
+            log_warn(
+                f"[Orchestrator] Auto-recovery skipped (timeout after {timeout_s:.1f}s) tool={tool_name}"
+            )
+        except Exception as e:
+            log_warn(f"[Orchestrator] Auto-recovery failed tool={tool_name}: {e}")
+        return ""
+
+    def _resolve_followup_tool_reuse(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        *,
+        conversation_id: str = "",
+        chat_history: Optional[list] = None,
+    ) -> List[Any]:
+        from config import get_followup_tool_reuse_enable
+
+        if not get_followup_tool_reuse_enable():
+            return []
+        if not isinstance(verified_plan, dict):
+            return []
+        if not bool(verified_plan.get("is_fact_query", False)):
+            return []
+        if self._contains_explicit_tool_intent(user_text):
+            return []
+        if not self._looks_like_short_fact_followup(user_text, chat_history):
+            return []
+
+        history_len = len(chat_history) if isinstance(chat_history, list) else 0
+        state = self._get_recent_grounding_state(conversation_id, history_len=history_len)
+        if not state:
+            return []
+
+        out: List[Any] = []
+        seen = set()
+        for row in state.get("tool_runs") or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("tool_name", "")).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            args = self._sanitize_tool_args_for_state(row.get("args") or {})
+            if args:
+                out.append({"tool": name, "args": args})
+            else:
+                out.append(name)
+            if len(out) >= 2:
+                break
+
+        if out:
+            verified_plan["needs_chat_history"] = True
+            verified_plan["_followup_tool_reuse_active"] = True
+            log_info(
+                f"[Orchestrator] Follow-up tool reuse active: "
+                f"{[o.get('tool') if isinstance(o, dict) else o for o in out]}"
+            )
+        return out
+
+    @classmethod
+    def _looks_like_temporal_context_query(
+        cls,
+        user_text: str,
+        chat_history: Optional[list] = None,
+    ) -> bool:
+        text = str(user_text or "").strip().lower()
+        if not text:
+            return False
+        if any(marker in text for marker in cls._TEMPORAL_CONTEXT_MARKERS):
+            return True
+        if not cls._looks_like_short_fact_followup(text, chat_history):
+            return False
+        recent_users = cls._recent_user_messages(chat_history, limit=3)
+        for msg in recent_users:
+            _m = str(msg or "").strip().lower()
+            if any(marker in _m for marker in cls._TEMPORAL_CONTEXT_MARKERS):
+                return True
+        return False
+
+    @staticmethod
+    def _infer_time_reference_from_user_text(user_text: str) -> Optional[str]:
+        text = str(user_text or "").strip().lower()
+        if not text:
+            return None
+        if "vorgestern" in text:
+            return "day_before_yesterday"
+        if "gestern" in text:
+            return "yesterday"
+        if "heute" in text:
+            return "today"
+
+        # ISO date: YYYY-MM-DD
+        m_iso = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
+        if m_iso:
+            y, mo, d = m_iso.groups()
+            try:
+                dt = datetime(int(y), int(mo), int(d))
+                return dt.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
+        # EU style: DD.MM.YYYY or DD/MM/YY
+        m_eu = re.search(r"\b(\d{1,2})[./](\d{1,2})[./](\d{2,4})\b", text)
+        if m_eu:
+            d, mo, y = m_eu.groups()
+            year = int(y)
+            if year < 100:
+                year += 2000
+            try:
+                dt = datetime(year, int(mo), int(d))
+                return dt.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+        return None
+
+    def _apply_temporal_context_fallback(
+        self,
+        user_text: str,
+        thinking_plan: Dict[str, Any],
+        chat_history: Optional[list] = None,
+    ) -> None:
+        from config import get_daily_context_followup_enable
+
+        if not get_daily_context_followup_enable():
+            return
+        if not isinstance(thinking_plan, dict):
+            return
+        if thinking_plan.get("time_reference"):
+            return
+        if not self._looks_like_temporal_context_query(user_text, chat_history):
+            return
+
+        inferred = self._infer_time_reference_from_user_text(user_text) or "today"
+        thinking_plan["time_reference"] = inferred
+        thinking_plan["needs_chat_history"] = True
+        log_info(f"[Orchestrator] temporal context fallback: time_reference={inferred}")
+
+    @staticmethod
+    def _sanitize_tone_signal(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        default = {
+            "dialogue_act": "request",
+            "response_tone": "neutral",
+            "response_length_hint": "medium",
+            "tone_confidence": 0.55,
+            "classifier_mode": "fallback",
+        }
+        if not isinstance(raw, dict):
+            return default
+
+        out = dict(default)
+        act = str(raw.get("dialogue_act") or "").strip().lower()
+        tone = str(raw.get("response_tone") or "").strip().lower()
+        length_hint = str(raw.get("response_length_hint") or "").strip().lower()
+
+        if act in {"ack", "feedback", "question", "request", "analysis", "smalltalk"}:
+            out["dialogue_act"] = act
+        if tone in {"mirror_user", "warm", "neutral", "formal"}:
+            out["response_tone"] = tone
+        if length_hint in {"short", "medium", "long"}:
+            out["response_length_hint"] = length_hint
+        try:
+            conf = float(raw.get("tone_confidence", out["tone_confidence"]))
+        except Exception:
+            conf = out["tone_confidence"]
+        out["tone_confidence"] = max(0.0, min(1.0, conf))
+        if raw.get("classifier_mode"):
+            out["classifier_mode"] = str(raw["classifier_mode"])
+        return out
+
+    async def _classify_tone_signal(
+        self,
+        user_text: str,
+        messages: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        try:
+            signal = await self.tone_hybrid.classify(user_text, messages=messages)
+            return self._sanitize_tone_signal(signal)
+        except Exception as e:
+            log_warn(f"[Orchestrator] ToneHybrid fallback: {e}")
+            return self._sanitize_tone_signal(None)
+
+    def _ensure_dialogue_controls(
+        self,
+        thinking_plan: Dict[str, Any],
+        tone_signal: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        plan = thinking_plan if isinstance(thinking_plan, dict) else {}
+        signal = self._sanitize_tone_signal(tone_signal or {})
+
+        act = str(plan.get("dialogue_act") or "").strip().lower()
+        tone = str(plan.get("response_tone") or "").strip().lower()
+        length_hint = str(plan.get("response_length_hint") or "").strip().lower()
+        try:
+            conf = float(plan.get("tone_confidence", signal["tone_confidence"]))
+        except Exception:
+            conf = float(signal["tone_confidence"])
+        signal_conf = float(signal.get("tone_confidence", 0.0))
+        try:
+            from config import get_tone_signal_override_confidence
+            override_threshold = float(get_tone_signal_override_confidence())
+        except Exception:
+            override_threshold = 0.82
+
+        if act not in {"ack", "feedback", "question", "request", "analysis", "smalltalk"}:
+            act = signal["dialogue_act"]
+        if tone not in {"mirror_user", "warm", "neutral", "formal"}:
+            tone = signal["response_tone"]
+        if length_hint not in {"short", "medium", "long"}:
+            length_hint = signal["response_length_hint"]
+
+        # High-confidence hybrid signal may override stale cached/default tone fields.
+        if signal_conf >= override_threshold:
+            signal_act = str(signal.get("dialogue_act") or "").strip().lower()
+            signal_tone = str(signal.get("response_tone") or "").strip().lower()
+            signal_len = str(signal.get("response_length_hint") or "").strip().lower()
+
+            if signal_act in {"ack", "feedback", "smalltalk"} and act in {"request", "analysis"}:
+                act = signal_act
+            if tone == "neutral" and signal_tone in {"mirror_user", "warm", "formal"}:
+                tone = signal_tone
+            if length_hint == "medium" and signal_len in {"short", "long"}:
+                length_hint = signal_len
+            conf = max(conf, signal_conf)
+
+        plan["dialogue_act"] = act
+        plan["response_tone"] = tone
+        plan["response_length_hint"] = length_hint
+        plan["tone_confidence"] = max(0.0, min(1.0, conf))
+        plan["_tone_signal"] = signal
+        return plan
+
+    def _contains_explicit_tool_intent(self, user_text: str) -> bool:
+        lower = (user_text or "").lower()
+        return any(tok in lower for tok in self._TOOL_INTENT_KEYWORDS)
+
+    def _should_suppress_conversational_tools(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+    ) -> bool:
+        if bool((verified_plan or {}).get("_followup_tool_reuse_active")):
+            return False
+        policy = self.tool_execution_policy or {}
+        conv_cfg = policy.get("conversational_guard", {}) if isinstance(policy, dict) else {}
+        if self._contains_explicit_tool_intent(user_text):
+            return False
+        act = str((verified_plan or {}).get("dialogue_act") or "").strip().lower()
+        suppress_acts = {
+            str(a).strip().lower()
+            for a in conv_cfg.get("suppress_dialogue_acts", ["ack", "feedback", "smalltalk"])
+            if str(a).strip()
+        } or {"ack", "feedback", "smalltalk"}
+        if act not in suppress_acts:
+            return False
+        if bool(conv_cfg.get("allow_question_suffix_bypass", False)) and str(user_text or "").strip().endswith("?"):
+            return False
+        return True
 
     def _sanitize_intent_thinking_plan_for_skill_task(self, thinking_plan: Any) -> Dict[str, Any]:
         """
@@ -635,6 +1306,16 @@ class PipelineOrchestrator:
         if not ENABLE_CONTROL_LAYER:
             return True, "control_disabled"
 
+        try:
+            policy = load_grounding_policy()
+            force_verify_fact = bool(
+                ((policy or {}).get("control") or {}).get("force_verify_for_fact_query", True)
+            )
+        except Exception:
+            force_verify_fact = True
+        if force_verify_fact and bool((thinking_plan or {}).get("is_fact_query", False)):
+            return False, "fact_query_requires_control"
+
         hallucination_risk = (thinking_plan or {}).get("hallucination_risk", "medium")
         if not (SKIP_CONTROL_ON_LOW_RISK and hallucination_risk == "low"):
             return False, "control_required"
@@ -649,6 +1330,131 @@ class PipelineOrchestrator:
             return False, "creation_keywords"
 
         return True, "low_risk_skip"
+
+    @staticmethod
+    def _build_grounding_evidence_entry(
+        tool_name: str,
+        raw_result: str,
+        status: str,
+        ref_id: str,
+    ) -> Dict[str, Any]:
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        lines = [
+            line.strip()
+            for line in str(raw_result or "").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        entry: Dict[str, Any] = {
+            "tool_name": str(tool_name or "").strip(),
+            "status": str(status or "").strip().lower() or "unknown",
+            "ref_id": str(ref_id or "").strip(),
+            "timestamp": timestamp,
+            "key_facts": lines[:3] if lines else [str(raw_result or "")[:200] or "Keine Ausgabe"],
+        }
+        try:
+            parsed = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            if str(tool_name or "").strip() == "list_skills":
+                installed = parsed.get("installed")
+                available = parsed.get("available")
+                installed_items = installed if isinstance(installed, list) else []
+                available_items = available if isinstance(available, list) else []
+                installed_count = parsed.get("installed_count")
+                available_count = parsed.get("available_count")
+                try:
+                    installed_count = int(installed_count)
+                except Exception:
+                    installed_count = len(installed_items)
+                try:
+                    available_count = int(available_count)
+                except Exception:
+                    available_count = len(available_items)
+                installed_names: List[str] = []
+                for row in installed_items:
+                    if not isinstance(row, dict):
+                        continue
+                    name = str(row.get("name") or "").strip()
+                    if name:
+                        installed_names.append(name)
+                    if len(installed_names) >= 8:
+                        break
+                summary_lines = [
+                    f"installed_count: {installed_count}",
+                    f"available_count: {available_count}",
+                ]
+                if installed_names:
+                    summary_lines.append(
+                        "installed_names: " + ", ".join(installed_names)
+                    )
+                entry["key_facts"] = summary_lines
+
+            # Skills return {"result": "..."} — use result lines as key_facts so the
+            # grounding evidence covers the full tool output (not just the first 3 raw lines).
+            _result_str = str(parsed.get("result") or "").strip()
+            if _result_str:
+                _result_lines = [
+                    ln.strip()
+                    for ln in _result_str.splitlines()
+                    if ln.strip() and not ln.strip().startswith("#")
+                ]
+                if _result_lines:
+                    entry["key_facts"] = _result_lines[:8]
+
+            metrics = parsed.get("metrics")
+            if isinstance(metrics, dict):
+                entry["metrics"] = {
+                    str(k): v for k, v in metrics.items() if str(k).strip()
+                }
+            elif isinstance(metrics, list):
+                safe_metrics = []
+                for item in metrics:
+                    if not isinstance(item, dict):
+                        continue
+                    key = str(item.get("key") or item.get("name") or "").strip()
+                    if not key:
+                        continue
+                    safe_metrics.append(
+                        {
+                            "key": key,
+                            "value": item.get("value"),
+                            "unit": item.get("unit"),
+                        }
+                    )
+                if safe_metrics:
+                    entry["metrics"] = safe_metrics
+            structured = {}
+            for k in ("output", "result", "description", "type", "success"):
+                if k in parsed:
+                    structured[k] = parsed.get(k)
+            if str(tool_name or "").strip() == "list_skills":
+                structured["installed_count"] = installed_count
+                structured["available_count"] = available_count
+                structured["installed_names"] = installed_names
+            if structured:
+                entry["structured"] = structured
+        return entry
+
+    @staticmethod
+    def _count_successful_grounding_evidence(
+        verified_plan: Dict[str, Any],
+        allowed_statuses: Optional[List[str]] = None,
+    ) -> int:
+        allowed = {str(s).strip().lower() for s in (allowed_statuses or ["ok"]) if str(s).strip()}
+        if not allowed:
+            allowed = {"ok"}
+        evidence = (verified_plan or {}).get("_grounding_evidence") or []
+        if not isinstance(evidence, list):
+            return 0
+        count = 0
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status", "")).strip().lower()
+            if status in allowed:
+                count += 1
+        return count
 
     # ===============================================================
     # HARDWARE GATE EARLY CHECK
@@ -837,6 +1643,51 @@ class PipelineOrchestrator:
             return str(tool_spec.get("tool") or tool_spec.get("name") or "").strip()
         return str(tool_spec or "").strip()
 
+    @staticmethod
+    def _sanitize_skill_name_candidate(raw_name: Any) -> str:
+        candidate = str(raw_name or "").strip().strip("`\"'.,:;!?()[]{}")
+        if not candidate:
+            return ""
+        candidate = candidate.replace("-", "_")
+        candidate = re.sub(r"[^A-Za-z0-9_]", "_", candidate)
+        candidate = re.sub(r"_+", "_", candidate).strip("_")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,63}", candidate):
+            return ""
+        return candidate.lower()
+
+    def _extract_requested_skill_name(self, user_text: str) -> str:
+        text = str(user_text or "").strip()
+        if not text:
+            return ""
+
+        patterns = [
+            r"(?i)\brun_skill\s+([A-Za-z][A-Za-z0-9_-]{2,63})\b",
+            r"(?i)\b(?:führe|fuehre|run|execute|starte|start)\s+(?:den\s+|die\s+|das\s+)?skill\s+([A-Za-z][A-Za-z0-9_-]{2,63})\b",
+            r"(?i)\bskill\s+([A-Za-z][A-Za-z0-9_-]{2,63})\s+(?:aus|ausführen|ausfuehren|run|starten|execute)\b",
+            r"(?i)\b(?:skill|funktion)\s+(?:namens|name|named|called)\s+[`\"']?([A-Za-z][A-Za-z0-9_-]{2,63})[`\"']?",
+        ]
+        stopwords = {
+            "skill",
+            "run_skill",
+            "ausfuehren",
+            "ausführen",
+            "execute",
+            "run",
+            "start",
+            "starte",
+            "fuehre",
+            "führe",
+            "bitte",
+        }
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE)
+            if not match:
+                continue
+            candidate = self._sanitize_skill_name_candidate(match.group(1))
+            if candidate and candidate not in stopwords:
+                return candidate
+        return ""
+
     def _filter_think_tools(
         self,
         tools: list,
@@ -906,6 +1757,50 @@ class PipelineOrchestrator:
         raw = request.raw_request if isinstance(getattr(request, "raw_request", None), dict) else {}
         mode = str(raw.get("response_mode", "")).strip().lower()
         return mode if mode in {"interactive", "deep"} else ""
+
+    def _resolve_runtime_output_model(self, requested_model: str) -> Tuple[str, Dict[str, Any]]:
+        """
+        Resolve a runtime-safe output model against the effective output endpoint.
+        Keeps adapter input unchanged, but prevents invalid model identifiers from
+        causing avoidable /api/chat 404 responses.
+        """
+        from config import get_output_model
+
+        requested = str(requested_model or "").strip()
+        fallback = str(get_output_model() or "").strip()
+
+        try:
+            route = resolve_role_endpoint("output", default_endpoint=self.ollama_base)
+            endpoint = str(route.get("endpoint") or self.ollama_base or "").strip()
+        except Exception as e:
+            log_warn(f"[ModelResolver] role endpoint resolution failed: {e}")
+            endpoint = str(self.ollama_base or "").strip()
+
+        resolution = resolve_runtime_chat_model(
+            requested_model=requested,
+            endpoint=endpoint,
+            fallback_model=fallback,
+        )
+        resolved = str(resolution.get("resolved_model") or "").strip()
+        if not resolved:
+            resolved = fallback or requested
+            resolution["resolved_model"] = resolved
+            resolution["reason"] = "resolver_empty_fallback_applied"
+
+        if resolved != requested:
+            log_warn(
+                f"[ModelResolver] output model adjusted requested='{requested or '<empty>'}' "
+                f"resolved='{resolved or '<empty>'}' reason={resolution.get('reason')} "
+                f"endpoint={resolution.get('endpoint') or 'unknown'} "
+                f"available_count={resolution.get('available_count', 0)}"
+            )
+        else:
+            log_info(
+                f"[ModelResolver] output model accepted requested='{requested or '<empty>'}' "
+                f"endpoint={resolution.get('endpoint') or 'unknown'} "
+                f"available_count={resolution.get('available_count', 0)}"
+            )
+        return resolved, resolution
 
     def _apply_response_mode_policy(
         self,
@@ -979,7 +1874,7 @@ class PipelineOrchestrator:
         if gate_override:
             log_info(f"{prefix} Gate override active — skipping decide_tools(): {gate_override}")
             for tool_name in gate_override:
-                decisions[tool_name] = self._build_tool_args(tool_name, user_text)
+                decisions[tool_name] = self._build_tool_args(tool_name, user_text, verified_plan=verified_plan)
             return decisions
 
         try:
@@ -1007,6 +1902,8 @@ class PipelineOrchestrator:
         *,
         stream: bool = False,
         enable_skill_trigger_router: bool = False,
+        conversation_id: str = "",
+        chat_history: Optional[list] = None,
     ) -> List[Any]:
         """
         Build final suggested_tools list with parity across sync and stream:
@@ -1014,6 +1911,9 @@ class PipelineOrchestrator:
         """
         prefix = "[Orchestrator-Stream]" if stream else "[Orchestrator]"
         decisions = control_tool_decisions or {}
+        suppress_low_signal_tools = self._should_suppress_conversational_tools(
+            user_text, verified_plan
+        )
 
         if decisions:
             suggested_tools = list(decisions.keys())
@@ -1026,7 +1926,47 @@ class PipelineOrchestrator:
         # Validate + Normalize: filters invalid tools, maps skill names -> run_skill.
         suggested_tools = self._normalize_tools(suggested_tools)
 
+        if suppress_low_signal_tools and suggested_tools:
+            policy = self.tool_execution_policy or {}
+            conv_cfg = policy.get("conversational_guard", {}) if isinstance(policy, dict) else {}
+            suppressed_exec_tools = {
+                str(name).strip().lower()
+                for name in conv_cfg.get("suppress_tools", [])
+                if str(name).strip()
+            }
+            suppressed_tools = {str(t).strip().lower() for t in self._LOW_SIGNAL_ACTION_TOOLS}.union(suppressed_exec_tools)
+            before = len(suggested_tools)
+            suggested_tools = [
+                tool
+                for tool in suggested_tools
+                if self._extract_tool_name(tool).lower() not in suppressed_tools
+            ]
+            dropped = before - len(suggested_tools)
+            if dropped:
+                log_info(
+                    f"{prefix} Suppressed conversational tools for turn: dropped={dropped}"
+                )
+
         if not suggested_tools:
+            if suppress_low_signal_tools:
+                verified_plan["_selected_tools_for_prompt"] = []
+                log_info(f"{prefix} Tool fallback suppressed for conversational turn")
+                return []
+            followup_tools = self._resolve_followup_tool_reuse(
+                user_text,
+                verified_plan,
+                conversation_id=conversation_id,
+                chat_history=chat_history,
+            )
+            if followup_tools:
+                suggested_tools = self._normalize_tools(followup_tools)
+                log_info(f"{prefix} Follow-up tool reuse: {suggested_tools}")
+                verified_plan["needs_chat_history"] = True
+                verified_plan["_selected_tools_for_prompt"] = [
+                    t["tool"] if isinstance(t, dict) and "tool" in t else str(t)
+                    for t in suggested_tools
+                ]
+                return suggested_tools
             suggested_tools = self._detect_tools_by_keyword(user_text)
             if suggested_tools:
                 suggested_tools = self._normalize_tools(suggested_tools)
@@ -1048,6 +1988,10 @@ class PipelineOrchestrator:
     def _detect_tools_by_keyword(self, user_text: str) -> list:
         """Keyword-based tool detection fallback when Thinking suggests none."""
         user_lower = user_text.lower()
+        if any(kw in user_lower for kw in [
+            "grafikkarte", "gpu", "vram", "hardware", "systemhardware", "welche karte"
+        ]):
+            return [{"tool": "run_skill", "args": {"name": "system_hardware_info", "action": "run", "args": {}}}]
         if any(kw in user_lower for kw in ["skill", "skills", "fähigkeit"]):
             if any(kw in user_lower for kw in ["zeig", "list", "welche", "hast du", "installiert", "verfügbar"]):
                 return ["list_skills"]
@@ -1206,7 +2150,7 @@ class PipelineOrchestrator:
 
         return normalized
 
-    def _build_tool_args(self, tool_name: str, user_text: str) -> dict:
+    def _build_tool_args(self, tool_name: str, user_text: str, verified_plan: Dict = None) -> dict:
         """
         Emergency-Fallback: Minimale Standard-Args für bekannte Tools.
         Wird nur aufgerufen wenn ControlLayer.decide_tools() keine Args liefert.
@@ -1214,7 +2158,11 @@ class PipelineOrchestrator:
         """
         # Skill Tools
         if tool_name == "run_skill":
-            return {"name": user_text.strip(), "action": "run", "args": {}}
+            skill_name = self._extract_requested_skill_name(user_text)
+            args = {"action": "run", "args": {}}
+            if skill_name:
+                args["name"] = skill_name
+            return args
         elif tool_name == "get_skill_info":
             return {"skill_name": user_text.strip()}
         elif tool_name == "create_skill":
@@ -1256,7 +2204,13 @@ class PipelineOrchestrator:
         elif tool_name == "analyze":
             return {"query": user_text.strip()}
         elif tool_name in ("memory_save", "memory_fact_save"):
-            return {"conversation_id": "auto", "role": "user", "content": user_text.strip()}
+            _vp = verified_plan or {}
+            _fact_key = str(_vp.get("new_fact_key") or "").strip()
+            if _fact_key and _vp.get("is_new_fact"):
+                content = f"[{_fact_key}]: {user_text.strip()}"
+            else:
+                content = user_text.strip()
+            return {"conversation_id": "auto", "role": "user", "content": content}
         # Container Tools (PENDING = wird durch container_id-Chaining ersetzt)
         elif tool_name == "request_container":
             return {"blueprint_id": "python-sandbox"}
@@ -1323,13 +2277,41 @@ class PipelineOrchestrator:
             args["message"] = user_text.strip()
             missing = [k for k in required if _missing(k)]
 
+        # run_skill hardening: never pass sentence-like names;
+        # require explicit skill-name extraction if Control args are empty/noisy.
+        if tool_name == "run_skill":
+            extracted_name = self._extract_requested_skill_name(user_text)
+            current_name = str(args.get("name", "") or "").strip()
+            sanitized_name = self._sanitize_skill_name_candidate(current_name)
+            if not sanitized_name and extracted_name:
+                sanitized_name = extracted_name
+            if sanitized_name:
+                args["name"] = sanitized_name
+            elif "name" not in missing:
+                missing = ["name"] + [k for k in missing if k != "name"]
+
         if missing:
             return False, args, f"missing_required={missing}"
         return True, args, ""
 
-    def _execute_tools_sync(self, suggested_tools: list, user_text: str, control_tool_decisions: dict = None, time_reference: str = None, thinking_suggested_tools: list = None, blueprint_gate_blocked: bool = False, blueprint_router_id: str = None, blueprint_suggest_msg: str = "", session_id: str = "") -> str:
+    def _execute_tools_sync(
+        self,
+        suggested_tools: list,
+        user_text: str,
+        control_tool_decisions: dict = None,
+        time_reference: str = None,
+        thinking_suggested_tools: list = None,
+        blueprint_gate_blocked: bool = False,
+        blueprint_router_id: str = None,
+        blueprint_suggest_msg: str = "",
+        session_id: str = "",
+        verified_plan: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Execute tools and return combined context string."""
         tool_context = ""
+        _verified_plan = verified_plan if isinstance(verified_plan, dict) else {}
+        grounding_evidence: List[Dict[str, Any]] = []
+        successful_tool_runs: List[Dict[str, Any]] = []
         tool_hub = get_hub()
         tool_hub.initialize()
         
@@ -1356,11 +2338,11 @@ class PipelineOrchestrator:
                 elif isinstance(tool_spec, dict):
                     tool_name = tool_spec.get("name")
                     _cd = control_tool_decisions or {}
-                    tool_args = _cd.get(tool_name) or self._build_tool_args(tool_name, user_text)
+                    tool_args = _cd.get(tool_name) or self._build_tool_args(tool_name, user_text, verified_plan=_verified_plan)
                 else:
                     tool_name = tool_spec
                     _cd = control_tool_decisions or {}
-                    tool_args = _cd.get(tool_name) or self._build_tool_args(tool_name, user_text)
+                    tool_args = _cd.get(tool_name) or self._build_tool_args(tool_name, user_text, verified_plan=_verified_plan)
 
                 # Temporal guard: Protokoll ist die Quelle, kein Graph-Fallback nötig
                 if tool_name == "memory_graph_search" and time_reference:
@@ -1374,13 +2356,18 @@ class PipelineOrchestrator:
                         continue
 
                 # Fail-closed: bei Skill-Router-Ausfall keine Skill-Ausführung zulassen.
-                if tool_name in {"autonomous_skill_task", "create_skill", "run_skill"} and verified_plan.get("_skill_gate_blocked"):
-                    _skill_reason = verified_plan.get("_skill_gate_reason", "skill_router_unavailable")
+                if tool_name in {"autonomous_skill_task", "create_skill", "run_skill"} and _verified_plan.get("_skill_gate_blocked"):
+                    _skill_reason = _verified_plan.get("_skill_gate_reason", "skill_router_unavailable")
                     log_warn(f"[Orchestrator-Sync] Blocking {tool_name} — reason={_skill_reason}")
                     tool_context += (
                         f"\n[{tool_name}]: FEHLER: Skill-Router nicht verfügbar ({_skill_reason}). "
                         "Skill-Operation aus Sicherheitsgründen blockiert."
                     )
+                    grounding_evidence.append({
+                        "tool_name": tool_name,
+                        "status": "error",
+                        "reason": _skill_reason,
+                    })
                     continue
 
                 # Blueprint Gate + Router (Sync):
@@ -1447,6 +2434,11 @@ class PipelineOrchestrator:
                 if not _valid:
                     log_warn(f"[Orchestrator] Skipping {tool_name} due to invalid args: {_arg_reason}")
                     tool_context += f"\n### TOOL-SKIP ({tool_name}): {_arg_reason}\n"
+                    grounding_evidence.append({
+                        "tool_name": tool_name,
+                        "status": "skip",
+                        "reason": _arg_reason,
+                    })
                     continue
 
                 is_fast_lane = tool_name in _FAST_LANE_TOOLS
@@ -1467,6 +2459,19 @@ class PipelineOrchestrator:
                             tool_name, _fl_raw, _fl_status, session_id
                         )
                         tool_context += _card
+                        grounding_evidence.append(
+                            self._build_grounding_evidence_entry(
+                                tool_name=tool_name,
+                                raw_result=_fl_raw,
+                                status=_fl_status,
+                                ref_id=_ref,
+                            )
+                        )
+                        if success:
+                            successful_tool_runs.append({
+                                "tool_name": str(tool_name),
+                                "args": self._sanitize_tool_args_for_state(tool_args),
+                            })
                         executed = True
                     except Exception as e:
                         # Fallback to MCP Hub if Fast Lane fails
@@ -1493,6 +2498,11 @@ class PipelineOrchestrator:
                                     "_container_events", stop_event, "container_stopped", "orchestrator"
                                 )
                                 tool_context += f"\n### VERIFY-FEHLER ({tool_name}): Container {cid[:12]} ist nicht mehr aktiv.\n"
+                                grounding_evidence.append({
+                                    "tool_name": tool_name,
+                                    "status": "error",
+                                    "reason": "container_not_running",
+                                })
                                 continue
 
                     log_info(f"[Orchestrator] Calling tool: {tool_name}({tool_args})")
@@ -1530,6 +2540,18 @@ class PipelineOrchestrator:
                             tool_name, retry_info, "ok", session_id
                         )
                         tool_context += _card
+                        grounding_evidence.append(
+                            self._build_grounding_evidence_entry(
+                                tool_name=tool_name,
+                                raw_result=retry_info,
+                                status="ok",
+                                ref_id=_ref,
+                            )
+                        )
+                        successful_tool_runs.append({
+                            "tool_name": str(tool_name),
+                            "args": self._sanitize_tool_args_for_state(tool_args),
+                        })
                         log_info(f"[Orchestrator] Tool {tool_name} OK after retry ref={_ref}")
 
                     elif intelligence_result['is_error']:
@@ -1546,6 +2568,14 @@ class PipelineOrchestrator:
                         )
                         tool_context += f"\n### TOOL-FEHLER ({tool_name}):\n"
                         tool_context += _card
+                        grounding_evidence.append(
+                            self._build_grounding_evidence_entry(
+                                tool_name=tool_name,
+                                raw_result=_err_detail,
+                                status="error",
+                                ref_id=_ref,
+                            )
+                        )
                     else:
                         # TOOL SUCCESS (no error, no retry needed)
                         # ── Commit 2: Card + Full Payload ──
@@ -1553,6 +2583,18 @@ class PipelineOrchestrator:
                             tool_name, result_str, "ok", session_id
                         )
                         tool_context += _card
+                        grounding_evidence.append(
+                            self._build_grounding_evidence_entry(
+                                tool_name=tool_name,
+                                raw_result=result_str,
+                                status="ok",
+                                ref_id=_ref,
+                            )
+                        )
+                        successful_tool_runs.append({
+                            "tool_name": str(tool_name),
+                            "args": self._sanitize_tool_args_for_state(tool_args),
+                        })
                         log_info(f"[Orchestrator] Tool {tool_name} OK: {len(result_str)} chars ref={_ref}")
                     # ── Container Session Tracking ──
                     container_evt = self._build_container_event_content(
@@ -1566,7 +2608,20 @@ class PipelineOrchestrator:
             except Exception as e:
                 log_error(f"[Orchestrator] Tool {tool_name} failed: {e}")
                 tool_context += f"\n### TOOL-FEHLER ({tool_name}): {str(e)}\n"
-        
+                grounding_evidence.append({
+                    "tool_name": tool_name,
+                    "status": "error",
+                    "reason": str(e),
+                })
+        if isinstance(_verified_plan, dict):
+            existing_evidence = _verified_plan.get("_grounding_evidence")
+            if not isinstance(existing_evidence, list):
+                existing_evidence = []
+            _verified_plan["_grounding_evidence"] = [*existing_evidence, *grounding_evidence]
+            existing_runs = _verified_plan.get("_successful_tool_runs")
+            if not isinstance(existing_runs, list):
+                existing_runs = []
+            _verified_plan["_successful_tool_runs"] = [*existing_runs, *successful_tool_runs]
         return tool_context
 
 
@@ -1614,18 +2669,24 @@ class PipelineOrchestrator:
         # Handle regular results (MCP)
         else:
             result_str = json.dumps(result, ensure_ascii=False, default=str) if isinstance(result, (dict, list)) else str(result)
+            _is_error, _err_msg = detect_tool_error(result)
             
             if len(result_str) > 3000:
                 result_str = result_str[:3000] + "... (gekürzt)"
             
-            formatted = f"\n### TOOL-ERGEBNIS ({tool_name}):\n{result_str}\n"
+            if _is_error:
+                formatted = f"\n### FEHLER ({tool_name}): {_err_msg or result_str}\n"
+            else:
+                formatted = f"\n### TOOL-ERGEBNIS ({tool_name}):\n{result_str}\n"
             
             metadata = {
                 "execution_mode": "mcp",
                 "tool_name": tool_name
             }
+            if _is_error:
+                metadata["error"] = _err_msg or result_str
             
-            return (formatted, True, metadata)
+            return (formatted, not _is_error, metadata)
 
     @staticmethod
     def _tool_context_has_failures_or_skips(tool_context: str) -> bool:
@@ -1839,6 +2900,123 @@ class PipelineOrchestrator:
         except Exception as e:
             log_error(f"[Orchestrator-ContainerEvent] Save failed: {e}")
         return None
+
+    @staticmethod
+    def _build_control_workspace_summary(
+        verification: Dict[str, Any],
+        *,
+        skipped: bool,
+        skip_reason: str = "",
+    ) -> str:
+        """
+        Compact, stable control decision summary for workspace timeline.
+        """
+        ver = verification if isinstance(verification, dict) else {}
+        approved = ver.get("approved", True)
+        warnings = ver.get("warnings", []) if isinstance(ver.get("warnings", []), list) else []
+        corrections = ver.get("corrections", {}) if isinstance(ver.get("corrections", {}), dict) else {}
+        reason = str(ver.get("reason", "") or "").strip()
+        correction_keys = sorted([str(k) for k in corrections.keys()])[:6]
+        parts = [
+            f"approved={bool(approved)}",
+            f"skipped={bool(skipped)}",
+        ]
+        if skip_reason:
+            parts.append(f"skip_reason={skip_reason}")
+        if reason:
+            parts.append(f"reason={reason[:120]}")
+        if warnings:
+            parts.append(f"warnings={len(warnings)}")
+        if correction_keys:
+            parts.append(f"corrections={','.join(correction_keys)}")
+        return " | ".join(parts)
+
+    @staticmethod
+    def _build_done_workspace_summary(
+        done_reason: str,
+        *,
+        response_mode: str = "",
+        model: str = "",
+        memory_used: Optional[bool] = None,
+    ) -> str:
+        """
+        Compact completion summary for workspace timeline.
+        """
+        parts = [f"done_reason={str(done_reason or 'stop').strip()}"]
+        if response_mode:
+            parts.append(f"response_mode={response_mode}")
+        if model:
+            parts.append(f"model={model}")
+        if memory_used is not None:
+            parts.append(f"memory_used={bool(memory_used)}")
+        return " | ".join(parts)
+
+    @staticmethod
+    def _build_sequential_workspace_summary(event: Dict[str, Any]) -> Tuple[str, str]:
+        """
+        Build compact planning telemetry rows for workspace_events.
+        Returns tuple: (entry_type, content).
+        """
+        if not isinstance(event, dict):
+            return ("planning_event", "invalid_event")
+
+        event_type = str(event.get("type", "") or "").strip()
+        task_id = str(event.get("task_id", "") or "").strip()
+
+        if event_type == "sequential_start":
+            complexity = event.get("complexity", "unknown")
+            reasoning_type = str(event.get("reasoning_type", "unknown") or "unknown").strip()
+            parts = [f"task_id={task_id or 'unknown'}", f"complexity={complexity}", f"reasoning_type={reasoning_type}"]
+            return ("planning_start", " | ".join(parts))
+
+        if event_type == "sequential_step":
+            step_number = event.get("step_number") or event.get("step_num") or event.get("step") or "?"
+            title = str(event.get("title", "") or "").strip()
+            thought = str(event.get("thought", "") or event.get("content", "") or "").strip()
+            thought_len = len(thought)
+            parts = [f"task_id={task_id or 'unknown'}", f"step={step_number}"]
+            if title:
+                parts.append(f"title={title[:80]}")
+            parts.append(f"thought_len={thought_len}")
+            return ("planning_step", " | ".join(parts))
+
+        if event_type == "sequential_done":
+            steps = event.get("steps", [])
+            step_count = len(steps) if isinstance(steps, list) else 0
+            summary = str(event.get("summary", "") or "").strip()
+            parts = [f"task_id={task_id or 'unknown'}", f"steps={step_count}"]
+            if summary:
+                parts.append(f"summary={summary[:120]}")
+            return ("planning_done", " | ".join(parts))
+
+        if event_type == "sequential_error":
+            error_text = str(event.get("error", "unknown") or "unknown").strip()
+            return ("planning_error", f"task_id={task_id or 'unknown'} | error={error_text[:200]}")
+
+        return ("planning_event", f"task_id={task_id or 'unknown'} | type={event_type or 'unknown'}")
+
+    def _persist_sequential_workspace_event(
+        self,
+        conversation_id: str,
+        event: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Persist sequential planning milestones to workspace_events.
+        Returns workspace_update SSE payload or None.
+        """
+        if not conversation_id or not isinstance(event, dict):
+            return None
+        event_type = str(event.get("type", "") or "").strip()
+        if event_type not in {"sequential_start", "sequential_step", "sequential_done", "sequential_error"}:
+            return None
+
+        entry_type, content = self._build_sequential_workspace_summary(event)
+        return self._save_workspace_entry(
+            conversation_id=conversation_id,
+            content=content,
+            entry_type=entry_type,
+            source_layer="sequential",
+        )
 
     def _get_compact_context(
         self,
@@ -2876,7 +4054,15 @@ class PipelineOrchestrator:
                     f"complexity={task_args.get('complexity')} plan_keys={_plan_keys}"
                 )
                 
-                result = hub.call_tool("autonomous_skill_task", task_args)
+                call_tool_async = getattr(hub, "call_tool_async", None)
+                if asyncio.iscoroutinefunction(call_tool_async):
+                    result = await call_tool_async("autonomous_skill_task", task_args)
+                else:
+                    result = await asyncio.to_thread(
+                        hub.call_tool,
+                        "autonomous_skill_task",
+                        task_args,
+                    )
                 
                 if isinstance(result, dict):
                     if result.get("success"):
@@ -3031,6 +4217,7 @@ class PipelineOrchestrator:
         conversation_id = request.conversation_id
         forced_response_mode = self._requested_response_mode(request)
         request_retrieval_cache: Dict[str, Any] = {}
+        tone_signal = await self._classify_tone_signal(user_text, request.messages)
         
         # ===============================================================
         # STEP 1: Intent Confirmation Check
@@ -3042,6 +4229,31 @@ class PipelineOrchestrator:
             if confirmation_result:
                 log_info("[Orchestrator] Returning confirmation result")
                 return confirmation_result
+
+        # ===============================================================
+        # STEP 1.1: CONTEXT COMPRESSION (non-stream, deep-aware)
+        # ===============================================================
+        try:
+            _deep_hint = forced_response_mode == "deep" or self._is_explicit_deep_request(user_text)
+            if _deep_hint:
+                from core.context_compressor import get_compressor, estimate_protocol_tokens
+                from utils.settings import settings as _settings
+                _compression_enabled = _settings.get("CONTEXT_COMPRESSION_ENABLED", True)
+                if _compression_enabled:
+                    _token_est = estimate_protocol_tokens()
+                    _compression_threshold = _settings.get("COMPRESSION_THRESHOLD", 100000)
+                    if _token_est >= _compression_threshold:
+                        _compression_mode = _settings.get("CONTEXT_COMPRESSION_MODE", "sync")
+                        log_info(
+                            "[Orchestrator] Context compression triggered (sync path) "
+                            f"tokens={_token_est} mode={_compression_mode}"
+                        )
+                        if _compression_mode == "sync":
+                            await get_compressor().check_and_compress()
+                        else:
+                            asyncio.create_task(get_compressor().check_and_compress())
+        except Exception as _ce_sync:
+            log_warn(f"[Orchestrator] Context compression skipped (sync path): {_ce_sync}")
         
         # ===============================================================
         # STEP 2: Thinking Layer
@@ -3065,12 +4277,14 @@ class PipelineOrchestrator:
             if skip_thinking:
                 log_info("[Pipeline] Skipping ThinkingLayer for Master (settings: use_thinking_layer=False)")
                 thinking_plan = self.thinking._default_plan()
+                thinking_plan = self._ensure_dialogue_controls(thinking_plan, tone_signal)
         
         if not skip_thinking:
             # ── ThinkingLayer Cache-Check (Sync-Pfad) ──
             _cached_plan_sync = _thinking_plan_cache.get(user_text)
             if _cached_plan_sync:
                 thinking_plan = _cached_plan_sync
+                thinking_plan = self._ensure_dialogue_controls(thinking_plan, tone_signal)
                 log_info(f"[Orchestrator] CACHE HIT ThinkingLayer (sync): intent='{thinking_plan.get('intent')}'")
             else:
                 # Skill-Graph Pre-Fetch — policy-gated (sync path)
@@ -3080,8 +4294,10 @@ class PipelineOrchestrator:
                 thinking_plan = await self.thinking.analyze(
                     user_text,
                     memory_context=_sync_skill_ctx,
-                    available_tools=selected_tools
+                    available_tools=selected_tools,
+                    tone_signal=tone_signal,
                 )
+                thinking_plan = self._ensure_dialogue_controls(thinking_plan, tone_signal)
                 thinking_plan["_trace_skills_prefetch"] = bool(_sync_skill_ctx)
                 thinking_plan["_trace_skills_prefetch_mode"] = _sync_prefetch_mode
                 _thinking_plan_cache.set(user_text, thinking_plan)
@@ -3096,6 +4312,18 @@ class PipelineOrchestrator:
             forced_mode=forced_response_mode,
         )
         log_info(f"[Orchestrator] response_mode={response_mode} (sync)")
+        log_info(
+            "[Orchestrator] dialogue_controls "
+            f"act={thinking_plan.get('dialogue_act')} "
+            f"tone={thinking_plan.get('response_tone')} "
+            f"len={thinking_plan.get('response_length_hint')} "
+            f"conf={thinking_plan.get('tone_confidence')}"
+        )
+        self._apply_temporal_context_fallback(
+            user_text,
+            thinking_plan,
+            chat_history=request.messages,
+        )
 
         # ===============================================================
         # STEP 1.7: SKILL DEDUP GATE (Sync-Pfad, fail-closed)
@@ -3183,7 +4411,8 @@ class PipelineOrchestrator:
             user_text,
             thinking_plan,
             retrieved_memory,
-            conversation_id
+            conversation_id,
+            response_mode=response_mode,
         )
 
         # Skill confirmation must short-circuit the sync pipeline just like stream mode.
@@ -3291,6 +4520,8 @@ class PipelineOrchestrator:
             _ctrl_decisions_sync,
             stream=False,
             enable_skill_trigger_router=False,
+            conversation_id=conversation_id,
+            chat_history=request.messages,
         )
 
         tool_context = ""
@@ -3303,7 +4534,8 @@ class PipelineOrchestrator:
                 _cands = ", ".join(f"{c['id']} ({c['score']:.2f})" for c in _bp_suggest_data.get("candidates", []))
                 _bp_suggest_msg = f"RÜCKFRAGE: Welchen Blueprint soll ich starten? Meinst du: {_cands}? Bitte präzisiere."
 
-            tool_context = self._execute_tools_sync(
+            tool_context = await asyncio.to_thread(
+                self._execute_tools_sync,
                 suggested_tools, user_text, _ctrl_decisions_sync,
                 time_reference=thinking_plan.get("time_reference"),
                 thinking_suggested_tools=thinking_plan.get("suggested_tools", []),
@@ -3311,6 +4543,7 @@ class PipelineOrchestrator:
                 blueprint_router_id=(thinking_plan.get("_blueprint_router") or {}).get("blueprint_id"),
                 blueprint_suggest_msg=_bp_suggest_msg,
                 session_id=conversation_id or "",
+                verified_plan=verified_plan,
             )
 
         # ── Phase 1.5 Commit 2: Clip tool_context before append (small mode) ──
@@ -3345,6 +4578,35 @@ class PipelineOrchestrator:
                     f"(tool_context={len(tool_context)}, failure_ctx merged if any)"
                 )
 
+        self._inject_carryover_grounding_evidence(
+            conversation_id,
+            verified_plan,
+            history_len=len(request.messages),
+        )
+        _recovery_ctx_sync = await self._maybe_auto_recover_grounding_once(
+            conversation_id=conversation_id,
+            user_text=user_text,
+            verified_plan=verified_plan,
+            thinking_plan=thinking_plan,
+            history_len=len(request.messages),
+            session_id=conversation_id or "",
+        )
+        if _recovery_ctx_sync:
+            retrieved_memory = self._append_context_block(
+                retrieved_memory, _recovery_ctx_sync, "tool_ctx_recovery", ctx_trace
+            )
+            existing_tool_results = str(verified_plan.get("_tool_results", "") or "")
+            verified_plan["_tool_results"] = f"{existing_tool_results}{_recovery_ctx_sync}"
+            log_info(
+                f"[CTX] grounding auto-recovery injected chars={len(_recovery_ctx_sync)}"
+            )
+
+        self._remember_conversation_grounding_state(
+            conversation_id,
+            verified_plan,
+            history_len=len(request.messages),
+        )
+
         # ── Phase 1.5 Commit 1: Final hard cap (always active in small mode) ──
         # Falls back to SMALL_MODEL_CHAR_CAP when SMALL_MODEL_FINAL_CAP=0 (no longer optional).
         retrieved_memory = self._apply_final_cap(retrieved_memory, ctx_trace, _smm, "sync")
@@ -3378,12 +4640,14 @@ class PipelineOrchestrator:
         needs_memory = thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query")
         high_risk = thinking_plan.get("hallucination_risk") == "high"
         memory_required_but_missing = needs_memory and high_risk and not memory_used
+        resolved_output_model, model_resolution = self._resolve_runtime_output_model(request.model)
+        verified_plan["_output_model_resolution"] = model_resolution
         
         answer = await self._execute_output_layer(
             user_text=user_text,
             verified_plan=verified_plan,
             memory_data=retrieved_memory,
-            model=request.model,
+            model=resolved_output_model,
             chat_history=request.messages,
             memory_required_but_missing=memory_required_but_missing
         )
@@ -3401,7 +4665,7 @@ class PipelineOrchestrator:
         self._post_task_processing()
         
         return CoreChatResponse(
-            model=request.model,
+            model=resolved_output_model,
             content=answer,
             conversation_id=conversation_id,
             done=True,
@@ -3444,6 +4708,7 @@ class PipelineOrchestrator:
         conversation_id = request.conversation_id
         forced_response_mode = self._requested_response_mode(request)
         request_retrieval_cache: Dict[str, Any] = {}
+        tone_signal = await self._classify_tone_signal(user_text, request.messages)
         
         # ═══════════════════════════════════════════════════
         # STEP 0: INTENT CONFIRMATION
@@ -3453,6 +4718,14 @@ class PipelineOrchestrator:
                 result = await self._check_pending_confirmation(user_text, conversation_id)
                 if result:
                     yield (result.content, False, {"type": "content"})
+                    ws_done = self._save_workspace_entry(
+                        conversation_id,
+                        self._build_done_workspace_summary("confirmation_executed"),
+                        "chat_done",
+                        "orchestrator",
+                    )
+                    if ws_done:
+                        yield ("", False, ws_done)
                     yield ("", True, {"done_reason": "confirmation_executed"})
                     return
             except Exception as e:
@@ -3526,6 +4799,7 @@ class PipelineOrchestrator:
         if chunking_context and chunking_context.get("thinking_result"):
             log_info("[Orchestrator] Layer 1 SKIPPED (using chunking result)")
             thinking_plan = chunking_context["thinking_result"]
+            thinking_plan = self._ensure_dialogue_controls(thinking_plan, tone_signal)
             yield ("", False, {"type": "thinking_done", "thinking": thinking_plan, "source": "chunking"})
         else:
             log_info("[Orchestrator] === LAYER 1: THINKING (STREAMING) ===")
@@ -3547,6 +4821,7 @@ class PipelineOrchestrator:
                 if skip_thinking:
                     log_info("[Pipeline] Skipping ThinkingLayer for Master (ThinkingLayer=OFF in settings)")
                     thinking_plan = self.thinking._default_plan()
+                    thinking_plan = self._ensure_dialogue_controls(thinking_plan, tone_signal)
                     yield ("", False, {
                         "type": "thinking_done",
                         "thinking": {
@@ -3562,6 +4837,7 @@ class PipelineOrchestrator:
                 _cached_plan = _thinking_plan_cache.get(user_text)
                 if _cached_plan:
                     thinking_plan = _cached_plan
+                    thinking_plan = self._ensure_dialogue_controls(thinking_plan, tone_signal)
                     log_info(f"[Orchestrator] CACHE HIT ThinkingLayer: intent='{thinking_plan.get('intent')}'")
                     yield ("", False, {
                         "type": "thinking_done",
@@ -3585,12 +4861,14 @@ class PipelineOrchestrator:
                     async for chunk, is_done, plan in self.thinking.analyze_stream(
                         user_text,
                         memory_context=_thinking_skill_ctx,
-                        available_tools=selected_tools
+                        available_tools=selected_tools,
+                        tone_signal=tone_signal,
                     ):
                         if not is_done:
                             yield ("", False, {"type": "thinking_stream", "thinking_chunk": chunk})
                         else:
                             thinking_plan = plan
+                            thinking_plan = self._ensure_dialogue_controls(thinking_plan, tone_signal)
                             thinking_plan["_trace_skills_prefetch"] = bool(_thinking_skill_ctx)
                             thinking_plan["_trace_skills_prefetch_mode"] = _stream_prefetch_mode
                             # Im Cache speichern für spätere Aufrufe
@@ -3614,6 +4892,18 @@ class PipelineOrchestrator:
             forced_mode=forced_response_mode,
         )
         log_info(f"[Orchestrator] response_mode={response_mode_stream} (stream)")
+        log_info(
+            "[Orchestrator] dialogue_controls(stream) "
+            f"act={thinking_plan.get('dialogue_act')} "
+            f"tone={thinking_plan.get('response_tone')} "
+            f"len={thinking_plan.get('response_length_hint')} "
+            f"conf={thinking_plan.get('tone_confidence')}"
+        )
+        self._apply_temporal_context_fallback(
+            user_text,
+            thinking_plan,
+            chat_history=request.messages,
+        )
         yield ("", False, {"type": "response_mode", "mode": response_mode_stream})
         
         # ═══════════════════════════════════════════════════
@@ -3663,6 +4953,14 @@ class PipelineOrchestrator:
         if _early_gate_msg:
             log_info("[Orchestrator] Early Hardware Gate fired — blocking before Sequential Thinking")
             yield (_early_gate_msg, False, {"type": "content"})
+            ws_done = self._save_workspace_entry(
+                conversation_id,
+                self._build_done_workspace_summary("blocked_hardware_gate"),
+                "chat_done",
+                "orchestrator",
+            )
+            if ws_done:
+                yield ("", False, ws_done)
             yield ("", True, {"done_reason": "blocked_hardware_gate"})
             return
 
@@ -3770,11 +5068,17 @@ class PipelineOrchestrator:
                 if _cached_seq:
                     log_info("[Orchestrator] CACHE HIT Sequential Thinking")
                     thinking_plan["_sequential_result"] = _cached_seq
-                    yield ("", False, {
+                    _cached_event = {
                         "type": "sequential_done",
+                        "task_id": "cached",
                         "steps": _cached_seq.get("steps", []),
+                        "summary": _cached_seq.get("summary", ""),
                         "cached": True,
-                    })
+                    }
+                    _ws_seq_cached = self._persist_sequential_workspace_event(conversation_id, _cached_event)
+                    if _ws_seq_cached:
+                        yield ("", False, _ws_seq_cached)
+                    yield ("", False, _cached_event)
                 else:
                     _seq_steps_collected = []
                     from config import get_sequential_timeout_s
@@ -3787,7 +5091,14 @@ class PipelineOrchestrator:
                             ):
                                 # Sammle Steps für Cache
                                 if event.get("type") == "sequential_step":
-                                    _seq_steps_collected.append(event.get("step", {}))
+                                    _step_payload = event.get("step")
+                                    if not isinstance(_step_payload, dict):
+                                        _step_payload = {
+                                            "step": event.get("step_number") or event.get("step_num") or event.get("step") or len(_seq_steps_collected) + 1,
+                                            "title": event.get("title", ""),
+                                            "thought": event.get("thought", "") or event.get("content", ""),
+                                        }
+                                    _seq_steps_collected.append(_step_payload)
                                 elif event.get("type") == "sequential_done":
                                     # Im Cache speichern
                                     _seq_result = {
@@ -3797,14 +5108,22 @@ class PipelineOrchestrator:
                                     thinking_plan["_sequential_result"] = _seq_result
                                     _sequential_result_cache.set(_seq_cache_key, _seq_result)
                                     log_info(f"[Orchestrator] Sequential result cached ({len(_seq_steps_collected)} steps)")
+                                _ws_seq = self._persist_sequential_workspace_event(conversation_id, event)
+                                if _ws_seq:
+                                    yield ("", False, _ws_seq)
                                 yield ("", False, event)
                     except TimeoutError:
                         thinking_plan["_sequential_timed_out"] = True
                         log_warn(f"[Orchestrator] Sequential stream timeout after {_seq_timeout_s:.0f}s")
-                        yield ("", False, {
+                        _timeout_event = {
                             "type": "sequential_error",
+                            "task_id": "timeout",
                             "error": f"timeout_after_{int(_seq_timeout_s)}s",
-                        })
+                        }
+                        _ws_seq_timeout = self._persist_sequential_workspace_event(conversation_id, _timeout_event)
+                        if _ws_seq_timeout:
+                            yield ("", False, _ws_seq_timeout)
+                        yield ("", False, _timeout_event)
             except Exception as e:
                 log_info(f"[Orchestrator] Sequential error: {e}")
         
@@ -3825,7 +5144,12 @@ class PipelineOrchestrator:
             verification = {"approved": True}
         else:
             log_info("[Orchestrator] === LAYER 2: CONTROL ===")
-            verification = await self.control.verify(user_text, thinking_plan, full_context)
+            verification = await self.control.verify(
+                user_text,
+                thinking_plan,
+                full_context,
+                response_mode=response_mode_stream,
+            )
             verified_plan = self.control.apply_corrections(thinking_plan, verification)
             # Skill Confirmation Handling (stream parity with sync path)
             if verification.get("_needs_skill_confirmation") and INTENT_SYSTEM_AVAILABLE:
@@ -3844,6 +5168,21 @@ class PipelineOrchestrator:
                 store.add(intent)
                 verified_plan["_pending_intent"] = intent.to_dict()
                 log_info(f"[Orchestrator] Intent {intent.id[:8]} added to verified_plan (stream)")
+
+                # B4: Auto-create bypass (stream-Parität mit sync-Pfad)
+                from config import get_skill_auto_create_on_low_risk
+                if (
+                    get_skill_auto_create_on_low_risk()
+                    and thinking_plan.get("hallucination_risk") == "low"
+                    and not verified_plan["_pending_intent"].get("needs_package_install", False)
+                ):
+                    _bypassed_skill = verified_plan["_pending_intent"].get("skill_name", "?")
+                    del verified_plan["_pending_intent"]
+                    verified_plan["_auto_create_bypass"] = True
+                    log_info(
+                        f"[Orchestrator] Auto-create bypass: skill={_bypassed_skill} "
+                        f"(low_risk, no_packages, SKILL_AUTO_CREATE_ON_LOW_RISK=true) [stream]"
+                    )
 
         log_info(f"[Orchestrator] Control approved={verification.get('approved')}")
 
@@ -3921,6 +5260,14 @@ class PipelineOrchestrator:
                 msg += f"\n\n_{', '.join(warnings)}_"
             # Als normaler Content-Chunk yielden — dann done
             yield (msg, False, {"type": "content"})
+            ws_done = self._save_workspace_entry(
+                conversation_id,
+                self._build_done_workspace_summary("blocked"),
+                "chat_done",
+                "orchestrator",
+            )
+            if ws_done:
+                yield ("", False, ws_done)
             yield ("", True, {"done_reason": "blocked"})
             return
 
@@ -3968,7 +5315,21 @@ class PipelineOrchestrator:
         elif response_mode_stream != "deep":
             log_info("[Orchestrator] LoopEngine SKIP — response_mode!=deep")
 
-        # WORKSPACE: Save control layer decision if not skipped
+        # WORKSPACE: persist central control decision + optional detail payload.
+        _control_summary = self._build_control_workspace_summary(
+            verification,
+            skipped=skip_control,
+            skip_reason=_skip_reason_stream,
+        )
+        ws_ctrl = self._save_workspace_entry(
+            conversation_id,
+            _control_summary,
+            "control_decision",
+            "control",
+        )
+        if ws_ctrl:
+            yield ("", False, ws_ctrl)
+
         if not skip_control:
             corrections = verification.get("corrections", {})
             warnings = verification.get("warnings", [])
@@ -3988,17 +5349,47 @@ class PipelineOrchestrator:
         if verified_plan.get("_pending_intent"):
             pending = verified_plan["_pending_intent"]
             yield (f"🛠️ Möchtest du den Skill **{pending.get('skill_name')}** erstellen? (Ja/Nein)", False, {"type": "content"})
-            yield ("", True, {"type": "confirmation_pending", "intent_id": pending.get("id")})
+            ws_done = self._save_workspace_entry(
+                conversation_id,
+                self._build_done_workspace_summary("confirmation_pending"),
+                "chat_done",
+                "orchestrator",
+            )
+            if ws_done:
+                yield ("", False, ws_done)
+            yield (
+                "",
+                True,
+                {
+                    "type": "confirmation_pending",
+                    "intent_id": pending.get("id"),
+                    "done_reason": "confirmation_pending",
+                },
+            )
             return
         
         if verification.get("approved") == False:
-            yield (verification.get("message", "Nicht genehmigt"), True, {"type": "error"})
+            # Keep message visible to user before terminal done event.
+            yield (verification.get("message", "Nicht genehmigt"), False, {"type": "content"})
+            ws_done = self._save_workspace_entry(
+                conversation_id,
+                self._build_done_workspace_summary("error"),
+                "chat_done",
+                "orchestrator",
+            )
+            if ws_done:
+                yield ("", False, ws_done)
+            yield ("", True, {"type": "error", "done_reason": "error"})
             return
         
         # ═══════════════════════════════════════════════════
         # STEP 2.5: TOOL EXECUTION
         # ═══════════════════════════════════════════════════
         tool_context = ""
+        grounding_evidence_stream: List[Dict[str, Any]] = []
+        successful_tool_runs_stream: List[Dict[str, Any]] = []
+        if isinstance(verified_plan.get("_grounding_evidence"), list):
+            grounding_evidence_stream.extend(verified_plan.get("_grounding_evidence") or [])
 
         suggested_tools = self._resolve_execution_suggested_tools(
             user_text,
@@ -4006,6 +5397,8 @@ class PipelineOrchestrator:
             _control_tool_decisions,
             stream=True,
             enable_skill_trigger_router=True,
+            conversation_id=conversation_id,
+            chat_history=request.messages,
         )
 
         if suggested_tools:
@@ -4041,7 +5434,7 @@ class PipelineOrchestrator:
                     tool_name = tool_spec
                     # ControlLayer entscheidet Args (Function Calling) — Fallback: heuristic
                     # IMPORTANT: {} is falsy → same logic as sync path (_cd.get() or _build_tool_args)
-                    tool_args = _control_tool_decisions.get(tool_name) or self._build_tool_args(tool_name, user_text)
+                    tool_args = _control_tool_decisions.get(tool_name) or self._build_tool_args(tool_name, user_text, verified_plan=verified_plan)
                     if tool_name in _control_tool_decisions and _control_tool_decisions[tool_name]:
                         log_debug(f"[Orchestrator] Using ControlLayer args for {tool_name}")
                     # autonomous_skill_task: Intent aus ThinkingLayer injizieren
@@ -4082,6 +5475,11 @@ class PipelineOrchestrator:
                             "success": False,
                             "error": _skill_reason,
                             "skipped": True,
+                        })
+                        grounding_evidence_stream.append({
+                            "tool_name": tool_name,
+                            "status": "error",
+                            "reason": _skill_reason,
                         })
                         continue
 
@@ -4152,6 +5550,11 @@ class PipelineOrchestrator:
                             "error": _arg_reason,
                             "skipped": True,
                         })
+                        grounding_evidence_stream.append({
+                            "tool_name": tool_name,
+                            "status": "skip",
+                            "reason": _arg_reason,
+                        })
                         continue
 
                     # ── Fast Lane: home_read/write/list nativ ausführen ──
@@ -4166,6 +5569,19 @@ class PipelineOrchestrator:
                                 tool_name, formatted.strip(), _fl_status, conversation_id
                             )
                             tool_context += _card
+                            grounding_evidence_stream.append(
+                                self._build_grounding_evidence_entry(
+                                    tool_name=tool_name,
+                                    raw_result=formatted.strip(),
+                                    status=_fl_status,
+                                    ref_id=_ref,
+                                )
+                            )
+                            if success:
+                                successful_tool_runs_stream.append({
+                                    "tool_name": str(tool_name),
+                                    "args": self._sanitize_tool_args_for_state(tool_args),
+                                })
                             yield ("", False, {"type": "tool_result", "tool": tool_name, "success": success, "execution_mode": "fast_lane"})
                             # HOME AUTO-EXPAND: home_list → auto-read files (same as MCP path)
                             if tool_name == "home_list" and success and hasattr(fl_result, 'content') and isinstance(fl_result.content, list):
@@ -4234,10 +5650,18 @@ class PipelineOrchestrator:
                                     yield ("", False, ws_ev)
                                 tool_context += f"\n### VERIFY-FEHLER ({tool_name}): Container {cid[:12]} ist nicht mehr aktiv.\n"
                                 yield ("", False, {"type": "tool_result", "tool": tool_name, "success": False, "error": "container_not_running"})
+                                grounding_evidence_stream.append({
+                                    "tool_name": tool_name,
+                                    "status": "error",
+                                    "reason": "container_not_running",
+                                })
                                 continue
 
                     log_info(f"[Orchestrator] Calling tool: {tool_name}({tool_args})")
-                    result = tool_hub.call_tool(tool_name, tool_args)
+                    if hasattr(tool_hub, "call_tool_async"):
+                        result = await tool_hub.call_tool_async(tool_name, tool_args)
+                    else:
+                        result = await asyncio.to_thread(tool_hub.call_tool, tool_name, tool_args)
 
                     # ── Clarification Intercept (autonomous_skill_task) ──
                     # Wenn Skill-Erstellung eine Frage stellt — NICHT als TOOL-FEHLER behandeln
@@ -4310,6 +5734,18 @@ class PipelineOrchestrator:
                             tool_name, retry_info, "ok", conversation_id
                         )
                         tool_context += _card
+                        grounding_evidence_stream.append(
+                            self._build_grounding_evidence_entry(
+                                tool_name=tool_name,
+                                raw_result=retry_info,
+                                status="ok",
+                                ref_id=_ref,
+                            )
+                        )
+                        successful_tool_runs_stream.append({
+                            "tool_name": str(tool_name),
+                            "args": self._sanitize_tool_args_for_state(tool_args),
+                        })
                         yield ("", False, {
                             "type": "tool_result",
                             "tool": tool_name,
@@ -4365,6 +5801,14 @@ class PipelineOrchestrator:
                         )
                         tool_context += f"\n### TOOL-FEHLER ({tool_name}):\n"
                         tool_context += _card
+                        grounding_evidence_stream.append(
+                            self._build_grounding_evidence_entry(
+                                tool_name=tool_name,
+                                raw_result=_err_detail,
+                                status="error",
+                                ref_id=_ref,
+                            )
+                        )
                         yield ("", False, {
                             "type": "tool_result",
                             "tool": tool_name,
@@ -4379,6 +5823,18 @@ class PipelineOrchestrator:
                             tool_name, result_str, "ok", conversation_id
                         )
                         tool_context += _card
+                        grounding_evidence_stream.append(
+                            self._build_grounding_evidence_entry(
+                                tool_name=tool_name,
+                                raw_result=result_str,
+                                status="ok",
+                                ref_id=_ref,
+                            )
+                        )
+                        successful_tool_runs_stream.append({
+                            "tool_name": str(tool_name),
+                            "args": self._sanitize_tool_args_for_state(tool_args),
+                        })
                         log_info(f"[Orchestrator] Tool {tool_name} OK: {len(result_str)} chars ref={_ref}")
                         yield ("", False, {"type": "tool_result", "tool": tool_name, "success": True})
 
@@ -4446,6 +5902,11 @@ class PipelineOrchestrator:
                     log_error(f"[Orchestrator] Tool {tool_name} failed: {e}")
                     tool_context += f"\n### TOOL-FEHLER ({tool_name}): {str(e)}\n"
                     yield ("", False, {"type": "tool_result", "tool": tool_name, "success": False, "error": str(e)})
+                    grounding_evidence_stream.append({
+                        "tool_name": tool_name,
+                        "status": "error",
+                        "reason": str(e),
+                    })
 
         # ═══════════════════════════════════════════════════
         # STEP 2.5: REFLECTION LOOP (Round 2, max 1x)
@@ -4478,7 +5939,10 @@ class PipelineOrchestrator:
                     alt_args = step["args"]
                     try:
                         log_info(f"[ReflectionLoop] Versuche: {alt_tool}({alt_args}) | {step['reason']}")
-                        alt_result = tool_hub.call_tool(alt_tool, alt_args)
+                        if hasattr(tool_hub, "call_tool_async"):
+                            alt_result = await tool_hub.call_tool_async(alt_tool, alt_args)
+                        else:
+                            alt_result = await asyncio.to_thread(tool_hub.call_tool, alt_tool, alt_args)
                         alt_str = json.dumps(alt_result, ensure_ascii=False, default=str) if isinstance(alt_result, (dict, list)) else str(alt_result)
                         # Extract content if ToolResult
                         if hasattr(alt_result, 'content') and alt_result.content is not None:
@@ -4503,6 +5967,8 @@ class PipelineOrchestrator:
                 full_context, tool_context, "tool_ctx", ctx_trace_stream
             )
             verified_plan["_tool_results"] = tool_context
+            verified_plan["_grounding_evidence"] = grounding_evidence_stream
+            verified_plan["_successful_tool_runs"] = successful_tool_runs_stream
             if _smm_stream:
                 log_info(
                     f"[CTX] total context after tool_context: {len(full_context)} chars "
@@ -4527,6 +5993,40 @@ class PipelineOrchestrator:
             )
             if ws_event:
                 yield ("", False, ws_event)
+        else:
+            verified_plan["_grounding_evidence"] = grounding_evidence_stream
+            verified_plan["_successful_tool_runs"] = successful_tool_runs_stream
+
+        self._inject_carryover_grounding_evidence(
+            conversation_id,
+            verified_plan,
+            history_len=len(request.messages),
+        )
+        _recovery_ctx_stream = await self._maybe_auto_recover_grounding_once(
+            conversation_id=conversation_id,
+            user_text=user_text,
+            verified_plan=verified_plan,
+            thinking_plan=thinking_plan,
+            history_len=len(request.messages),
+            session_id=conversation_id or "",
+        )
+        if _recovery_ctx_stream:
+            full_context = self._append_context_block(
+                full_context, _recovery_ctx_stream, "tool_ctx_recovery", ctx_trace_stream
+            )
+            existing_tool_results_stream = str(verified_plan.get("_tool_results", "") or "")
+            verified_plan["_tool_results"] = f"{existing_tool_results_stream}{_recovery_ctx_stream}"
+            yield ("", False, {
+                "type": "tool_result",
+                "tool": "grounding_auto_recovery",
+                "success": True,
+            })
+
+        self._remember_conversation_grounding_state(
+            conversation_id,
+            verified_plan,
+            history_len=len(request.messages),
+        )
 
         # ═══════════════════════════════════════════════════
         # STEP 3: OUTPUT LAYER (STREAMING)
@@ -4536,6 +6036,8 @@ class PipelineOrchestrator:
 
         full_response = ""
         first_chunk = True
+        resolved_output_model_stream, model_resolution_stream = self._resolve_runtime_output_model(request.model)
+        verified_plan["_output_model_resolution"] = model_resolution_stream
 
         # Tool-Confidence Override: LoopEngine überspringen wenn Tools bereits Daten geliefert haben
         if use_loop_engine and verified_plan.get("_tool_confidence") == "high":
@@ -4581,7 +6083,7 @@ class PipelineOrchestrator:
                 "complexity": _loop_complexity,
                 "sequential": _loop_sequential,
             })
-            loop_engine = LoopEngine(model=request.model or None)
+            loop_engine = LoopEngine(model=resolved_output_model_stream or None)
             _loop_output_char_cap = int(get_loop_engine_output_char_cap())
             _loop_max_predict = int(get_loop_engine_max_predict())
             log_info(
@@ -4621,7 +6123,7 @@ class PipelineOrchestrator:
                 user_text=user_text,
                 verified_plan=verified_plan,
                 memory_data=full_context,
-                model=request.model
+                model=resolved_output_model_stream
             ):
                 if first_chunk:
                     log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: FIRST OUTPUT CHUNK")
@@ -4646,8 +6148,30 @@ class PipelineOrchestrator:
         # [NEW] Lifecycle Finish
         self.lifecycle.finish_task(req_id_str, {"status": "done", "duration": time.time()-_t0})
         self._post_task_processing()
-        
-        yield ("", True, {"type": "done", "done_reason": "stop", "memory_used": memory_used, "model": request.model})
+        ws_done = self._save_workspace_entry(
+            conversation_id,
+            self._build_done_workspace_summary(
+                "stop",
+                response_mode=response_mode_stream,
+                model=resolved_output_model_stream,
+                memory_used=memory_used,
+            ),
+            "chat_done",
+            "orchestrator",
+        )
+        if ws_done:
+            yield ("", False, ws_done)
+
+        yield (
+            "",
+            True,
+            {
+                "type": "done",
+                "done_reason": "stop",
+                "memory_used": memory_used,
+                "model": resolved_output_model_stream,
+            },
+        )
         log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: COMPLETE")
 
 
@@ -4681,12 +6205,20 @@ class PipelineOrchestrator:
         })
 
         try:
-            preprocess_result = hub.call_tool("preprocess", {
-                "text": user_text,
-                "add_paragraph_ids": True,
-                "normalize_whitespace": True,
-                "remove_artifacts": True
-            })
+            if hasattr(hub, "call_tool_async"):
+                preprocess_result = await hub.call_tool_async("preprocess", {
+                    "text": user_text,
+                    "add_paragraph_ids": True,
+                    "normalize_whitespace": True,
+                    "remove_artifacts": True
+                })
+            else:
+                preprocess_result = await asyncio.to_thread(hub.call_tool, "preprocess", {
+                    "text": user_text,
+                    "add_paragraph_ids": True,
+                    "normalize_whitespace": True,
+                    "remove_artifacts": True
+                })
             processed_text = preprocess_result.get("text", user_text)
             log_info(f"[Orchestrator-Chunking] Preprocessed: {len(processed_text)} chars")
         except Exception as e:
@@ -4700,9 +6232,14 @@ class PipelineOrchestrator:
         })
 
         try:
-            structure = hub.call_tool("analyze_structure", {
-                "text": processed_text
-            })
+            if hasattr(hub, "call_tool_async"):
+                structure = await hub.call_tool_async("analyze_structure", {
+                    "text": processed_text
+                })
+            else:
+                structure = await asyncio.to_thread(hub.call_tool, "analyze_structure", {
+                    "text": processed_text
+                })
 
             log_info(f"[Orchestrator-Chunking] Structure: {structure.get('heading_count', 0)} Headings, "
                     f"{structure.get('code_blocks', 0)} Code-Bloecke, "
@@ -4811,7 +6348,8 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
         user_text: str,
         thinking_plan: Dict,
         memory_data: str,
-        conversation_id: str
+        conversation_id: str,
+        response_mode: str = "interactive",
     ) -> Tuple[Dict, Dict]:
         """Execute Control Layer (Step 2)."""
         
@@ -4858,7 +6396,8 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
             verification = await self.control.verify(
                 user_text,
                 thinking_plan,
-                memory_data
+                memory_data,
+                response_mode=response_mode,
             )
             log_info(f"[Orchestrator-Control] approved={verification.get('approved')}")
             log_info(f"[Orchestrator-Control] warnings={verification.get('warnings', [])}")
@@ -4884,7 +6423,23 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
                 
                 verified_plan["_pending_intent"] = intent.to_dict()
                 log_info(f"[Orchestrator] Intent {intent.id[:8]} added to verified_plan")
-        
+
+        # B4: Auto-create bypass — überspringt User-Bestätigung bei low-risk + kein Package-Install
+        from config import get_skill_auto_create_on_low_risk
+        if (
+            verified_plan.get("_pending_intent")
+            and get_skill_auto_create_on_low_risk()
+            and (thinking_plan or {}).get("hallucination_risk") == "low"
+            and not verified_plan["_pending_intent"].get("needs_package_install", False)
+        ):
+            _bypassed_skill = verified_plan["_pending_intent"].get("skill_name", "?")
+            del verified_plan["_pending_intent"]
+            verified_plan["_auto_create_bypass"] = True
+            log_info(
+                f"[Orchestrator] Auto-create bypass: skill={_bypassed_skill} "
+                f"(low_risk, no_packages, SKILL_AUTO_CREATE_ON_LOW_RISK=true)"
+            )
+
         return verification, verified_plan
     
     async def _execute_output_layer(
@@ -4943,14 +6498,52 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
         # Autosave assistant response
         # Guard against self-reinforcement of low-quality outputs after failed/skipped tool phases.
         tool_ctx = str(verified_plan.get("_tool_results", "") or "")
+        grounding_policy = load_grounding_policy()
+        output_grounding = (grounding_policy or {}).get("output") or {}
+        memory_grounding = (grounding_policy or {}).get("memory") or {}
+        allowed_statuses = output_grounding.get("allowed_evidence_statuses", ["ok"])
+        min_successful_evidence = int(output_grounding.get("min_successful_evidence", 1) or 1)
+        successful_evidence = self._count_successful_grounding_evidence(
+            verified_plan, allowed_statuses=allowed_statuses
+        )
+        is_fact_query = bool(verified_plan.get("is_fact_query", False))
+        has_tool_usage = bool(tool_ctx.strip())
+        has_tool_suggestions = bool(self._extract_suggested_tool_names(verified_plan))
+        require_evidence_for_autosave = bool(
+            memory_grounding.get("autosave_requires_evidence_for_fact_query", True)
+            and is_fact_query
+            and (
+                (
+                    bool(output_grounding.get("enforce_evidence_for_fact_query", True))
+                    and (has_tool_usage or has_tool_suggestions)
+                )
+                or (bool(output_grounding.get("enforce_evidence_when_tools_used", True)) and has_tool_usage)
+                or (
+                    bool(output_grounding.get("enforce_evidence_when_tools_suggested", True))
+                    and has_tool_suggestions
+                )
+            )
+        )
         skip_autosave = False
         skip_reason = ""
         if verified_plan.get("_pending_intent"):
             skip_autosave = True
             skip_reason = "pending_intent_confirmation"
-        elif verified_plan.get("_tool_failure") or self._tool_context_has_failures_or_skips(tool_ctx):
+        elif (
+            (verified_plan.get("_tool_failure") or self._tool_context_has_failures_or_skips(tool_ctx))
+            and not (answer or "").strip()
+        ):
             skip_autosave = True
-            skip_reason = "tool_failure_or_skip"
+            skip_reason = "tool_failure_with_empty_answer"
+        elif verified_plan.get("_grounding_missing_evidence"):
+            skip_autosave = True
+            skip_reason = "grounding_missing_evidence"
+        elif verified_plan.get("_grounding_violation_detected"):
+            skip_autosave = True
+            skip_reason = "grounding_violation_detected"
+        elif require_evidence_for_autosave and successful_evidence < min_successful_evidence:
+            skip_autosave = True
+            skip_reason = "insufficient_grounding_evidence"
 
         if skip_autosave:
             log_warn(f"[Orchestrator-Autosave] Skipped assistant autosave ({skip_reason})")

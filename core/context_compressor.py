@@ -21,7 +21,7 @@ import asyncio
 import httpx
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 from utils.logger import log_info, log_warn, log_error, log_debug
 
 
@@ -38,6 +38,7 @@ KEEP_MESSAGES      = int(os.getenv("COMPRESSION_KEEP_MESSAGES",   "20"))
 DAILY_SUMMARY_HOUR = int(os.getenv("DAILY_SUMMARY_HOUR",          "4"))
 
 ROLLING_SUMMARY_FILE = PROTOCOL_DIR / "rolling_summary.md"
+NIGHTLY_MAX_MESSAGES = int(os.getenv("DAILY_SUMMARY_MAX_MESSAGES", "220"))
 
 
 # ─── Token Estimate ───────────────────────────────────────────────────────────
@@ -168,6 +169,245 @@ KONVERSATION:
 ZUSAMMENFASSUNG:"""
 
     return await _llm_call(prompt, max_tokens=400)
+
+
+def _summary_empty_payload() -> Dict[str, List[str]]:
+    return {
+        "verified_facts": [],
+        "decisions": [],
+        "open_tasks": [],
+        "important_context": [],
+        "uncertain_claims": [],
+    }
+
+
+def _assistant_text_has_evidence(text: str) -> bool:
+    raw = str(text or "")
+    lower = raw.lower()
+    markers = (
+        "run_skill",
+        "tool_result",
+        "\"success\": true",
+        "\"execution_time_ms\":",
+        "ich kann nur verifizierte fakten",
+        "nicht belegbare zusatzangaben",
+        "get_system_info",
+    )
+    return any(m in lower for m in markers)
+
+
+def _prepare_nightly_messages(messages: List[dict]) -> Dict[str, Any]:
+    """
+    Build stable nightly input:
+    - User messages are always included.
+    - Assistant messages are tagged as VERIFIED/UNVERIFIED.
+    """
+    prepared: List[Dict[str, str]] = []
+    evidence_parts: List[str] = []
+    evidence_count = 0
+    unverified_count = 0
+
+    for msg in list(messages or [])[:NIGHTLY_MAX_MESSAGES]:
+        role = str(msg.get("role", "")).strip()
+        text = str(msg.get("text", "")).strip()
+        time_str = str(msg.get("time", "")).strip()
+        if not text:
+            continue
+
+        role_lower = role.lower()
+        is_user = role_lower in {"user", "nutzer"}
+        is_assistant = role_lower in {"trion", "jarvis", "assistant"}
+        tagged_role = role
+
+        if is_user:
+            tagged_role = "USER"
+            evidence_parts.append(text)
+            evidence_count += 1
+        elif is_assistant:
+            if _assistant_text_has_evidence(text):
+                tagged_role = "TRION_VERIFIED"
+                evidence_parts.append(text)
+                evidence_count += 1
+            else:
+                tagged_role = "TRION_UNVERIFIED"
+                unverified_count += 1
+
+        prepared.append(
+            {
+                "time": time_str,
+                "role": tagged_role,
+                "text": text[:700],
+            }
+        )
+
+    return {
+        "messages": prepared,
+        "evidence_blob": "\n".join(evidence_parts),
+        "evidence_count": evidence_count,
+        "unverified_count": unverified_count,
+    }
+
+
+def _extract_json_object(raw: str) -> Dict[str, Any]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+    try:
+        return json.loads(text[start : end + 1])
+    except Exception:
+        return {}
+
+
+def _normalize_summary_payload(obj: Dict[str, Any]) -> Dict[str, List[str]]:
+    out = _summary_empty_payload()
+    source = obj if isinstance(obj, dict) else {}
+    for key in out.keys():
+        raw = source.get(key, [])
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            raw = []
+        cleaned: List[str] = []
+        for item in raw:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            cleaned.append(text[:220])
+        # de-duplicate while preserving order
+        deduped = list(dict.fromkeys(cleaned))
+        out[key] = deduped[:8]
+    return out
+
+
+def _extract_numeric_tokens(text: str) -> List[str]:
+    return re.findall(r"\d+(?:[.,]\d+)?", str(text or ""))
+
+
+def _normalize_numeric_token(token: str) -> str:
+    raw = str(token or "").strip().replace(",", ".")
+    if not raw:
+        return ""
+    try:
+        value = float(raw)
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.6f}".rstrip("0").rstrip(".")
+    except Exception:
+        return raw
+
+
+def _line_supported_by_evidence(line: str, evidence_blob: str) -> bool:
+    evidence_tokens = set(
+        tok
+        for tok in re.findall(r"[a-zA-Z0-9äöüÄÖÜß_-]{4,}", str(evidence_blob or "").lower())
+    )
+    line_tokens = [
+        tok for tok in re.findall(r"[a-zA-Z0-9äöüÄÖÜß_-]{4,}", str(line or "").lower())
+    ]
+    if not line_tokens:
+        return True
+    overlap = sum(1 for tok in set(line_tokens) if tok in evidence_tokens)
+    return overlap >= min(2, len(set(line_tokens)))
+
+
+def _validate_summary_payload(payload: Dict[str, List[str]], evidence_blob: str) -> Dict[str, Any]:
+    evidence_nums = {
+        _normalize_numeric_token(tok)
+        for tok in _extract_numeric_tokens(evidence_blob)
+        if _normalize_numeric_token(tok)
+    }
+    candidate_lines = (
+        list(payload.get("verified_facts", []))
+        + list(payload.get("decisions", []))
+        + list(payload.get("important_context", []))
+    )
+    candidate_nums = []
+    for line in candidate_lines:
+        for tok in _extract_numeric_tokens(line):
+            norm = _normalize_numeric_token(tok)
+            if norm:
+                candidate_nums.append(norm)
+    unknown_nums = sorted({num for num in candidate_nums if num not in evidence_nums})
+
+    unsupported_lines = [
+        line for line in payload.get("verified_facts", []) if not _line_supported_by_evidence(line, evidence_blob)
+    ]
+    if unknown_nums:
+        return {"ok": False, "reason": "unknown_numeric_claims", "unknown_numbers": unknown_nums}
+    if unsupported_lines:
+        return {"ok": False, "reason": "unsupported_verified_facts", "unsupported_lines": unsupported_lines[:3]}
+    return {"ok": True, "reason": "ok"}
+
+
+def _build_fallback_payload(prepared_messages: List[Dict[str, str]]) -> Dict[str, List[str]]:
+    payload = _summary_empty_payload()
+
+    for msg in prepared_messages:
+        role = str(msg.get("role", "")).strip()
+        text = str(msg.get("text", "")).strip()
+        if not text:
+            continue
+        if role == "TRION_VERIFIED" and len(payload["verified_facts"]) < 6:
+            payload["verified_facts"].append(text[:180])
+        elif role == "TRION_UNVERIFIED" and len(payload["uncertain_claims"]) < 4:
+            payload["uncertain_claims"].append(text[:180])
+        elif role == "USER":
+            lower = text.lower()
+            if any(k in lower for k in ("später", "morgen", "todo", "erinn", "merke", "noch")):
+                if len(payload["open_tasks"]) < 6:
+                    payload["open_tasks"].append(text[:180])
+            elif len(payload["important_context"]) < 4:
+                payload["important_context"].append(text[:180])
+
+    if not payload["verified_facts"]:
+        payload["verified_facts"].append("Keine klar verifizierten Tool-Fakten im Zeitraum erkannt.")
+    return _normalize_summary_payload(payload)
+
+
+def _render_summary_markdown(day: str, payload: Dict[str, List[str]]) -> str:
+    def _section(title: str, items: List[str]) -> str:
+        if not items:
+            return f"**{title}**\n- (leer)"
+        lines = "\n".join(f"- {item}" for item in items)
+        return f"**{title}**\n{lines}"
+
+    blocks = [
+        f"## {day}",
+        _section("Verified Facts", payload.get("verified_facts", [])),
+        _section("Open Tasks", payload.get("open_tasks", [])),
+        _section("Decisions", payload.get("decisions", [])),
+        _section("Important Context", payload.get("important_context", [])),
+        _section("Uncertain Claims", payload.get("uncertain_claims", [])),
+    ]
+    return "\n\n".join(blocks)
+
+
+async def _summarize_structured(messages: List[Dict[str, str]]) -> Dict[str, List[str]]:
+    if not messages:
+        return _summary_empty_payload()
+    conversation_text = "\n".join(
+        f"[{m.get('time', '--:--')} {m.get('role', 'UNKNOWN')}]: {str(m.get('text', '')).strip()[:500]}"
+        for m in messages
+    )
+    prompt = f"""Erstelle eine strikte JSON-Zusammenfassung aus dem Verlauf.
+Regeln:
+- Nutze USER und TRION_VERIFIED als primäre Evidenz.
+- TRION_UNVERIFIED darf nur unter uncertain_claims landen.
+- Keine neuen Zahlen/Details erfinden.
+- Jede Liste max. 8 kurze Einträge.
+- Antworte NUR als JSON-Objekt mit diesen Keys:
+  verified_facts, decisions, open_tasks, important_context, uncertain_claims
+
+VERLAUF:
+{conversation_text}
+"""
+    raw = await _llm_call(prompt, max_tokens=520)
+    obj = _extract_json_object(raw)
+    return _normalize_summary_payload(obj)
 
 
 async def _extract_facts(summary_text: str) -> List[str]:
@@ -378,18 +618,46 @@ async def summarize_yesterday(force: bool = False) -> bool:
 
     log_info(f"[ContextCompressor] Daily summary: summarizing {len(messages)} messages from {yesterday}")
 
-    summary = await _summarize(messages)
-    if not summary:
+    prepared = _prepare_nightly_messages(messages)
+    if not prepared["messages"]:
+        log_warn("[ContextCompressor] Daily summary: no prepared messages after filtering")
+        return False
+
+    summary_payload = await _summarize_structured(prepared["messages"])
+    validation = _validate_summary_payload(summary_payload, prepared["evidence_blob"])
+    fallback_used = False
+
+    if not validation.get("ok", False):
+        log_warn(
+            "[ContextCompressor] Daily summary validation failed: "
+            f"{validation.get('reason')}; switching to deterministic fallback"
+        )
+        summary_payload = _build_fallback_payload(prepared["messages"])
+        fallback_used = True
+
+    summary_md = _render_summary_markdown(yesterday, summary_payload)
+    if not summary_md.strip():
         log_warn("[ContextCompressor] Daily summary: summarization failed")
         return False
 
     # In rolling_summary.md schreiben
     existing = ROLLING_SUMMARY_FILE.read_text(encoding="utf-8") if ROLLING_SUMMARY_FILE.exists() else ""
-    new_block = f"\n\n## {yesterday}\n{summary}"
+    new_block = f"\n\n{summary_md}"
     ROLLING_SUMMARY_FILE.write_text((existing + new_block).strip(), encoding="utf-8")
 
     # Status speichern
-    status_file.write_text(json.dumps({"last_run": today_str, "summarized_date": yesterday}))
+    status_payload = {
+        "last_run": today_str,
+        "summarized_date": yesterday,
+        "message_count": len(messages),
+        "prepared_message_count": len(prepared["messages"]),
+        "evidence_message_count": int(prepared.get("evidence_count", 0)),
+        "unverified_message_count": int(prepared.get("unverified_count", 0)),
+        "validation_passed": bool(validation.get("ok", False)),
+        "validation_reason": str(validation.get("reason", "ok")),
+        "fallback_used": bool(fallback_used),
+    }
+    status_file.write_text(json.dumps(status_payload))
 
     log_info(f"[ContextCompressor] Daily summary for {yesterday} done → rolling_summary.md")
     return True

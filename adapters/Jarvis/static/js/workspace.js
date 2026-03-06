@@ -12,6 +12,7 @@
     const TAB_TITLE = "Workspace";
     let initialized = false;
     let entries = []; // local cache
+    let lastPlanningReplayKey = null;
 
     function tryParseJson(value) {
         if (typeof value !== "string") return value;
@@ -83,6 +84,37 @@
             created_at: raw.created_at || raw.timestamp || new Date().toISOString(),
             _source: "event",
         };
+    }
+
+    function replayPlanningWorkspaceEvents(conversationId, allEntries) {
+        const replayKey = conversationId || "__global__";
+        if (lastPlanningReplayKey === replayKey) return;
+        lastPlanningReplayKey = replayKey;
+
+        if (!Array.isArray(allEntries) || allEntries.length === 0) return;
+        const planningEvents = allEntries
+            .filter(item =>
+                item &&
+                item._source === "event" &&
+                typeof item.entry_type === "string" &&
+                /^planning_(start|step|done|error)$/.test(item.entry_type)
+            )
+            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+        planningEvents.forEach((entry) => {
+            const payload = {
+                type: "workspace_update",
+                source: "event",
+                entry_id: entry.id,
+                content: entry.content || "",
+                entry_type: entry.entry_type,
+                source_layer: entry.source_layer || "sequential",
+                conversation_id: entry.conversation_id || conversationId || "",
+                timestamp: entry.created_at || new Date().toISOString(),
+                replay: true,
+            };
+            window.dispatchEvent(new CustomEvent("sse-event", { detail: payload }));
+        });
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -388,6 +420,7 @@
         const convId = window.currentConversationId || null;
         console.log("[Workspace] Loading entries...", convId ? `conv=${convId}` : 'global');
         entries = await fetchEntries(convId);
+        replayPlanningWorkspaceEvents(convId, entries);
         console.log(`[Workspace] Fetched ${entries.length} entries`);
 
         const list = container.querySelector(".ws-entries");

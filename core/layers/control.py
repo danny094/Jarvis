@@ -12,6 +12,10 @@ from typing import Dict, Any, Optional, AsyncGenerator, List
 from config import (
     OLLAMA_BASE,
     get_control_model,
+    get_control_model_deep,
+    get_control_timeout_interactive_s,
+    get_control_timeout_deep_s,
+    get_control_endpoint_override,
     get_thinking_model,
     get_control_prompt_memory_chars,
     get_control_prompt_plan_chars,
@@ -20,7 +24,7 @@ from config import (
 )
 from utils.logger import log_info, log_error, log_debug, log_warning
 from utils.json_parser import safe_parse_json
-from utils.role_endpoint_resolver import resolve_role_endpoint
+from utils.role_endpoint_resolver import resolve_role_endpoint, resolve_ollama_base_endpoint
 from core.safety import LightCIM
 from core.sequential_registry import get_registry
 
@@ -47,7 +51,12 @@ JSON-Format:
         "memory_keys": null oder ["korrigierte", "keys"],
         "hallucination_risk": null oder "low/medium/high",
         "new_fact_key": null oder "korrigierter_key",
-        "new_fact_value": null oder "korrigierter_value"
+        "new_fact_value": null oder "korrigierter_value",
+        "suggested_response_style": null oder "kurz/ausführlich/freundlich",
+        "dialogue_act": null oder "ack/feedback/question/request/analysis/smalltalk",
+        "response_tone": null oder "mirror_user/warm/neutral/formal",
+        "response_length_hint": null oder "short/medium/long",
+        "tone_confidence": null oder 0.0
     },
     "warnings": ["Liste von Warnungen falls vorhanden"],
     "final_instruction": "Klare Anweisung für den Output-Layer"
@@ -78,8 +87,31 @@ class ControlLayer:
         self.mcp_hub = None
         self.registry = get_registry()
 
-    def _resolve_model(self) -> str:
-        return self._model_override or get_control_model()
+    def _resolve_model(self, response_mode: str = "interactive") -> str:
+        if self._model_override:
+            return self._model_override
+        mode = str(response_mode or "").strip().lower()
+        if mode == "deep":
+            return get_control_model_deep()
+        return get_control_model()
+
+    @staticmethod
+    def _normalize_response_mode(response_mode: str) -> str:
+        return "deep" if str(response_mode or "").strip().lower() == "deep" else "interactive"
+
+    def _resolve_verify_timeout_s(self, response_mode: str = "interactive") -> float:
+        mode = self._normalize_response_mode(response_mode)
+        if mode == "deep":
+            timeout_s = float(get_control_timeout_deep_s())
+        else:
+            timeout_s = float(get_control_timeout_interactive_s())
+        return max(5.0, min(600.0, timeout_s))
+
+    def _resolve_control_endpoint_override(self, response_mode: str = "interactive") -> str:
+        override = str(get_control_endpoint_override(response_mode=response_mode) or "").strip()
+        if not override:
+            return ""
+        return resolve_ollama_base_endpoint(default_endpoint=override)
 
     def _resolve_sequential_model(self) -> str:
         return get_thinking_model()
@@ -144,6 +176,11 @@ class ControlLayer:
             "is_fact_query": bool((thinking_plan or {}).get("is_fact_query")),
             "memory_keys": self._memory_keys((thinking_plan or {}).get("memory_keys", [])),
             "suggested_tools": self._tool_names((thinking_plan or {}).get("suggested_tools", [])),
+            "suggested_response_style": (thinking_plan or {}).get("suggested_response_style"),
+            "dialogue_act": (thinking_plan or {}).get("dialogue_act"),
+            "response_tone": (thinking_plan or {}).get("response_tone"),
+            "response_length_hint": (thinking_plan or {}).get("response_length_hint"),
+            "tone_confidence": (thinking_plan or {}).get("tone_confidence"),
             "time_reference": (thinking_plan or {}).get("time_reference"),
             "needs_sequential_thinking": bool(
                 (thinking_plan or {}).get("needs_sequential_thinking")
@@ -151,6 +188,9 @@ class ControlLayer:
             ),
             "sequential_complexity": (thinking_plan or {}).get("sequential_complexity", 0),
         }
+        plan_payload["tool_availability"] = self._tool_availability_snapshot(
+            plan_payload.get("suggested_tools", [])
+        )
         if (thinking_plan or {}).get("_skill_gate_blocked"):
             plan_payload["skill_gate_blocked"] = True
             plan_payload["skill_gate_reason"] = (thinking_plan or {}).get("_skill_gate_reason", "")
@@ -167,6 +207,7 @@ class ControlLayer:
                 "needs_memory": plan_payload["needs_memory"],
                 "memory_keys": plan_payload["memory_keys"][:2],
                 "suggested_tools": plan_payload["suggested_tools"][:4],
+                "tool_availability": plan_payload.get("tool_availability", {}),
             }
             plan_json = self._clip_text(json.dumps(plan_payload, ensure_ascii=False), plan_limit)
         else:
@@ -179,24 +220,137 @@ class ControlLayer:
             "thinking_plan_compact": plan_json,
             "memory_excerpt": memory_excerpt,
         }
+
+    def _tool_availability_snapshot(self, suggested_tools: List[Any]) -> Dict[str, List[str]]:
+        names = self._tool_names(suggested_tools, limit=10)
+        available: List[str] = []
+        unavailable: List[str] = []
+        for name in names:
+            if self._is_tool_available(name):
+                available.append(name)
+            else:
+                unavailable.append(name)
+        return {"available": available, "unavailable": unavailable}
+
+    @staticmethod
+    def _looks_like_capability_mismatch(verification: Dict[str, Any]) -> bool:
+        reason = str((verification or {}).get("reason") or "")
+        final_instruction = str((verification or {}).get("final_instruction") or "")
+        warnings = (verification or {}).get("warnings") or []
+        warning_text = " ".join(str(w) for w in warnings)
+        text = f"{reason} {final_instruction} {warning_text}".lower()
+        markers = (
+            "nicht verfügbar",
+            "not available",
+            "kein tool",
+            "no tool",
+            "capabilities",
+            "zugriffsmöglichkeit",
+            "zugriffsmoeglichkeit",
+            "keine zugriff",
+        )
+        return any(marker in text for marker in markers)
+
+    def _stabilize_verification_result(
+        self,
+        verification: Dict[str, Any],
+        thinking_plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not isinstance(verification, dict):
+            return self._default_verification(thinking_plan)
+
+        # Keep explicit LightCIM denials untouched.
+        if verification.get("_light_cim"):
+            return verification
+
+        if verification.get("approved") is False:
+            suggested = self._tool_names((thinking_plan or {}).get("suggested_tools", []), limit=8)
+            if suggested:
+                unavailable = [name for name in suggested if not self._is_tool_available(name)]
+                if not unavailable and self._looks_like_capability_mismatch(verification):
+                    warnings = verification.get("warnings")
+                    if not isinstance(warnings, list):
+                        warnings = [str(warnings)] if warnings else []
+                    warnings.append(
+                        "Deterministic override: suggested tools are runtime-available; "
+                        "control capability mismatch block was lifted."
+                    )
+                    verification["warnings"] = warnings
+                    verification["approved"] = True
+                    verification["reason"] = "tool_availability_mismatch_auto_corrected"
+                    log_warning(
+                        "[ControlLayer] Auto-corrected false unavailable-tool block "
+                        f"for suggested_tools={suggested}"
+                    )
+        return verification
     
     def set_mcp_hub(self, hub):
         self.mcp_hub = hub
         log_info("[ControlLayer] MCP Hub connected")
-    
+
+    @staticmethod
+    def _extract_skill_names(result: Any) -> List[str]:
+        payload = result
+        if isinstance(payload, dict) and isinstance(payload.get("structuredContent"), dict):
+            payload = payload.get("structuredContent", {})
+
+        names: List[str] = []
+        if isinstance(payload, dict):
+            skill_rows: List[Any] = []
+            for key in ("skills", "installed", "active"):
+                value = payload.get(key, [])
+                if isinstance(value, list):
+                    skill_rows.extend(value)
+            for item in skill_rows:
+                if isinstance(item, dict):
+                    name = str(item.get("name", "")).strip()
+                else:
+                    name = str(item or "").strip()
+                if name:
+                    names.append(name)
+        elif isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    name = str(item.get("name", "")).strip()
+                else:
+                    name = str(item or "").strip()
+                if name:
+                    names.append(name)
+
+        # Deduplicate while preserving first-seen order.
+        seen = set()
+        deduped: List[str] = []
+        for name in names:
+            if name in seen:
+                continue
+            seen.add(name)
+            deduped.append(name)
+        return deduped
+
     def _get_available_skills(self) -> list:
-        """Holt Liste aller installierten Skills vom MCPHub."""
+        """Holt Liste aller installierten Skills vom MCPHub (sync path)."""
         if not self.mcp_hub:
             return []
         try:
             result = self.mcp_hub.call_tool("list_skills", {})
-            if isinstance(result, dict):
-                return [s.get("name", "") for s in result.get("skills", [])]
-            elif isinstance(result, list):
-                return [s.get("name", "") if isinstance(s, dict) else str(s) for s in result]
-            return []
+            return self._extract_skill_names(result)
         except Exception as e:
             log_debug(f"[ControlLayer] Could not fetch skills: {e}")
+            return []
+
+    async def _get_available_skills_async(self) -> list:
+        """Holt Liste aller installierten Skills vom MCPHub (async-safe path)."""
+        if not self.mcp_hub:
+            return []
+        try:
+            call_tool_async = getattr(self.mcp_hub, "call_tool_async", None)
+            if asyncio.iscoroutinefunction(call_tool_async):
+                result = await call_tool_async("list_skills", {})
+            else:
+                result = await asyncio.to_thread(self.mcp_hub.call_tool, "list_skills", {})
+            return self._extract_skill_names(result)
+        except Exception as e:
+            log_debug(f"[ControlLayer] Could not fetch skills (async): {e}")
             return []
 
     def _is_tool_available(self, tool_name: str) -> bool:
@@ -245,6 +399,20 @@ class ControlLayer:
                 f"for '{tool_name}' - fail-closed: {e}"
             )
             return False
+
+        # Installed skills are available — ThinkingLayer sometimes suggests the skill
+        # name directly instead of "run_skill". Treat any installed skill as available
+        # so it doesn't end up in tool_availability.unavailable and cause a false block.
+        try:
+            installed_skills = self._get_available_skills()
+            if tool_name in installed_skills:
+                log_info(
+                    f"[ControlLayer] '{tool_name}' resolved as installed skill → available"
+                )
+                return True
+        except Exception:
+            pass
+
         return False
 
     @staticmethod
@@ -470,7 +638,13 @@ class ControlLayer:
             log_info(f"[ControlLayer] decide_tools={names}")
         return decided
     
-    async def verify(self, user_text: str, thinking_plan: Dict[str, Any], retrieved_memory: str = "") -> Dict[str, Any]:
+    async def verify(
+        self,
+        user_text: str,
+        thinking_plan: Dict[str, Any],
+        retrieved_memory: str = "",
+        response_mode: str = "interactive",
+    ) -> Dict[str, Any]:
         sequential_result = thinking_plan.get("_sequential_result")
         # FIX: Removed - Bridge handles Sequential Thinking
         # if not sequential_result:
@@ -493,7 +667,7 @@ class ControlLayer:
             log_info(f"[ControlLayer-DEBUG] intent='{intent}', keyword_match={keyword_match}")
             if keyword_match:
                 try:
-                    available_skills = self._get_available_skills()
+                    available_skills = await self._get_available_skills_async()
                     log_info(f"[ControlLayer-DEBUG] available_skills={available_skills[:5] if available_skills else []}")
                     cim_decision = process_cim_policy(user_text, available_skills)
                     log_info(f"[ControlLayer-DEBUG] cim_decision.matched={cim_decision.matched}, requires_confirmation={cim_decision.requires_confirmation}")
@@ -574,6 +748,9 @@ class ControlLayer:
                         "final_instruction": "Request blocked", "_light_cim": cim_result}
         except Exception as e:
             log_error(f"[LightCIM] Error: {e}")
+        response_mode_norm = self._normalize_response_mode(response_mode)
+        verify_timeout_s = self._resolve_verify_timeout_s(response_mode_norm)
+        control_model = self._resolve_model(response_mode_norm)
         payload = self._build_control_prompt_payload(user_text, thinking_plan, retrieved_memory)
         prompt = f"""{CONTROL_PROMPT}
 
@@ -591,6 +768,7 @@ Deine Bewertung (nur JSON):"""
 
         try:
             route = resolve_role_endpoint("control", default_endpoint=self.ollama_base)
+            endpoint_source = "routing"
             log_info(
                 f"[Routing] role=control requested_target={route['requested_target']} "
                 f"effective_target={route['effective_target'] or 'none'} "
@@ -605,21 +783,39 @@ Deine Bewertung (nur JSON):"""
                 )
                 return self._default_verification(thinking_plan)
             endpoint = route["endpoint"] or self.ollama_base
+            endpoint_override = self._resolve_control_endpoint_override(response_mode_norm)
+            if endpoint_override:
+                endpoint = endpoint_override
+                endpoint_source = "control_override"
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            log_info(
+                "[ControlLayer] verify_runtime "
+                f"mode={response_mode_norm} model={control_model} "
+                f"timeout_s={verify_timeout_s:.1f} endpoint={endpoint} "
+                f"endpoint_source={endpoint_source}"
+            )
+
+            async with httpx.AsyncClient(timeout=verify_timeout_s) as client:
                 r = await client.post(f"{endpoint}/api/generate",
-                    json={"model": self._resolve_model(), "prompt": prompt, "stream": False,
+                    json={"model": control_model, "prompt": prompt, "stream": False,
             "keep_alive": "2m", "format": "json"})
                 r.raise_for_status()
             data = r.json()
             content = data.get("response", "").strip() or data.get("thinking", "").strip()
             if not content:
                 return self._default_verification(thinking_plan)
-            return safe_parse_json(content, default=self._default_verification(thinking_plan), context="ControlLayer")
+            parsed = safe_parse_json(
+                content,
+                default=self._default_verification(thinking_plan),
+                context="ControlLayer",
+            )
+            return self._stabilize_verification_result(parsed, thinking_plan)
         except (httpx.TimeoutException, asyncio.TimeoutError) as e:
             msg = (
                 "Control verification timeout (504): "
-                f"model={self._resolve_model()} endpoint={endpoint if 'endpoint' in locals() else self.ollama_base}"
+                f"model={control_model if 'control_model' in locals() else self._resolve_model(response_mode_norm)} "
+                f"endpoint={endpoint if 'endpoint' in locals() else self.ollama_base} "
+                f"timeout_s={verify_timeout_s if 'verify_timeout_s' in locals() else 30.0}"
             )
             log_error(f"[ControlLayer] {msg} err={type(e).__name__}")
             fallback = self._default_verification(thinking_plan)
@@ -736,7 +932,12 @@ Deine Bewertung (nur JSON):"""
             causal_context = ""
             if self.mcp_hub:
                 try:
-                    cim_result = self.mcp_hub.call_tool("analyze", {"query": user_text})
+                    if hasattr(self.mcp_hub, "call_tool_async"):
+                        cim_result = await self.mcp_hub.call_tool_async("analyze", {"query": user_text})
+                    else:
+                        cim_result = await asyncio.to_thread(
+                            self.mcp_hub.call_tool, "analyze", {"query": user_text}
+                        )
                     if cim_result and cim_result.get("success"):
                         causal_context = cim_result.get("causal_prompt", "")
                 except Exception as e:
@@ -946,7 +1147,9 @@ START YOUR ANALYSIS NOW with "## Step 1:"."""
             }
     def _default_verification(self, thinking_plan: Dict[str, Any]) -> Dict[str, Any]:
         return {"approved": True, "corrections": {"needs_memory": None, "memory_keys": None,
-                "hallucination_risk": None, "new_fact_key": None, "new_fact_value": None},
+                "hallucination_risk": None, "new_fact_key": None, "new_fact_value": None,
+                "suggested_response_style": None, "dialogue_act": None, "response_tone": None,
+                "response_length_hint": None, "tone_confidence": None},
                 "warnings": ["Control-Layer Fallback"], "final_instruction": "Beantworte vorsichtig."}
     
     def apply_corrections(self, thinking_plan: Dict[str, Any], verification: Dict[str, Any]) -> Dict[str, Any]:

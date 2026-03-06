@@ -505,14 +505,38 @@ def register_tools(mcp):
             limit=limit
         )
 
-        # 4. Kombiniere und score
+        # 4. Tombstone-Filter: Nodes die als Tombstone/Ghost markiert wurden entfernen
+        live_results = [
+            n for n in graph_results
+            if "tombstone" not in (n.get("content") or "").lower()
+        ]
+
+        # 5. Deduplizierung by source_id: höchste Confidence gewinnt
+        seen_source_ids: dict = {}
+        for n in live_results:
+            sid = n.get("source_id") or ""
+            if not sid:
+                continue
+            existing = seen_source_ids.get(sid)
+            if existing is None or n.get("confidence", 0.5) > existing.get("confidence", 0.5):
+                seen_source_ids[sid] = n
+
+        deduped = []
+        for n in live_results:
+            sid = n.get("source_id") or ""
+            if not sid:
+                deduped.append(n)
+            elif seen_source_ids.get(sid) is n:
+                deduped.append(n)
+
+        # 6. Kombiniere und score
         combined = []
-        for node in graph_results:
+        for node in deduped:
             combined.append({
                 "content": node["content"],
                 "type": node["source_type"],
                 "depth": node.get("depth", 0),
-                "node_id": node ["id"]
+                "node_id": node["id"]
             })
 
         return {

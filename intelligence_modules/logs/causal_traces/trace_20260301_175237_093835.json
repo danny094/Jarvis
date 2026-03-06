@@ -1,0 +1,177 @@
+{
+  "query": "/deep Vergleiche Schritt f\u00fcr Schritt drei Strategien zur Reduktion von Halluzinationen bei Chatbots und gib am Ende eine kurze Empfehlung.",
+  "mode": "HeavyGraphBuilder",
+  "source": "auto_selector",
+  "graph": {
+    "nodes": [
+      {
+        "node_id": "GATE_AP014",
+        "name": "Mitigate: Berkson's Paradox",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Selection on a common effect creates spurious negative correlation between causes. Hospital samples are particularly prone. Consider selection mechanism."
+        }
+      },
+      {
+        "node_id": "GATE_AP021",
+        "name": "Mitigate: Cherry-Picking Subgroups",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Post-hoc subgroup discoveries require replication. Multiple comparisons inflate false positives. Report all subgroups tested."
+        }
+      },
+      {
+        "node_id": "GATE_AP022",
+        "name": "Mitigate: Dose-Response Absence Dismissal",
+        "node_type": "logic_gate",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "mitigation": "Absence of dose-response weakens causal inference for monotonic relationships. Exception: threshold effects. Explain missing gradient."
+        }
+      },
+      {
+        "node_id": "STEP_PROC004_1",
+        "name": "1. Identify study design (cohort/case-control/cross-sectional)",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_005,hr_001,vt_004"
+        }
+      },
+      {
+        "node_id": "STEP_PROC004_2",
+        "name": "2. List measured confounders",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_005,hr_001,vt_004"
+        }
+      },
+      {
+        "node_id": "STEP_PROC004_3",
+        "name": "3. Identify unmeasured confounders",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_005,hr_001,vt_004"
+        }
+      },
+      {
+        "node_id": "STEP_PROC004_4",
+        "name": "4. Assess selection bias risk",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_005,hr_001,vt_004"
+        }
+      },
+      {
+        "node_id": "STEP_PROC004_5",
+        "name": "5. Evaluate temporal ambiguity",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_005,hr_001,vt_004"
+        }
+      },
+      {
+        "node_id": "STEP_PROC004_6",
+        "name": "6. Check for reverse causation",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_005,hr_001,vt_004"
+        }
+      },
+      {
+        "node_id": "STEP_PROC004_7",
+        "name": "7. Rate evidence strength",
+        "node_type": "procedural_step",
+        "measurement_quality": 1.0,
+        "uncertainty": 1.0,
+        "metadata": {
+          "tool_ids": "cmt_005,hr_001,vt_004"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source": "STEP_PROC004_1",
+        "target": "STEP_PROC004_2",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC004_2",
+        "target": "STEP_PROC004_3",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC004_3",
+        "target": "STEP_PROC004_4",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC004_4",
+        "target": "STEP_PROC004_5",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC004_5",
+        "target": "STEP_PROC004_6",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      },
+      {
+        "source": "STEP_PROC004_6",
+        "target": "STEP_PROC004_7",
+        "edge_type": "temporal_precedence",
+        "weight": 1.0,
+        "uncertainty": 1.0,
+        "evidence": [],
+        "temporal_lag": null,
+        "metadata": {}
+      }
+    ],
+    "metrics": {
+      "node_count": 10,
+      "edge_count": 6,
+      "is_dag": true,
+      "density": 0.06666666666666667
+    }
+  }
+}

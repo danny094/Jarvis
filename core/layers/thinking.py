@@ -8,7 +8,7 @@ STREAMING: Zeigt das "Nachdenken" live an!
 """
 
 import httpx
-from typing import Dict, Any, AsyncGenerator, Tuple
+from typing import Dict, Any, AsyncGenerator, Tuple, Optional
 from config import OLLAMA_BASE, get_thinking_model
 from utils.logger import log_info, log_error, log_debug
 from utils.json_parser import safe_parse_json
@@ -35,11 +35,16 @@ AUSGABE: NUR dieses JSON, nichts anderes:
     "memory_keys": ["key1", "key2"],
     "needs_chat_history": true/false,
     "is_fact_query": true/false,
+    "time_reference": "today|yesterday|day_before_yesterday|YYYY-MM-DD|null",
     "is_new_fact": false,
     "new_fact_key": null,
     "new_fact_value": null,
     "hallucination_risk": "low/medium/high",
     "suggested_response_style": "kurz/ausführlich",
+    "dialogue_act": "ack/feedback/question/request/analysis/smalltalk",
+    "response_tone": "mirror_user/warm/neutral/formal",
+    "response_length_hint": "short/medium/long",
+    "tone_confidence": 0.0,
     "needs_sequential_thinking": true/false,
     "sequential_complexity": 0,
     "suggested_cim_modes": [],
@@ -76,7 +81,17 @@ Container Commander Tools:
 
 Memory:
 - Persönliche Fragen → needs_memory: true
+- Folgefragen (z.B. "und ...?", "was sagt das ...?") sollen needs_chat_history=true setzen
+- Zeitbezug erkennen und time_reference setzen:
+  - "heute" → "today"
+  - "gestern" → "yesterday"
+  - "vorgestern" → "day_before_yesterday"
+  - explizites Datum → "YYYY-MM-DD"
 - Neue Fakten über User → is_new_fact: true + key/value
+- WICHTIG new_fact_value-Regel:
+  - new_fact_value NUR setzen wenn User einen expliziten Wert nennt (z.B. "Ich heiße Max", "mein Hobby ist Lesen")
+  - Bei Aufgaben oder Erinnerungen für SPÄTER (Schlüsselwörter: "später", "irgendwann", "berechnen", "erledigen", "noch") → new_fact_value: null
+  - new_fact_value NIEMALS selbst berechnen oder schlussfolgern; nur direkt aus User-Aussage entnehmen
 - Allgemeinwissen → needs_memory: false
 """
 
@@ -93,7 +108,8 @@ class ThinkingLayer:
         self, 
         user_text: str, 
         memory_context: str = "",
-        available_tools: list = None
+        available_tools: list = None,
+        tone_signal: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Tuple[str, bool, Dict[str, Any]], None]:
         """
         Analysiert die User-Anfrage MIT STREAMING.
@@ -108,6 +124,15 @@ class ThinkingLayer:
             import json
             tools_json = json.dumps(available_tools, indent=1)
             prompt += f"VERFÜGBARE TOOLS (Vorausgewählt):\n{tools_json}\n\n"
+
+        if tone_signal:
+            import json
+            tone_json = json.dumps(tone_signal, ensure_ascii=False, indent=1)
+            prompt += (
+                "TONALITÄTS-SIGNAL (Hybrid-Classifier, deterministisch):\n"
+                f"{tone_json}\n\n"
+                "Nutze dieses Signal als Leitplanke für dialog_act/response_tone/response_length_hint.\n\n"
+            )
         
         # Dynamic MCP Detection Rules
         try:
@@ -194,10 +219,21 @@ class ThinkingLayer:
             return plan
         return self._default_plan()
     
-    async def analyze(self, user_text: str, memory_context: str = "", available_tools: list = None) -> Dict[str, Any]:
+    async def analyze(
+        self,
+        user_text: str,
+        memory_context: str = "",
+        available_tools: list = None,
+        tone_signal: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """NON-STREAMING Version (Kompatibilität)."""
         plan = self._default_plan()
-        async for chunk, is_done, result in self.analyze_stream(user_text, memory_context, available_tools):
+        async for chunk, is_done, result in self.analyze_stream(
+            user_text,
+            memory_context,
+            available_tools,
+            tone_signal=tone_signal,
+        ):
             if is_done:
                 plan = result
                 break
@@ -211,11 +247,16 @@ class ThinkingLayer:
             "memory_keys": [],
             "needs_chat_history": False,
             "is_fact_query": False,
+            "time_reference": None,
             "is_new_fact": False,
             "new_fact_key": None,
             "new_fact_value": None,
             "hallucination_risk": "medium",
             "suggested_response_style": "freundlich",
+            "dialogue_act": "request",
+            "response_tone": "neutral",
+            "response_length_hint": "medium",
+            "tone_confidence": 0.55,
             "needs_sequential_thinking": False,
             "sequential_complexity": 3,
             "suggested_cim_modes": [],

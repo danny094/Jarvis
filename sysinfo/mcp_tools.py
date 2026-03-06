@@ -10,6 +10,7 @@ import json
 import os
 import http.client
 import socket
+import csv
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,35 @@ def _proc_network() -> str:
     return "Proto  Adresse\n" + "\n".join(sorted(results, key=lambda x: int(x.split(":")[1])))
 
 
+def _parse_gpu_csv_row(raw_output: str) -> Dict[str, Any]:
+    """
+    Parse one nvidia-smi CSV row into explicit, typed fields.
+    Expected order:
+      name,memory.total,memory.free,memory.used,utilization.gpu,temperature.gpu,driver_version
+    """
+    lines = [line.strip() for line in (raw_output or "").splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError("Leere GPU-Ausgabe von nvidia-smi")
+
+    row = next(csv.reader([lines[0]], skipinitialspace=True))
+    if len(row) < 7:
+        raise RuntimeError(f"Unerwartetes GPU-CSV-Format: {lines[0]}")
+
+    def _to_int(value: str) -> int:
+        cleaned = "".join(ch for ch in str(value) if ch.isdigit() or ch == "-")
+        return int(cleaned) if cleaned and cleaned != "-" else 0
+
+    return {
+        "gpu_name": row[0].strip(),
+        "vram_total_mib": _to_int(row[1]),
+        "vram_free_mib": _to_int(row[2]),
+        "vram_used_mib": _to_int(row[3]),
+        "gpu_util_percent": _to_int(row[4]),
+        "temperature_c": _to_int(row[5]),
+        "driver_version": row[6].strip(),
+    }
+
+
 def _docker_stats() -> str:
     """Container-Stats via Docker-Socket (kein docker-CLI nötig)."""
     try:
@@ -173,12 +203,31 @@ def _get_info(info_type: str) -> Dict[str, Any]:
 
     try:
         if info_type == "gpu":
-            output = _run([
+            raw_output = _run([
                 "nvidia-smi",
                 "--query-gpu=name,memory.total,memory.free,memory.used,"
                 "utilization.gpu,temperature.gpu,driver_version",
                 "--format=csv,noheader",
             ])
+            parsed = _parse_gpu_csv_row(raw_output)
+            output = (
+                f"GPU: {parsed['gpu_name']}\n"
+                f"VRAM total: {parsed['vram_total_mib']} MiB\n"
+                f"VRAM frei: {parsed['vram_free_mib']} MiB\n"
+                f"VRAM genutzt: {parsed['vram_used_mib']} MiB\n"
+                f"GPU-Auslastung: {parsed['gpu_util_percent']} %\n"
+                f"Temperatur: {parsed['temperature_c']} C\n"
+                f"Treiber: {parsed['driver_version']}\n"
+                f"Hinweis: GPU-Auslastung ist NICHT VRAM-Auslastung."
+            )
+            return {
+                "success": True,
+                "type": info_type,
+                "output": output,
+                "metrics": parsed,
+                "raw_output": raw_output,
+                "description": _DESCRIPTIONS.get(info_type, ""),
+            }
         elif info_type == "gpu_full":
             output = _run(["nvidia-smi"])
         elif info_type == "cpu":

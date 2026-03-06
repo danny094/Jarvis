@@ -10,11 +10,13 @@ Provides:
 """
 
 import json
-import requests
 import asyncio
+import os
 import time
 import traceback
 import uuid
+import httpx
+from typing import Any, Dict
 from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +32,7 @@ from maintenance.routes import router as maintenance_router
 from adapters.lobechat.adapter import get_adapter
 from core.bridge import get_bridge
 from utils.logger import log_info, log_error, log_debug
+from config import get_deep_job_max_concurrency, get_deep_job_timeout_s
 
 # Setup logging
 logging.basicConfig(
@@ -95,12 +98,28 @@ app.include_router(runtime_router)
 
 _DEEP_JOB_MAX_ITEMS = 200
 _DEEP_JOB_RETENTION_S = 6 * 60 * 60
-_deep_jobs = {}
+_DEEP_JOB_MAX_CONCURRENCY = get_deep_job_max_concurrency()
+_DEEP_JOB_TIMEOUT_S = get_deep_job_timeout_s()
+_deep_jobs: Dict[str, Dict[str, Any]] = {}
 _deep_jobs_lock = asyncio.Lock()
+_deep_job_slots = asyncio.Semaphore(_DEEP_JOB_MAX_CONCURRENCY)
+_deep_job_tasks: Dict[str, asyncio.Task] = {}
 
 
 def _iso_now() -> str:
     return datetime.utcnow().isoformat() + "Z"
+
+
+async def _hub_call_tool(tool_name: str, args: Dict[str, Any]) -> Any:
+    """Async-safe MCPHub call helper."""
+    from mcp.hub import get_hub
+
+    hub = get_hub()
+    hub.initialize()
+    call_tool_async = getattr(hub, "call_tool_async", None)
+    if callable(call_tool_async):
+        return await call_tool_async(tool_name, args)
+    return await asyncio.to_thread(hub.call_tool, tool_name, args)
 
 
 async def _prune_deep_jobs() -> None:
@@ -121,59 +140,234 @@ async def _prune_deep_jobs() -> None:
         remove_count = len(_deep_jobs) - _DEEP_JOB_MAX_ITEMS
         for job_id, _ in ordered[:remove_count]:
             _deep_jobs.pop(job_id, None)
+            _deep_job_tasks.pop(job_id, None)
+
+
+def _set_job_phase(job: Dict[str, Any], phase: str, now_ts: float) -> None:
+    """Track current deep-job phase and update timestamp."""
+    if not isinstance(job, dict):
+        return
+    job["phase"] = phase
+    job["last_update_at"] = datetime.utcnow().isoformat() + "Z"
+    job["last_update_ts"] = now_ts
+
+
+def _deep_jobs_runtime_stats(target_job_id: str = "") -> tuple[int, int, int | None]:
+    """Return (running_jobs, queued_jobs, queue_position_for_target)."""
+    running = sum(1 for j in _deep_jobs.values() if j.get("status") == "running")
+    queued = sorted(
+        (
+            (jid, float(j.get("created_ts", 0.0)))
+            for jid, j in _deep_jobs.items()
+            if j.get("status") == "queued"
+        ),
+        key=lambda item: item[1],
+    )
+    position = None
+    if target_job_id:
+        for idx, (jid, _) in enumerate(queued, start=1):
+            if jid == target_job_id:
+                position = idx
+                break
+    return running, len(queued), position
 
 
 async def _run_deep_job(job_id: str, raw_data: dict) -> None:
     adapter = get_adapter()
     bridge = get_bridge()
-    started_ts = time.time()
 
     async with _deep_jobs_lock:
         job = _deep_jobs.get(job_id)
         if not job:
             return
-        job["status"] = "running"
-        job["started_at"] = _iso_now()
-        job["started_ts"] = started_ts
+        if job.get("status") in {"cancelled", "failed", "succeeded"}:
+            return
+        now_ts = time.time()
+        job["status"] = "queued"
+        created_ts = float(job.get("created_ts", time.time()))
+        _set_job_phase(job, "queued", now_ts)
 
     try:
-        force_data = dict(raw_data)
-        force_data["stream"] = False
-        force_data["response_mode"] = "deep"
+        async with _deep_job_slots:
+            started_ts = time.time()
+            async with _deep_jobs_lock:
+                job = _deep_jobs.get(job_id)
+                if not job:
+                    return
+                if job.get("status") in {"cancelled", "cancel_requested"}:
+                    return
+                queue_wait_ms = max(0.0, (started_ts - created_ts) * 1000.0)
+                job["status"] = "running"
+                job["started_at"] = _iso_now()
+                job["started_ts"] = started_ts
+                job["queue_wait_ms"] = round(queue_wait_ms, 2)
+                _set_job_phase(job, "running", started_ts)
 
-        core_request = adapter.transform_request(force_data)
-        core_response = await bridge.process(core_request)
-        response_data = adapter.transform_response(core_response)
+            force_data = dict(raw_data)
+            force_data["stream"] = False
+            force_data["response_mode"] = "deep"
+            force_data["deep_job_id"] = job_id
 
+            t_req = time.time()
+            core_request = adapter.transform_request(force_data)
+            t_req_done = time.time()
+            async with _deep_jobs_lock:
+                job = _deep_jobs.get(job_id)
+                if job:
+                    job["phase_timings_ms"]["transform_request_ms"] = round(
+                        (t_req_done - t_req) * 1000.0, 2
+                    )
+                    _set_job_phase(job, "bridge_process", t_req_done)
+
+            t_bridge = time.time()
+            async with asyncio.timeout(float(_DEEP_JOB_TIMEOUT_S)):
+                core_response = await bridge.process(core_request)
+            t_bridge_done = time.time()
+            async with _deep_jobs_lock:
+                job = _deep_jobs.get(job_id)
+                if job:
+                    job["phase_timings_ms"]["bridge_process_ms"] = round(
+                        (t_bridge_done - t_bridge) * 1000.0, 2
+                    )
+                    _set_job_phase(job, "transform_response", t_bridge_done)
+
+            t_resp = time.time()
+            response_data = adapter.transform_response(core_response)
+            t_resp_done = time.time()
+
+            finished_ts = t_resp_done
+            async with _deep_jobs_lock:
+                job = _deep_jobs.get(job_id)
+                if not job:
+                    return
+                job["status"] = "succeeded"
+                job["phase"] = "done"
+                job["finished_at"] = _iso_now()
+                job["finished_ts"] = finished_ts
+                job["duration_ms"] = round((finished_ts - started_ts) * 1000.0, 2)
+                job["phase_timings_ms"]["transform_response_ms"] = round(
+                    (t_resp_done - t_resp) * 1000.0, 2
+                )
+                job["result"] = response_data
+                job["error"] = None
+                job["error_code"] = None
+                await _prune_deep_jobs()
+    except TimeoutError:
         finished_ts = time.time()
         async with _deep_jobs_lock:
             job = _deep_jobs.get(job_id)
             if not job:
                 return
-            job["status"] = "succeeded"
+            started_ts = float(job.get("started_ts") or finished_ts)
+            job["status"] = "failed"
+            job["phase"] = "timeout"
             job["finished_at"] = _iso_now()
             job["finished_ts"] = finished_ts
             job["duration_ms"] = round((finished_ts - started_ts) * 1000.0, 2)
-            job["result"] = response_data
-            job["error"] = None
+            job["error"] = f"deep_job_timeout_after_{int(_DEEP_JOB_TIMEOUT_S)}s"
+            job["error_code"] = "deep_job_timeout"
             await _prune_deep_jobs()
+        log_error(f"[Admin-API-Chat] Deep job timeout job_id={job_id} timeout_s={_DEEP_JOB_TIMEOUT_S}")
+    except asyncio.CancelledError:
+        finished_ts = time.time()
+        async with _deep_jobs_lock:
+            job = _deep_jobs.get(job_id)
+            if not job:
+                return
+            started_ts = float(job.get("started_ts") or finished_ts)
+            job["status"] = "cancelled"
+            job["phase"] = "cancelled"
+            job["finished_at"] = _iso_now()
+            job["finished_ts"] = finished_ts
+            job["duration_ms"] = round((finished_ts - started_ts) * 1000.0, 2)
+            job["error"] = "cancelled_by_user"
+            job["error_code"] = "cancelled"
+            await _prune_deep_jobs()
+        log_info(f"[Admin-API-Chat] Deep job cancelled job_id={job_id}")
     except Exception as e:
         finished_ts = time.time()
         async with _deep_jobs_lock:
             job = _deep_jobs.get(job_id)
             if not job:
                 return
+            started_ts = float(job.get("started_ts") or finished_ts)
             job["status"] = "failed"
+            job["phase"] = "failed"
             job["finished_at"] = _iso_now()
             job["finished_ts"] = finished_ts
             job["duration_ms"] = round((finished_ts - started_ts) * 1000.0, 2)
             job["error"] = str(e)
+            job["error_code"] = "deep_job_error"
             job["traceback"] = traceback.format_exc(limit=12)
             await _prune_deep_jobs()
         log_error(f"[Admin-API-Chat] Deep job failed job_id={job_id}: {e}")
+    finally:
+        _deep_job_tasks.pop(job_id, None)
+
+
+def _deep_jobs_status_summary() -> Dict[str, int]:
+    by_status: Dict[str, int] = {}
+    for job in _deep_jobs.values():
+        status = str(job.get("status") or "unknown")
+        by_status[status] = by_status.get(status, 0) + 1
+    return by_status
+
+
+def _deep_jobs_oldest_queue_age_s(now_ts: float) -> float:
+    oldest = None
+    for job in _deep_jobs.values():
+        if job.get("status") != "queued":
+            continue
+        created_ts = float(job.get("created_ts", now_ts))
+        if oldest is None or created_ts < oldest:
+            oldest = created_ts
+    if oldest is None:
+        return 0.0
+    return max(0.0, now_ts - oldest)
+
+
+def _deep_jobs_longest_running_s(now_ts: float) -> float:
+    longest = 0.0
+    for job in _deep_jobs.values():
+        if job.get("status") != "running":
+            continue
+        started_ts = float(job.get("started_ts", now_ts))
+        longest = max(longest, max(0.0, now_ts - started_ts))
+    return longest
+
+
+async def _cancel_deep_job_locked(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Cancel/mark a deep job while lock is held. Returns public view."""
+    status = str(job.get("status") or "")
+    now_ts = time.time()
+    job_id = str(job.get("job_id") or "")
+
+    if status in {"succeeded", "failed", "cancelled"}:
+        return _public_job_view(job)
+
+    if status == "queued":
+        job["status"] = "cancelled"
+        job["phase"] = "cancelled_before_start"
+        job["finished_at"] = _iso_now()
+        job["finished_ts"] = now_ts
+        job["duration_ms"] = 0.0
+        job["error"] = "cancelled_by_user"
+        job["error_code"] = "cancelled"
+    else:
+        job["status"] = "cancel_requested"
+        job["phase"] = "cancel_requested"
+        job["cancel_requested_at"] = _iso_now()
+        _set_job_phase(job, "cancel_requested", now_ts)
+
+    task = _deep_job_tasks.get(job_id)
+    if task and not task.done():
+        task.cancel()
+    await _prune_deep_jobs()
+    return _public_job_view(job)
 
 
 def _public_job_view(job: dict) -> dict:
+    running_jobs, queued_jobs, queue_position = _deep_jobs_runtime_stats(job.get("job_id", ""))
     return {
         "job_id": job["job_id"],
         "status": job["status"],
@@ -183,6 +377,17 @@ def _public_job_view(job: dict) -> dict:
         "started_at": job.get("started_at"),
         "finished_at": job.get("finished_at"),
         "duration_ms": job.get("duration_ms"),
+        "queue_wait_ms": job.get("queue_wait_ms"),
+        "timeout_s": _DEEP_JOB_TIMEOUT_S,
+        "phase": job.get("phase", ""),
+        "phase_timings_ms": job.get("phase_timings_ms", {}),
+        "cancel_requested_at": job.get("cancel_requested_at"),
+        "error_code": job.get("error_code"),
+        "queue_position": queue_position,
+        "queued_jobs": queued_jobs,
+        "running_jobs": running_jobs,
+        "max_concurrency": _DEEP_JOB_MAX_CONCURRENCY,
+        "last_update_at": job.get("last_update_at"),
         "error": job.get("error"),
         "result": job.get("result"),
     }
@@ -195,15 +400,12 @@ def _public_job_view(job: dict) -> dict:
 @app.get("/api/workspace")
 async def workspace_list(conversation_id: str = None, limit: int = 50):
     """List editable workspace entries from sql-memory (workspace_entries table)."""
-    from mcp.hub import get_hub
     try:
-        hub = get_hub()
-        hub.initialize()
         args = {"limit": limit}
         if conversation_id:
             args["conversation_id"] = conversation_id
         # workspace_list routes to sql-memory (not Fast-Lane after Commit 1)
-        result = hub.call_tool("workspace_list", args)
+        result = await _hub_call_tool("workspace_list", args)
         if isinstance(result, dict):
             sc = result.get("structuredContent", result)
             entries = sc.get("entries", [])
@@ -217,11 +419,8 @@ async def workspace_list(conversation_id: str = None, limit: int = 50):
 @app.get("/api/workspace/{entry_id}")
 async def workspace_get(entry_id: int):
     """Get a single workspace entry from sql-memory."""
-    from mcp.hub import get_hub
     try:
-        hub = get_hub()
-        hub.initialize()
-        result = hub.call_tool("workspace_get", {"entry_id": entry_id})
+        result = await _hub_call_tool("workspace_get", {"entry_id": entry_id})
         if isinstance(result, dict) and result.get("error"):
             return JSONResponse(result, status_code=404)
         return JSONResponse(result if isinstance(result, dict) else {"error": "Not found"})
@@ -233,15 +432,12 @@ async def workspace_get(entry_id: int):
 @app.put("/api/workspace/{entry_id}")
 async def workspace_update(entry_id: int, request: Request):
     """Update a workspace entry's content in sql-memory."""
-    from mcp.hub import get_hub
     try:
         data = await request.json()
         content = data.get("content", "")
         if not content:
             return JSONResponse({"error": "content is required"}, status_code=400)
-        hub = get_hub()
-        hub.initialize()
-        result = hub.call_tool("workspace_update", {"entry_id": entry_id, "content": content})
+        result = await _hub_call_tool("workspace_update", {"entry_id": entry_id, "content": content})
         if isinstance(result, dict):
             sc = result.get("structuredContent", result)
             return JSONResponse({"updated": bool(sc.get("updated", sc.get("success", False)))})
@@ -254,11 +450,8 @@ async def workspace_update(entry_id: int, request: Request):
 @app.delete("/api/workspace/{entry_id}")
 async def workspace_delete(entry_id: int):
     """Delete a workspace entry from sql-memory."""
-    from mcp.hub import get_hub
     try:
-        hub = get_hub()
-        hub.initialize()
-        result = hub.call_tool("workspace_delete", {"entry_id": entry_id})
+        result = await _hub_call_tool("workspace_delete", {"entry_id": entry_id})
         if isinstance(result, dict):
             sc = result.get("structuredContent", result)
             return JSONResponse({"deleted": bool(sc.get("deleted", sc.get("success", False)))})
@@ -279,7 +472,6 @@ async def workspace_events_list(
     limit: int = 50,
 ):
     """List internal workspace events (read-only telemetry from workspace_events table)."""
-    from mcp.hub import get_hub
 
     def _extract_events_payload(result_obj):
         # Fast-Lane ToolResult path
@@ -330,14 +522,12 @@ async def workspace_events_list(
         return []
 
     try:
-        hub = get_hub()
-        hub.initialize()
         args: dict = {"limit": limit}
         if conversation_id:
             args["conversation_id"] = conversation_id
         if event_type:
             args["event_type"] = event_type
-        result = hub.call_tool("workspace_event_list", args)
+        result = await _hub_call_tool("workspace_event_list", args)
         events = _extract_events_payload(result)
         if not isinstance(events, list):
             events = []
@@ -376,20 +566,35 @@ async def chat_deep_jobs(request: Request):
         "started_at": None,
         "finished_at": None,
         "duration_ms": None,
+        "queue_wait_ms": None,
+        "timeout_s": _DEEP_JOB_TIMEOUT_S,
+        "phase": "queued",
+        "phase_timings_ms": {},
+        "last_update_at": _iso_now(),
+        "last_update_ts": time.time(),
+        "cancel_requested_at": None,
         "result": None,
         "error": None,
+        "error_code": None,
         "traceback": None,
     }
 
     async with _deep_jobs_lock:
         _deep_jobs[job_id] = job
         await _prune_deep_jobs()
+        running_jobs, queued_jobs, queue_position = _deep_jobs_runtime_stats(job_id)
 
-    asyncio.create_task(_run_deep_job(job_id, raw_data))
+    task = asyncio.create_task(_run_deep_job(job_id, raw_data))
+    _deep_job_tasks[job_id] = task
     return JSONResponse(
         {
             "job_id": job_id,
             "status": "queued",
+            "queue_position": queue_position,
+            "queued_jobs": queued_jobs,
+            "running_jobs": running_jobs,
+            "max_concurrency": _DEEP_JOB_MAX_CONCURRENCY,
+            "timeout_s": _DEEP_JOB_TIMEOUT_S,
             "poll_url": f"/api/chat/deep-jobs/{job_id}",
         },
         status_code=202,
@@ -404,6 +609,41 @@ async def chat_deep_job_status(job_id: str):
         if not job:
             return JSONResponse({"error": "job_not_found", "job_id": job_id}, status_code=404)
         return JSONResponse(_public_job_view(job))
+
+
+@app.post("/api/chat/deep-jobs/{job_id}/cancel")
+async def chat_deep_job_cancel(job_id: str):
+    """Cancel queued/running deep job. Idempotent for terminal jobs."""
+    async with _deep_jobs_lock:
+        job = _deep_jobs.get(job_id)
+        if not job:
+            return JSONResponse({"error": "job_not_found", "job_id": job_id}, status_code=404)
+        view = await _cancel_deep_job_locked(job)
+    return JSONResponse(view)
+
+
+@app.get("/api/chat/deep-jobs-stats")
+async def chat_deep_jobs_stats():
+    """Runtime telemetry snapshot for deep-job queue and execution state."""
+    async with _deep_jobs_lock:
+        now_ts = time.time()
+        running_jobs, queued_jobs, _ = _deep_jobs_runtime_stats()
+        by_status = _deep_jobs_status_summary()
+        oldest_queue_age_s = round(_deep_jobs_oldest_queue_age_s(now_ts), 3)
+        longest_running_s = round(_deep_jobs_longest_running_s(now_ts), 3)
+        total_jobs = len(_deep_jobs)
+    return JSONResponse(
+        {
+            "total_jobs": total_jobs,
+            "running_jobs": running_jobs,
+            "queued_jobs": queued_jobs,
+            "max_concurrency": _DEEP_JOB_MAX_CONCURRENCY,
+            "timeout_s": _DEEP_JOB_TIMEOUT_S,
+            "oldest_queue_age_s": oldest_queue_age_s,
+            "longest_running_s": longest_running_s,
+            "by_status": by_status,
+        }
+    )
 
 @app.post("/api/chat")
 async def chat(request: Request):
@@ -575,13 +815,88 @@ async def tags():
     
     try:
         endpoint = resolve_ollama_base_endpoint(default_endpoint=OLLAMA_BASE)
-        resp = requests.get(f"{endpoint}/api/tags", timeout=10)
-        resp.raise_for_status()
-        return JSONResponse(resp.json())
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{endpoint}/api/tags")
+            resp.raise_for_status()
+            return JSONResponse(resp.json())
     except Exception as e:
         log_error(f"[Admin-API-Tags] Error fetching models: {e}")
         # Fallback: Empty list
         return JSONResponse({"models": []})
+
+
+@app.get("/api/tools")
+async def tools():
+    """
+    WebUI-friendly tools overview endpoint.
+
+    Response shape:
+    {
+      "total_tools": int,
+      "total_mcps": int,
+      "mcps": [{name, online, transport, tools_count, description, enabled, detected_format, url}],
+      "tools": [{name, description, mcp_name, inputSchema}]
+    }
+    """
+    from mcp.hub import get_hub
+
+    try:
+        hub = get_hub()
+        hub.initialize()
+
+        mcps = hub.list_mcps() or []
+        tools = hub.list_tools() or []
+
+        normalized_mcps = []
+        for mcp in mcps:
+            if not isinstance(mcp, dict):
+                continue
+            normalized_mcps.append({
+                "name": str(mcp.get("name", "")).strip(),
+                "online": bool(mcp.get("online", False)),
+                "transport": str(mcp.get("transport", "")).strip(),
+                "tools_count": int(mcp.get("tools_count", 0) or 0),
+                "description": str(mcp.get("description", "")).strip(),
+                "enabled": bool(mcp.get("enabled", False)),
+                "detected_format": mcp.get("detected_format"),
+                "url": str(mcp.get("url", "")).strip(),
+            })
+
+        normalized_tools = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            name = str(tool.get("name", "")).strip()
+            if not name:
+                continue
+            normalized_tools.append({
+                "name": name,
+                "description": str(tool.get("description", "")).strip(),
+                "mcp_name": hub.get_mcp_for_tool(name) or "unknown",
+                "inputSchema": tool.get("inputSchema", {}) if isinstance(tool.get("inputSchema", {}), dict) else {},
+            })
+
+        normalized_mcps.sort(key=lambda x: x.get("name", ""))
+        normalized_tools.sort(key=lambda x: x.get("name", ""))
+
+        return JSONResponse({
+            "total_tools": len(normalized_tools),
+            "total_mcps": len(normalized_mcps),
+            "mcps": normalized_mcps,
+            "tools": normalized_tools,
+        })
+    except Exception as e:
+        log_error(f"[Admin-API-Tools] Error fetching tools: {e}")
+        return JSONResponse(
+            {
+                "total_tools": 0,
+                "total_mcps": 0,
+                "mcps": [],
+                "tools": [],
+                "error": str(e),
+            },
+            status_code=500,
+        )
 
 
 @app.get("/")
@@ -597,6 +912,7 @@ async def root():
             "maintenance": "/api/maintenance",
             "chat": "/api/chat",
             "models": "/api/tags",
+            "tools": "/api/tools",
             "mcp_hub": {
                 "tools_call": "/mcp (POST tools/call)",
                 "tools_list": "/mcp (POST tools/list)",
@@ -688,8 +1004,16 @@ async def startup_event():
     logger.info("=" * 60)
 
     # Daily Auto-Summarize: läuft täglich um 04:00 Uhr
-    from core.context_compressor import run_daily_summary_loop
+    from core.context_compressor import run_daily_summary_loop, summarize_yesterday
     asyncio.create_task(run_daily_summary_loop())
+    # Catch-up run on startup (idempotent via .daily_summary_status.json)
+    async def _daily_summary_catchup():
+        try:
+            ran = await summarize_yesterday(force=False)
+            logger.info(f"[Startup] Daily summary catch-up ran={ran}")
+        except Exception as e:
+            logger.warning(f"[Startup] Daily summary catch-up failed: {e}")
+    asyncio.create_task(_daily_summary_catchup())
 
     # Digest Worker — inline mode (Finding #3: wire DIGEST_RUN_MODE=inline)
     # Double-start guard: check for an existing digest-inline thread before spawning.

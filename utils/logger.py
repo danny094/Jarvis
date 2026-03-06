@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
@@ -18,7 +18,7 @@ def _should_log(level: str) -> bool:
 def _log(level: str, msg: str):
     if not _should_log(level):
         return
-    ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     print(f"[{ts}] [{level}] {msg}")
 
 
@@ -38,4 +38,4 @@ def log_error(msg: str):
     _log("ERROR", msg)
     
 def log_warn(msg: str):
-    print(f"[WARN] {msg}")
+    log_warning(msg)

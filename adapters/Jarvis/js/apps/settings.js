@@ -710,6 +710,11 @@ function _renderInstanceStatus(instancesPayload) {
                 ? "text-yellow-400"
                 : "text-gray-500";
         const status = running && healthy ? "running/healthy" : running ? "running/unhealthy" : "stopped";
+        const action = running ? "stop" : "start";
+        const actionLabel = running ? "Stop" : "Start";
+        const actionButtonClass = running
+            ? "bg-red-500/20 text-red-300 hover:bg-red-500/30 border-red-500/40"
+            : "bg-green-500/20 text-green-300 hover:bg-green-500/30 border-green-500/40";
         return `
             <div class="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-xs">
                 <div class="flex items-center justify-between">
@@ -718,6 +723,15 @@ function _renderInstanceStatus(instancesPayload) {
                 </div>
                 <div class="text-gray-500 mt-1 font-mono">id: ${escapeHtml(id)}</div>
                 <div class="text-gray-500 mt-1">${escapeHtml(endpoint)}</div>
+                <div class="mt-2 flex justify-end">
+                    <button
+                        class="compute-instance-action px-2 py-1 text-[11px] rounded border transition-colors ${actionButtonClass}"
+                        data-instance-id="${escapeHtml(id)}"
+                        data-action="${escapeHtml(action)}"
+                    >
+                        ${actionLabel}
+                    </button>
+                </div>
             </div>
         `;
     }).join("");
@@ -916,6 +930,15 @@ function renderModels(models, container, effective, computeRouting = {}, compute
     if (saveRoutingBtn) {
         saveRoutingBtn.addEventListener("click", saveComputeRoutingSettings);
     }
+
+    container.querySelectorAll(".compute-instance-action").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const instanceId = String(btn.dataset.instanceId || "").trim();
+            const action = String(btn.dataset.action || "").trim().toLowerCase();
+            if (!instanceId || !["start", "stop"].includes(action)) return;
+            await controlComputeInstance(instanceId, action);
+        });
+    });
 }
 
 async function saveModelSettings() {
@@ -991,6 +1014,26 @@ async function saveComputeRoutingSettings() {
         await loadModels();
     } catch (e) {
         showToast(`Routing save failed: ${e.message}`, 'error');
+    }
+}
+
+async function controlComputeInstance(instanceId, action) {
+    const normalizedAction = action === "stop" ? "stop" : "start";
+    const endpoint = `${getApiBase()}/api/runtime/compute/instances/${encodeURIComponent(instanceId)}/${normalizedAction}`;
+    showToast(`${normalizedAction === "start" ? "Starting" : "Stopping"} ${instanceId}...`, "info");
+    try {
+        const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        showToast(`Instance ${instanceId} ${normalizedAction} request accepted`, "success");
+        await loadModels();
+    } catch (e) {
+        showToast(`Instance ${instanceId} ${normalizedAction} failed: ${e.message}`, "error");
     }
 }
 

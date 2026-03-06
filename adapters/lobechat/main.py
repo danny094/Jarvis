@@ -14,6 +14,7 @@ Endpoints:
 
 import json
 import uvicorn
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -242,15 +243,15 @@ async def tags():
     LobeChat fragt das ab, um die Model-Liste anzuzeigen.
     Wir leiten das an den echten Ollama-Server weiter.
     """
-    import requests
     from config import OLLAMA_BASE
     from utils.role_endpoint_resolver import resolve_ollama_base_endpoint
     
     try:
         endpoint = resolve_ollama_base_endpoint(default_endpoint=OLLAMA_BASE)
-        resp = requests.get(f"{endpoint}/api/tags", timeout=10)
-        resp.raise_for_status()
-        return JSONResponse(resp.json())
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{endpoint}/api/tags")
+            resp.raise_for_status()
+            return JSONResponse(resp.json())
     except Exception as e:
         log_error(f"[LobeChat-Adapter] Tags error: {e}")
         # Fallback: Leere Liste

@@ -30,6 +30,26 @@ function _sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function _sleepWithSignal(ms, signal) {
+    if (!signal) return _sleep(ms);
+    return new Promise((resolve, reject) => {
+        if (signal.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+        }
+        const timerId = setTimeout(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+        }, ms);
+        function onAbort() {
+            clearTimeout(timerId);
+            signal.removeEventListener("abort", onAbort);
+            reject(new DOMException("Aborted", "AbortError"));
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
 // ═══════════════════════════════════════════════════════════
 // MODEL LIST
 // ═══════════════════════════════════════════════════════════
@@ -98,7 +118,8 @@ export async function executeCode(code, language = "python", container = "code-s
 // ═══════════════════════════════════════════════════════════
 // CHAT - STREAMING MIT LIVE THINKING + CONTAINER
 // ═══════════════════════════════════════════════════════════
-export async function* streamChat(model, messages, conversationId = "webui-default") {
+export async function* streamChat(model, messages, conversationId = "webui-default", options = {}) {
+    const signal = options?.signal;
     log("info", `Sending chat request`, {
         model,
         messageCount: messages.length,
@@ -114,6 +135,7 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
     const res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal,
         body: JSON.stringify({
             model: model,
             messages: messages,
@@ -149,21 +171,12 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                 const data = JSON.parse(line);
                 chunkCount++;
 
-                // 🆕 FLAT EVENT HANDLER (new event system)
-                // Backend sends: {type: "sequential_start", task_id: "...", ...}
+                // Typed event passthrough (keep backend metadata intact).
+                // This avoids hard-filtering decision/control/tool events.
                 if (data.type && typeof data.type === "string") {
-                    const flatEventTypes = [
-                        'sequential_start', 'sequential_step', 'sequential_done', 'sequential_error', 'seq_thinking_stream', 'seq_thinking_done',
-                        'mcp_call', 'mcp_result',
-                        'cim_store', 'memory_update',
-                        'workspace_update'
-                    ];
-
-                    if (flatEventTypes.includes(data.type)) {
-                        console.log(`[API] Flat event: ${data.type}`, data);
-                        yield data;  // Pass through as-is!
-                        continue;
-                    }
+                    console.log(`[API] Typed event: ${data.type}`, data);
+                    yield data;
+                    continue;
                 }
 
 
@@ -286,6 +299,7 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                     yield {
                         type: "done",
                         model: data.model || null,
+                        done_reason: data.done_reason || null,
                         code_model_used: data.code_model_used || false,
                         container_used: data.container_used || false
                     };
@@ -301,10 +315,11 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
 // ═══════════════════════════════════════════════════════════
 // CHAT - DEEP JOBS (ASYNC, POLLING)
 // ═══════════════════════════════════════════════════════════
-export async function submitDeepChatJob(model, messages, conversationId = "webui-default") {
+export async function submitDeepChatJob(model, messages, conversationId = "webui-default", options = {}) {
     const res = await fetch(`${API_BASE}/api/chat/deep-jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: options?.signal,
         body: JSON.stringify({
             model,
             messages,
@@ -321,8 +336,11 @@ export async function submitDeepChatJob(model, messages, conversationId = "webui
     return res.json();
 }
 
-export async function getDeepChatJobStatus(jobId) {
-    const res = await fetch(`${API_BASE}/api/chat/deep-jobs/${encodeURIComponent(jobId)}`);
+export async function getDeepChatJobStatus(jobId, options = {}) {
+    const res = await fetch(
+        `${API_BASE}/api/chat/deep-jobs/${encodeURIComponent(jobId)}`,
+        { signal: options?.signal }
+    );
     if (!res.ok) {
         const errText = await res.text().catch(() => "");
         throw new Error(`Deep job status failed: HTTP ${res.status} ${errText}`.trim());
@@ -330,13 +348,34 @@ export async function getDeepChatJobStatus(jobId) {
     return res.json();
 }
 
+export async function cancelDeepChatJob(jobId, options = {}) {
+    if (!jobId) {
+        throw new Error("Deep job cancel requires jobId");
+    }
+    const res = await fetch(
+        `${API_BASE}/api/chat/deep-jobs/${encodeURIComponent(jobId)}/cancel`,
+        {
+            method: "POST",
+            signal: options?.signal,
+        }
+    );
+    if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Deep job cancel failed: HTTP ${res.status} ${errText}`.trim());
+    }
+    return res.json();
+}
+
 export async function waitForDeepChatJob(
     jobId,
-    { pollIntervalMs = 1500, timeoutMs = 15 * 60 * 1000, onProgress = null } = {}
+    { pollIntervalMs = 1500, timeoutMs = 15 * 60 * 1000, onProgress = null, signal = null } = {}
 ) {
     const started = Date.now();
     while (true) {
-        const status = await getDeepChatJobStatus(jobId);
+        if (signal?.aborted) {
+            throw new DOMException("Aborted", "AbortError");
+        }
+        const status = await getDeepChatJobStatus(jobId, { signal });
         if (typeof onProgress === "function") {
             try {
                 onProgress(status);
@@ -353,7 +392,7 @@ export async function waitForDeepChatJob(
         if ((Date.now() - started) > timeoutMs) {
             throw new Error(`Deep job timeout after ${Math.round(timeoutMs / 1000)}s`);
         }
-        await _sleep(pollIntervalMs);
+        await _sleepWithSignal(pollIntervalMs, signal);
     }
 }
 

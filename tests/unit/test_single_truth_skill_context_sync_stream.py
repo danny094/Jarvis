@@ -19,7 +19,37 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-_PROJECT_ROOT = "/DATA/AppData/MCP/Jarvis/Jarvis"
+def _detect_project_root() -> str:
+    env_root = str(os.getenv("JARVIS_PROJECT_ROOT") or "").strip()
+    candidates = []
+    if env_root:
+        candidates.append(env_root)
+
+    cur = os.path.abspath(os.path.dirname(__file__))
+    for _ in range(8):
+        candidates.append(cur)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    candidates.append(os.getcwd())
+    candidates.append("/DATA/AppData/MCP/Jarvis/Jarvis")
+
+    seen = set()
+    for cand in candidates:
+        root = os.path.abspath(str(cand or "").strip())
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        if os.path.exists(os.path.join(root, "config.py")) and os.path.exists(
+            os.path.join(root, "core")
+        ):
+            return root
+    return os.path.abspath(candidates[-1])
+
+
+_PROJECT_ROOT = _detect_project_root()
 _CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.py")
 _CM_PATH = os.path.join(_PROJECT_ROOT, "core", "context_manager.py")
 _ORCH_PATH = os.path.join(_PROJECT_ROOT, "core", "orchestrator.py")

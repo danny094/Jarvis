@@ -8,6 +8,8 @@ Fast checks (<50ms) with escalation to Full CIM when needed.
 from typing import Dict, Any, List
 import re
 
+from core.light_cim_policy import load_light_cim_policy
+
 
 class LightCIM:
     """
@@ -20,6 +22,7 @@ class LightCIM:
     """
     
     def __init__(self):
+        self.policy = load_light_cim_policy()
         self.danger_keywords = [
             "harm", "hurt", "attack", "weapon",
             "illegal", "hack", "exploit", "steal", 
@@ -62,7 +65,7 @@ class LightCIM:
         """
         # Run all checks
         intent_check = self.validate_intent(intent)
-        logic_check = self.check_logic_basic(thinking_plan)
+        logic_check = self.check_logic_basic(thinking_plan, user_text=user_text)
         safety_check = self.safety_guard_lite(user_text, thinking_plan)
         
         # Decide if escalation needed
@@ -148,7 +151,11 @@ class LightCIM:
             "warnings": warnings
         }
 
-    def check_logic_basic(self, thinking_plan: Dict[str, Any]) -> Dict[str, Any]:
+    def check_logic_basic(
+        self,
+        thinking_plan: Dict[str, Any],
+        user_text: str = "",
+    ) -> Dict[str, Any]:
         """
         Quick logic consistency checks.
         
@@ -177,12 +184,19 @@ class LightCIM:
         # DISABLED: Sequential Thinking handles hallucination risk now
         #             issues.append("High hallucination risk without memory usage")
         
-        # Check 3: New fact completeness
-        if thinking_plan.get("is_new_fact"):
-            if not thinking_plan.get("new_fact_key"):
-                issues.append("New fact without key")
-            if not thinking_plan.get("new_fact_value"):
-                issues.append("New fact without value")
+        # Check 3: New fact completeness (policy-driven with meta-turn relaxation)
+        logic_cfg = (
+            (self.policy or {}).get("logic", {})
+            if isinstance(self.policy, dict)
+            else {}
+        )
+        enforce_new_fact = bool(logic_cfg.get("enforce_new_fact_completeness", True))
+        if thinking_plan.get("is_new_fact") and enforce_new_fact:
+            if not self._should_relax_new_fact_completeness(thinking_plan, user_text):
+                if not thinking_plan.get("new_fact_key"):
+                    issues.append("New fact without key")
+                if not thinking_plan.get("new_fact_value"):
+                    issues.append("New fact without value")
         
         return {
             "consistent": len(issues) == 0,
@@ -236,6 +250,62 @@ class LightCIM:
             "safe": True,
             "warning": None
         }
+
+    def _should_relax_new_fact_completeness(
+        self,
+        thinking_plan: Dict[str, Any],
+        user_text: str,
+    ) -> bool:
+        logic_cfg = (
+            (self.policy or {}).get("logic", {})
+            if isinstance(self.policy, dict)
+            else {}
+        )
+        relax_cfg = logic_cfg.get("relax_new_fact_completeness", {})
+        if not isinstance(relax_cfg, dict):
+            return False
+        if not bool(relax_cfg.get("enabled", True)):
+            return False
+
+        dialogue_act = str(thinking_plan.get("dialogue_act") or "").strip().lower()
+        allowed_acts = {
+            str(act).strip().lower()
+            for act in relax_cfg.get("dialogue_acts", [])
+            if str(act).strip()
+        }
+        if dialogue_act and dialogue_act in allowed_acts:
+            return True
+
+        intent = str(thinking_plan.get("intent") or "")
+        intent_patterns = [
+            str(pattern)
+            for pattern in relax_cfg.get("intent_regex", [])
+            if str(pattern).strip()
+        ]
+        if self._matches_any_regex(intent, intent_patterns):
+            return True
+
+        user_patterns = [
+            str(pattern)
+            for pattern in relax_cfg.get("user_text_regex", [])
+            if str(pattern).strip()
+        ]
+        if self._matches_any_regex(str(user_text or ""), user_patterns):
+            return True
+
+        return False
+
+    @staticmethod
+    def _matches_any_regex(text: str, patterns: List[str]) -> bool:
+        if not text:
+            return False
+        for pattern in patterns:
+            try:
+                if re.search(pattern, text, flags=re.IGNORECASE):
+                    return True
+            except re.error:
+                continue
+        return False
     
     def _should_escalate(
         self,

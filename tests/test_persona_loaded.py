@@ -15,6 +15,13 @@ import requests
 import sys
 import time
 import json
+import os
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("AI_TEST_LIVE") != "1",
+    reason="Live persona mutation test disabled by default (set AI_TEST_LIVE=1).",
+)
 
 # ============================================================
 # CONFIGURATION

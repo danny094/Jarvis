@@ -40,6 +40,16 @@ def get_thinking_model():
 def get_control_model():
     return settings.get("CONTROL_MODEL", os.getenv("CONTROL_MODEL", "ministral-3:8b"))
 
+
+def get_control_model_deep():
+    """
+    Optional dedicated Control model for deep-mode requests.
+    Falls back to CONTROL_MODEL when not set.
+    """
+    val = str(settings.get("CONTROL_MODEL_DEEP", os.getenv("CONTROL_MODEL_DEEP", ""))).strip()
+    return val or get_control_model()
+
+
 def get_output_model():
     return settings.get("OUTPUT_MODEL", os.getenv("OUTPUT_MODEL", "ministral-3:3b"))
 
@@ -180,6 +190,114 @@ def get_response_mode_sequential_threshold() -> int:
     return max(1, min(10, val))
 
 
+def get_followup_tool_reuse_enable() -> bool:
+    """
+    Enable deterministic follow-up tool reuse for short fact-query follow-ups.
+    """
+    return str(settings.get(
+        "FOLLOWUP_TOOL_REUSE_ENABLE",
+        os.getenv("FOLLOWUP_TOOL_REUSE_ENABLE", "true")
+    )).lower() == "true"
+
+
+def get_followup_tool_reuse_ttl_turns() -> int:
+    """
+    Maximum turn distance (user+assistant pairs) for follow-up tool reuse state.
+    """
+    try:
+        val = int(settings.get(
+            "FOLLOWUP_TOOL_REUSE_TTL_TURNS",
+            os.getenv("FOLLOWUP_TOOL_REUSE_TTL_TURNS", "3")
+        ))
+    except Exception:
+        val = 3
+    return max(1, min(12, val))
+
+
+def get_followup_tool_reuse_ttl_s() -> int:
+    """
+    Time-to-live (seconds) for conversation-local follow-up grounding state.
+    """
+    try:
+        val = int(settings.get(
+            "FOLLOWUP_TOOL_REUSE_TTL_S",
+            os.getenv("FOLLOWUP_TOOL_REUSE_TTL_S", "1200")
+        ))
+    except Exception:
+        val = 1200
+    return max(30, min(86400, val))
+
+
+def get_grounding_auto_recovery_enable() -> bool:
+    """
+    Enable one-shot auto-recovery tool re-run when fact grounding is missing.
+    """
+    return str(settings.get(
+        "GROUNDING_AUTO_RECOVERY_ENABLE",
+        os.getenv("GROUNDING_AUTO_RECOVERY_ENABLE", "true")
+    )).lower() == "true"
+
+
+def get_grounding_auto_recovery_timeout_s() -> float:
+    """
+    Timeout budget in seconds for one-shot grounding auto-recovery.
+    """
+    try:
+        val = float(settings.get(
+            "GROUNDING_AUTO_RECOVERY_TIMEOUT_S",
+            os.getenv("GROUNDING_AUTO_RECOVERY_TIMEOUT_S", "8")
+        ))
+    except Exception:
+        val = 8.0
+    return max(1.0, min(60.0, val))
+
+
+def get_grounding_auto_recovery_whitelist() -> list:
+    """
+    Whitelisted tools that may be retried automatically for grounding recovery.
+    """
+    raw = str(settings.get(
+        "GROUNDING_AUTO_RECOVERY_WHITELIST",
+        os.getenv(
+            "GROUNDING_AUTO_RECOVERY_WHITELIST",
+            "run_skill,get_system_info,memory_graph_search,list_skills"
+        )
+    ))
+    out = []
+    seen = set()
+    for item in raw.split(","):
+        name = str(item or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def get_daily_context_followup_enable() -> bool:
+    """
+    Enable lightweight daily-context fallback for temporal follow-up turns.
+    """
+    return str(settings.get(
+        "DAILY_CONTEXT_FOLLOWUP_ENABLE",
+        os.getenv("DAILY_CONTEXT_FOLLOWUP_ENABLE", "true")
+    )).lower() == "true"
+
+
+def get_tone_signal_override_confidence() -> float:
+    """
+    Minimum classifier confidence to override stale ThinkingLayer tone fields.
+    """
+    try:
+        val = float(settings.get(
+            "TONE_SIGNAL_OVERRIDE_CONFIDENCE",
+            os.getenv("TONE_SIGNAL_OVERRIDE_CONFIDENCE", "0.82")
+        ))
+    except Exception:
+        val = 0.82
+    return max(0.0, min(1.0, val))
+
+
 def get_sequential_timeout_s() -> int:
     """
     Max allowed runtime for non-stream sequential call before fail-open.
@@ -197,9 +315,20 @@ def get_output_char_cap_interactive() -> int:
     """
     val = int(settings.get(
         "OUTPUT_CHAR_CAP_INTERACTIVE",
-        os.getenv("OUTPUT_CHAR_CAP_INTERACTIVE", "1600")
+        os.getenv("OUTPUT_CHAR_CAP_INTERACTIVE", "2600")
     ))
     return max(0, min(50000, val))
+
+
+def get_output_char_cap_interactive_long() -> int:
+    """
+    Relaxed hard cap for interactive mode when length_hint requests long output.
+    """
+    val = int(settings.get(
+        "OUTPUT_CHAR_CAP_INTERACTIVE_LONG",
+        os.getenv("OUTPUT_CHAR_CAP_INTERACTIVE_LONG", "4200")
+    ))
+    return max(400, min(50000, val))
 
 
 def get_output_char_cap_deep() -> int:
@@ -211,6 +340,36 @@ def get_output_char_cap_deep() -> int:
         os.getenv("OUTPUT_CHAR_CAP_DEEP", "12000")
     ))
     return max(0, min(200000, val))
+
+
+def get_output_char_target_interactive() -> int:
+    """
+    Soft target for interactive mode output length (prompt-level guidance).
+    Must stay below hard cap when hard cap > 0.
+    """
+    val = int(settings.get(
+        "OUTPUT_CHAR_TARGET_INTERACTIVE",
+        os.getenv("OUTPUT_CHAR_TARGET_INTERACTIVE", "1800")
+    ))
+    hard_cap = get_output_char_cap_interactive()
+    if hard_cap > 0:
+        val = min(val, max(200, hard_cap - 120))
+    return max(200, min(50000, val))
+
+
+def get_output_char_target_deep() -> int:
+    """
+    Soft target for deep mode output length (prompt-level guidance).
+    Must stay below hard cap when hard cap > 0.
+    """
+    val = int(settings.get(
+        "OUTPUT_CHAR_TARGET_DEEP",
+        os.getenv("OUTPUT_CHAR_TARGET_DEEP", "9000")
+    ))
+    hard_cap = get_output_char_cap_deep()
+    if hard_cap > 0:
+        val = min(val, max(400, hard_cap - 200))
+    return max(400, min(200000, val))
 
 
 def get_output_timeout_interactive_s() -> int:
@@ -233,6 +392,51 @@ def get_output_timeout_deep_s() -> int:
         os.getenv("OUTPUT_TIMEOUT_DEEP_S", "120")
     ))
     return max(5, min(600, val))
+
+
+def get_control_timeout_interactive_s() -> int:
+    """
+    HTTP timeout budget for ControlLayer in interactive mode.
+    """
+    val = int(settings.get(
+        "CONTROL_TIMEOUT_INTERACTIVE_S",
+        os.getenv("CONTROL_TIMEOUT_INTERACTIVE_S", "30")
+    ))
+    return max(5, min(300, val))
+
+
+def get_control_timeout_deep_s() -> int:
+    """
+    HTTP timeout budget for ControlLayer in deep mode.
+    """
+    val = int(settings.get(
+        "CONTROL_TIMEOUT_DEEP_S",
+        os.getenv("CONTROL_TIMEOUT_DEEP_S", "60")
+    ))
+    return max(5, min(600, val))
+
+
+def get_deep_job_timeout_s() -> int:
+    """
+    Hard timeout for /api/chat/deep-jobs worker execution (seconds).
+    """
+    val = int(settings.get(
+        "DEEP_JOB_TIMEOUT_S",
+        os.getenv("DEEP_JOB_TIMEOUT_S", "210")
+    ))
+    return max(30, min(1800, val))
+
+
+def get_deep_job_max_concurrency() -> int:
+    """
+    Max number of parallel deep jobs allowed at API layer.
+    Default is conservative for single-GPU setups.
+    """
+    val = int(settings.get(
+        "DEEP_JOB_MAX_CONCURRENCY",
+        os.getenv("DEEP_JOB_MAX_CONCURRENCY", "1")
+    ))
+    return max(1, min(8, val))
 
 
 def get_loop_engine_trigger_complexity() -> int:
@@ -388,6 +592,30 @@ def get_control_prompt_memory_chars() -> int:
     except Exception:
         val = 1600
     return max(0, min(30000, val))
+
+
+def get_control_endpoint_override(response_mode: str = "interactive") -> str:
+    """
+    Optional endpoint override for ControlLayer.
+    Lookup order:
+      - CONTROL_ENDPOINT_DEEP (only when response_mode=deep)
+      - CONTROL_ENDPOINT
+      - empty string (disabled)
+    """
+    mode = str(response_mode or "").strip().lower()
+    if mode == "deep":
+        deep_val = str(settings.get(
+            "CONTROL_ENDPOINT_DEEP",
+            os.getenv("CONTROL_ENDPOINT_DEEP", "")
+        )).strip()
+        if deep_val:
+            return deep_val.rstrip("/")
+
+    val = str(settings.get(
+        "CONTROL_ENDPOINT",
+        os.getenv("CONTROL_ENDPOINT", "")
+    )).strip()
+    return val.rstrip("/")
 
 # ═══════════════════════════════════════════════════════════════
 # LAYER TOGGLES & OPTIMIERUNG
@@ -944,3 +1172,16 @@ def get_secret_rate_limit() -> int:
         ))
     except Exception:
         return 100
+
+
+def get_skill_auto_create_on_low_risk() -> bool:
+    """
+    Bypass pending_intent confirmation for low-risk skill creation.
+    When true: hallucination_risk==low AND needs_package_install==False → auto-create without user prompt.
+    Default: false (safe — always ask user).
+    Rollback: SKILL_AUTO_CREATE_ON_LOW_RISK=false → kein Code-Revert nötig.
+    """
+    return settings.get(
+        "SKILL_AUTO_CREATE_ON_LOW_RISK",
+        os.getenv("SKILL_AUTO_CREATE_ON_LOW_RISK", "false")
+    ).lower() == "true"

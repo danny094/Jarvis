@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from fastapi import APIRouter
@@ -21,13 +22,13 @@ def _load_mcp_endpoint_module():
     Load mcp/endpoint.py with a stubbed installer router.
     This avoids optional runtime dependency on python-multipart in tests.
     """
-    root = "/DATA/AppData/MCP/Jarvis/Jarvis"
+    root = Path(__file__).resolve().parents[2]
     installer_stub = types.ModuleType("mcp.installer")
     installer_stub.router = APIRouter()
     with patch.dict(sys.modules, {"mcp.installer": installer_stub}):
         spec = importlib.util.spec_from_file_location(
             "mcp_endpoint_toolresult_test",
-            os.path.join(root, "mcp", "endpoint.py"),
+            os.path.join(str(root), "mcp", "endpoint.py"),
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)  # type: ignore[attr-defined]

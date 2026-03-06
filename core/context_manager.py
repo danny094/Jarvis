@@ -14,6 +14,7 @@ Part of: CoreBridge Refactoring Phase 1
 import os
 import json
 import time
+import re
 from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -68,11 +69,92 @@ class ContextManager:
     """
 
     PROTOCOL_DIR = Path(os.environ.get("PROTOCOL_DIR", "/app/memory"))
+    _BLUEPRINT_QUERY_HINTS = (
+        "blueprint",
+        "container",
+        "sandbox",
+        "docker",
+        "kubernetes",
+        "k8s",
+        "podman",
+        "exec_in_container",
+        "request_container",
+        "shell-sandbox",
+        "db-sandbox",
+        "python-sandbox",
+        "node-sandbox",
+    )
+    _BLUEPRINT_TOOL_HINTS = {
+        "request_container",
+        "stop_container",
+        "exec_in_container",
+        "blueprint_list",
+        "container_stats",
+        "container_logs",
+    }
 
     def __init__(self):
         self._protocol_cache = {}  # {filepath: (mtime, content)}
         self._retrieval_executor: Optional[ThreadPoolExecutor] = None
         log_info("[ContextManager] Initialized")
+
+    def _should_include_blueprint_context(self, query: str, thinking_plan: Dict[str, Any]) -> bool:
+        """Inject blueprint context only when the request is container/blueprint related."""
+        plan = thinking_plan if isinstance(thinking_plan, dict) else {}
+        suggested = plan.get("suggested_tools", []) or []
+        suggested_names: List[str] = []
+        for item in suggested:
+            if isinstance(item, dict):
+                name = str(item.get("tool") or item.get("name") or "").strip().lower()
+            else:
+                name = str(item or "").strip().lower()
+            if name:
+                suggested_names.append(name)
+
+        if any(name in self._BLUEPRINT_TOOL_HINTS for name in suggested_names):
+            return True
+
+        query_lower = str(query or "").lower()
+        if any(hint in query_lower for hint in self._BLUEPRINT_QUERY_HINTS):
+            return True
+
+        intent_lower = str(plan.get("intent") or "").lower()
+        if any(hint in intent_lower for hint in ("container", "blueprint", "sandbox")):
+            return True
+
+        return False
+
+    @staticmethod
+    def _is_noise_law_entry(content: str, metadata: Dict[str, Any]) -> bool:
+        """Filter graph pollution from _trion_laws (tool registry fragments)."""
+        text = str(content or "").strip()
+        if not text:
+            return True
+
+        meta = metadata if isinstance(metadata, dict) else {}
+        if any(k in meta for k in ("tool_name", "execution", "mcp", "task_id", "archive_id")):
+            return True
+
+        lower = text.lower()
+        if lower.startswith("memory_search:"):
+            return True
+
+        if ":" in text:
+            lead = text.split(":", 1)[0].strip().lower()
+            if re.fullmatch(r"[a-z][a-z0-9_]{1,63}", lead):
+                if "execution" in lower or "search memory" in lower:
+                    return True
+
+        # Keep only normative law-like statements; drop operational/event snippets.
+        law_markers = (
+            "gesetz", "law", "regel", "muss", "darf", "niemals", "immer",
+            "constraint", "limit", "safety", "sicherheit", "policy",
+            "verbot", "forbidden", "must", "never", "always", "allowed",
+        )
+        if not any(marker in lower for marker in law_markers):
+            return True
+
+        return False
     
     # ═══════════════════════════════════════════════════════════
     # MAIN PUBLIC INTERFACE
@@ -148,6 +230,10 @@ class ContextManager:
                 thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query")
             ):
                 memory_keys = self._normalize_memory_keys(thinking_plan.get("memory_keys", []))
+                # Fallback: ThinkingLayer liefert needs_memory=True aber keine keys
+                if not memory_keys and thinking_plan.get("needs_memory"):
+                    memory_keys = ["user_facts", "personal_info", "preferences"]
+                    log_info("[ContextManager] memory_keys empty despite needs_memory=True → fallback keys")
                 if memory_keys and _budget_ok("small_mode_memory_keys"):
                     key_results = self._search_memory_keys_parallel(
                         keys=memory_keys,
@@ -177,6 +263,21 @@ class ContextManager:
         # Avoids automatic full-protocol dumps on every non-temporal request.
         # Protocol files remain unchanged as truth store; JIT index handles other lookups.
         time_ref = thinking_plan.get("time_reference") if thinking_plan else None
+        if not time_ref:
+            try:
+                from config import get_daily_context_followup_enable
+                if get_daily_context_followup_enable() and bool((thinking_plan or {}).get("needs_chat_history")):
+                    q_lower = str(query or "").strip().lower()
+                    if any(tok in q_lower for tok in ("protokoll", "tagebuch", "was haben wir", "was hatten wir", "was war", "heute", "gestern", "vorgestern")):
+                        if "vorgestern" in q_lower:
+                            time_ref = "day_before_yesterday"
+                        elif "gestern" in q_lower:
+                            time_ref = "yesterday"
+                        else:
+                            time_ref = "today"
+                        log_info(f"[ContextManager] time_reference fallback inferred: {time_ref}")
+            except Exception:
+                pass
         if time_ref:
             protocol_ctx = self._load_daily_protocol(time_reference=time_ref)
             if protocol_ctx:
@@ -234,12 +335,15 @@ class ContextManager:
                 result.sources.append("skill_graph")
                 log_info("[ContextManager] Found skills in graph (legacy renderer)")
 
-        # 1.55. Blueprint Graph: semantische Blueprint-Discovery (immer aktiv)
-        blueprint_ctx = self._search_blueprint_graph(query) if _budget_ok("blueprint_graph") else ""
-        if blueprint_ctx:
-            result.system_tools = (result.system_tools + "\n\n" + blueprint_ctx).strip()
-            result.memory_used = True
-            result.sources.append("blueprint_graph")
+        # 1.55. Blueprint Graph: nur bei container/blueprint-relevanten Anfragen
+        if self._should_include_blueprint_context(query, thinking_plan):
+            blueprint_ctx = self._search_blueprint_graph(query) if _budget_ok("blueprint_graph") else ""
+            if blueprint_ctx:
+                result.system_tools = (result.system_tools + "\n\n" + blueprint_ctx).strip()
+                result.memory_used = True
+                result.sources.append("blueprint_graph")
+        else:
+            log_info("[ContextManager] Blueprint context skipped (query not blueprint-related)")
 
         # 1.6. SkillKnowledgeBase Hint (winziger Kontext-Footprint, immer da)
         kb_hint = self._load_skill_knowledge_hint() if _budget_ok("skill_knowledge_hint") else ""
@@ -253,6 +357,10 @@ class ContextManager:
             log_info(f"[ContextManager] Skipping memory search — time_reference={time_ref}, protocol is source")
         elif thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query"):
             memory_keys = self._normalize_memory_keys(thinking_plan.get("memory_keys", []))
+            # Fallback: ThinkingLayer liefert needs_memory=True aber keine keys
+            if not memory_keys and thinking_plan.get("needs_memory"):
+                memory_keys = ["user_facts", "personal_info", "preferences"]
+                log_info("[ContextManager] memory_keys empty despite needs_memory=True → fallback keys")
             if memory_keys and _budget_ok("memory_keys_loop"):
                 key_results = self._search_memory_keys_parallel(
                     keys=memory_keys,
@@ -916,13 +1024,21 @@ class ContextManager:
             results = graph_search("_trion_laws", "hardware limits laws constraints", depth=0, limit=20)
             if not results:
                 return ""
+            seen = set()
             lines = []
             for r in results:
                 content = r.get("content", "").strip()
-                if content:
-                    lines.append(f"⚖️ {content}")
+                metadata = r.get("metadata", {}) if isinstance(r, dict) else {}
+                if not content or self._is_noise_law_entry(content, metadata):
+                    continue
+                key = content.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(f"⚖️ {content}")
             if lines:
                 return "TRION-GESETZE (unumstößlich):\n" + "\n".join(lines)
+            log_warn("[ContextManager] TRION laws retrieval returned only noisy entries; skipping block")
         except Exception as e:
             pass
         return ""

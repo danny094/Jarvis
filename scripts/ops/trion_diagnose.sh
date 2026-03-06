@@ -39,6 +39,7 @@ FIX_SAFE=false
 EXPORT=false
 NO_LOGS=false
 SINCE="2h"
+LOG_HOT_WINDOW="${TRION_DIAG_LOG_HOT_WINDOW:-15m}"
 REDACT=false
 YES=false
 
@@ -67,6 +68,7 @@ Actions:
 Log controls:
   --no-logs            Skip service log sampling
   --since=<window>     Log window (default: 2h), e.g. 30m, 4h
+  (env) TRION_DIAG_LOG_HOT_WINDOW=<window>  Freshness window for severity (default: 15m)
   --redact             Redact basic IP/email patterns in sampled log text
 
 Other:
@@ -279,8 +281,14 @@ if $docker_ok; then
     add_meta "service_${name}_image" "${image_ref}"
 
     if [ "${state}" != "running" ]; then
-      add_finding "HIGH" "SERVICE_DOWN_${name}" "${name} state=${state} exit_code=${exit_code}" "docker compose -f ${COMPOSE_FILE} up -d ${name}"
-      add_fix "docker compose -f '${COMPOSE_FILE}' up -d ${name}" "Start missing/stopped service ${name}"
+      # digest-worker is mode-dependent and validated later against runtime flags.
+      # Avoid premature HIGH findings when DIGEST_RUN_MODE=off is intentional.
+      if [ "${name}" = "digest-worker" ]; then
+        add_finding "INFO" "SERVICE_DOWN_${name}" "${name} state=${state} exit_code=${exit_code} (validated against digest_run_mode later)" ""
+      else
+        add_finding "HIGH" "SERVICE_DOWN_${name}" "${name} state=${state} exit_code=${exit_code}" "docker compose -f ${COMPOSE_FILE} up -d ${name}"
+        add_fix "docker compose -f '${COMPOSE_FILE}' up -d ${name}" "Start missing/stopped service ${name}"
+      fi
     elif [ "${health}" = "unhealthy" ]; then
       add_finding "HIGH" "SERVICE_UNHEALTHY_${name}" "${name} unhealthy" "docker compose -f ${COMPOSE_FILE} restart ${name}"
       add_fix "docker compose -f '${COMPOSE_FILE}' restart ${name}" "Restart unhealthy service ${name}"
@@ -499,10 +507,20 @@ if [ "${MODE}" = "full" ] && ! $NO_LOGS && $docker_ok; then
           mv "${log_file}.redacted" "${log_file}"
         fi
         err_count="$(grep -Ei 'error|exception|traceback|failed|critical' "${log_file}" | wc -l | tr -d ' ' || true)"
+        hot_log_file="${TMP_LOGS_DIR}/${svc}.hot.log"
+        hot_err_count="0"
+        if docker logs --since "${LOG_HOT_WINDOW}" "${svc}" > "${hot_log_file}" 2>&1; then
+          hot_err_count="$(grep -Ei 'error|exception|traceback|failed|critical' "${hot_log_file}" | wc -l | tr -d ' ' || true)"
+        fi
         add_meta "log_errors_${svc}" "${err_count}"
+        add_meta "log_errors_recent_${svc}" "${hot_err_count}"
         if [ "${err_count}" -gt 0 ] 2>/dev/null; then
           sample="$(grep -Ei 'error|exception|traceback|failed|critical' "${log_file}" | head -n3 | tr '\n' ' ' | cut -c1-350 || true)"
-          add_finding "MEDIUM" "LOG_ERRORS_${svc}" "${svc} shows ${err_count} error-like lines (sample: ${sample})" "docker logs --since ${SINCE} ${svc}"
+          if [ "${hot_err_count}" -gt 0 ] 2>/dev/null; then
+            add_finding "MEDIUM" "LOG_ERRORS_${svc}" "${svc} shows ${err_count} error-like lines (${hot_err_count} in last ${LOG_HOT_WINDOW}; sample: ${sample})" "docker logs --since ${SINCE} ${svc}"
+          else
+            add_finding "INFO" "LOG_ERRORS_STALE_${svc}" "${svc} has ${err_count} older error-like lines in ${SINCE}, but none in last ${LOG_HOT_WINDOW}" "docker logs --since ${SINCE} ${svc}"
+          fi
         else
           add_finding "PASS" "LOG_ERRORS_${svc}" "${svc} log sample has no error-like lines" ""
         fi

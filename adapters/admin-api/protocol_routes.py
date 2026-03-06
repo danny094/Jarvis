@@ -18,6 +18,7 @@ router = APIRouter()
 
 PROTOCOL_DIR = Path(os.environ.get("PROTOCOL_DIR", "/app/memory"))
 STATUS_FILE = PROTOCOL_DIR / ".protocol_status.json"
+DATE_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # File-level locks keyed by filepath
 _locks = {}
@@ -44,6 +45,11 @@ def _load_status() -> dict:
 
 def _save_status(status: dict):
     STATUS_FILE.write_text(json.dumps(status, indent=2))
+
+
+def _is_protocol_date_stem(stem: str) -> bool:
+    """Accept only canonical daily protocol filenames: YYYY-MM-DD.md."""
+    return bool(DATE_FILE_RE.fullmatch(str(stem or "").strip()))
 
 
 def _parse_entries(content: str) -> list:
@@ -81,6 +87,8 @@ async def protocol_list():
 
     for f in sorted(PROTOCOL_DIR.glob("*.md"), reverse=True):
         date_str = f.stem  # YYYY-MM-DD
+        if not _is_protocol_date_stem(date_str):
+            continue
         merged = status.get(date_str, False)
         content = f.read_text()
         entry_count = len(_parse_entries(content))
@@ -127,6 +135,8 @@ async def protocol_unmerged_count():
 
     for f in PROTOCOL_DIR.glob("*.md"):
         date_str = f.stem
+        if not _is_protocol_date_stem(date_str):
+            continue
         if not status.get(date_str, False):
             content = f.read_text()
             if _parse_entries(content):

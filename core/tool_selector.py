@@ -5,6 +5,7 @@ Nur noch Semantic Search — kein LLM-Call mehr.
 ControlLayer übernimmt die finale Entscheidung via Function Calling.
 """
 
+import asyncio
 import logging
 from typing import List, Dict, Optional, Any
 
@@ -36,7 +37,7 @@ class ToolSelector:
             return None
 
         try:
-            candidates = self._get_candidates(user_text)
+            candidates = await self._get_candidates(user_text)
             if not candidates:
                 return None
             names = [c["name"] for c in candidates]
@@ -46,7 +47,7 @@ class ToolSelector:
             logger.error(f"[ToolSelector] Error: {e}")
             return None
 
-    def _get_candidates(self, query: str) -> List[Dict[str, Any]]:
+    async def _get_candidates(self, query: str) -> List[Dict[str, Any]]:
         """Semantic Search → Tool-Kandidaten. Kein LLM-Call."""
         if not self.hub.get_mcp_for_tool("memory_semantic_search"):
             # Startup race recovery: refresh once if sql-memory came up late.
@@ -65,11 +66,18 @@ class ToolSelector:
         try:
             limit = get_tool_selector_candidate_limit()
             min_similarity = get_tool_selector_min_similarity()
-            result = self.hub.call_tool("memory_semantic_search", {
-                "query": query,
-                "limit": limit,
-                "min_similarity": min_similarity,
-            })
+            if hasattr(self.hub, "call_tool_async"):
+                result = await self.hub.call_tool_async("memory_semantic_search", {
+                    "query": query,
+                    "limit": limit,
+                    "min_similarity": min_similarity,
+                })
+            else:
+                result = await asyncio.to_thread(self.hub.call_tool, "memory_semantic_search", {
+                    "query": query,
+                    "limit": limit,
+                    "min_similarity": min_similarity,
+                })
             if isinstance(result, dict) and result.get("error"):
                 logger.warning(f"[ToolSelector] Semantic search error: {result.get('error')}")
                 return []
@@ -86,11 +94,15 @@ class ToolSelector:
                 key = meta.get("key", "")
                 if key.startswith("tool_"):
                     tool_name = key[5:]
-                    if tool_name and tool_name not in seen:
-                        seen.add(tool_name)
-                        candidates.append({"name": tool_name, "description": meta.get("description", "")})
-                        if len(candidates) >= limit:
-                            break
+                elif key.startswith("skill_"):
+                    tool_name = key[6:]
+                else:
+                    tool_name = ""
+                if tool_name and tool_name not in seen:
+                    seen.add(tool_name)
+                    candidates.append({"name": tool_name, "description": meta.get("description", "")})
+                    if len(candidates) >= limit:
+                        break
             if dropped_low_similarity:
                 logger.info(
                     "[ToolSelector] Dropped %d low-similarity rows (< %.2f)",

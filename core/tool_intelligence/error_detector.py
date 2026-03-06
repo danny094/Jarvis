@@ -7,6 +7,7 @@ Classifies tool errors and determines if they are retryable.
 import re
 from typing import Dict, Any, Optional
 from utils.logger import log_info, log_warn, log_error, log_debug
+from core.tool_execution_policy import load_tool_execution_policy
 
 
 def _has_meaningful_error(value: Any) -> bool:
@@ -19,6 +20,91 @@ def _has_meaningful_error(value: Any) -> bool:
     if isinstance(value, (list, dict, tuple, set)):
         return len(value) > 0
     return True
+
+
+def _stringify_error_value(value: Any, max_len: int = 240) -> str:
+    if isinstance(value, str):
+        text = value.strip()
+    elif isinstance(value, (dict, list, tuple, set)):
+        try:
+            text = str(value)
+        except Exception:
+            text = "<complex error payload>"
+    else:
+        text = str(value)
+    if len(text) > max_len:
+        return text[:max_len] + "..."
+    return text
+
+
+def _collect_semantic_errors(
+    value: Any,
+    *,
+    keys: set[str],
+    ignore_paths: set[str],
+    max_depth: int,
+    max_hits: int,
+    depth: int = 0,
+    path: Optional[list[str]] = None,
+    hits: Optional[list[tuple[str, str]]] = None,
+) -> list[tuple[str, str]]:
+    if hits is None:
+        hits = []
+    if path is None:
+        path = []
+    if len(hits) >= max_hits or depth > max_depth:
+        return hits
+
+    if isinstance(value, dict):
+        for k, v in value.items():
+            key = str(k or "").strip()
+            if not key:
+                continue
+            child_path = path + [key]
+            path_str = ".".join(child_path).lower()
+            if path_str in ignore_paths:
+                continue
+            if key.lower() in keys and _has_meaningful_error(v):
+                hits.append((path_str, _stringify_error_value(v)))
+                if len(hits) >= max_hits:
+                    return hits
+            if isinstance(v, (dict, list)):
+                _collect_semantic_errors(
+                    v,
+                    keys=keys,
+                    ignore_paths=ignore_paths,
+                    max_depth=max_depth,
+                    max_hits=max_hits,
+                    depth=depth + 1,
+                    path=child_path,
+                    hits=hits,
+                )
+                if len(hits) >= max_hits:
+                    return hits
+        return hits
+
+    if isinstance(value, list):
+        for idx, item in enumerate(value):
+            child_path = path + [f"[{idx}]"]
+            path_str = ".".join(child_path).lower()
+            if path_str in ignore_paths:
+                continue
+            if isinstance(item, (dict, list)):
+                _collect_semantic_errors(
+                    item,
+                    keys=keys,
+                    ignore_paths=ignore_paths,
+                    max_depth=max_depth,
+                    max_hits=max_hits,
+                    depth=depth + 1,
+                    path=child_path,
+                    hits=hits,
+                )
+                if len(hits) >= max_hits:
+                    return hits
+        return hits
+
+    return hits
 
 
 def detect_tool_error(result: Any) -> tuple[bool, Optional[str]]:
@@ -50,6 +136,49 @@ def detect_tool_error(result: Any) -> tuple[bool, Optional[str]]:
         if _has_meaningful_error(err_value) and result.get("success") is not True:
             is_error = True
             error_msg = str(err_value)
+    
+    # Check semantic nested errors (policy-based, model-agnostic)
+    if not is_error and isinstance(result, dict):
+        policy = load_tool_execution_policy()
+        sem_cfg = (policy or {}).get("semantic_error", {})
+        if bool(sem_cfg.get("enabled", True)):
+            keys = {
+                str(k).strip().lower()
+                for k in sem_cfg.get("keys", ["error", "errors", "exception", "traceback", "failure", "failure_reason"])
+                if str(k).strip()
+            }
+            ignore_paths = {
+                str(p).strip().lower()
+                for p in sem_cfg.get("ignore_paths", [])
+                if str(p).strip()
+            }
+            try:
+                max_depth = max(1, int(sem_cfg.get("max_depth", 4)))
+            except Exception:
+                max_depth = 4
+            try:
+                max_hits = max(1, int(sem_cfg.get("max_hits", 3)))
+            except Exception:
+                max_hits = 3
+
+            hits = _collect_semantic_errors(
+                result,
+                keys=keys or {"error"},
+                ignore_paths=ignore_paths,
+                max_depth=max_depth,
+                max_hits=max_hits,
+            )
+
+            # Backward-compat: top-level success=true + error field should not flip to error
+            # unless nested semantic errors exist (e.g. result.error in run_skill payload).
+            top_success = result.get("success") is True
+            if top_success:
+                hits = [(path, msg) for path, msg in hits if path != "error"]
+
+            if hits:
+                first_path, first_msg = hits[0]
+                is_error = True
+                error_msg = f"semantic_error@{first_path}: {first_msg}"
     
     # Check String errors (common pattern)
     elif isinstance(result, str):

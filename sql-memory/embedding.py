@@ -261,7 +261,15 @@ def _resolve_runtime_config() -> dict:
     cfg = _rt_cache.get("config")
     if isinstance(cfg, dict):
         return cfg
-    # Fail-open default until first background refresh succeeds.
+
+    # Cold-start path: try one synchronous refresh so callers can consume
+    # active_policy immediately instead of waiting for the background worker tick.
+    _refresh_runtime_config_once()
+    cfg = _rt_cache.get("config")
+    if isinstance(cfg, dict):
+        return cfg
+
+    # Fail-open default if refresh could not provide a dict for any reason.
     cfg = _default_runtime_config()
     _rt_cache["config"] = cfg
     _rt_cache["ts"] = time.time()

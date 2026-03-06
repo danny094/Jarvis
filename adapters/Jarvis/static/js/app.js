@@ -4,7 +4,15 @@ import { getModels, checkHealth, setApiBase, getApiBase } from "./api.js";
 
 // Expose getApiBase to window for non-module scripts
 window.getApiBase = getApiBase;
-import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount, initChatFromStorage } from "./chat.js?v=1771975000";
+import {
+    setModel,
+    handleUserMessage,
+    clearChat,
+    setHistoryLimit,
+    getMessageCount,
+    initChatFromStorage,
+    cancelActiveRequest
+} from "./chat.js?v=1771975001";
 import { log, clearLogs, setVerbose } from "./debug.js";
 // NOTE: Settings UI is handled exclusively by js/apps/settings.js (lazy-loaded by shell.js).
 // Do NOT call initSettings() from static/js/settings.js here — it would create a second controller.
@@ -295,6 +303,16 @@ function setupEventListeners() {
             if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
+            }
+        });
+    }
+
+    const cancelBtn = document.getElementById("cancel-btn");
+    if (cancelBtn) {
+        cancelBtn.addEventListener("click", () => {
+            const canceled = cancelActiveRequest();
+            if (canceled) {
+                log("info", "Active request canceled by user");
             }
         });
     }

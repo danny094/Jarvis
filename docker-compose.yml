@@ -133,12 +133,12 @@ services:
     - ./memory:/app/memory
     - ./memory_speicher:/app/memory_speicher
     - ./adapters/admin-api/runtime_routes.py:/app/runtime_routes.py:ro
-    # SysInfo: nvidia-smi + NVML für GPU-Diagnose (read-only)
-    - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
-    - /lib/x86_64-linux-gnu/libnvidia-ml.so.1:/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+    # SysInfo GPU diagnostics (overrideable; defaults use local stubs)
+    - ${TRION_NVIDIA_SMI_PATH:-./scripts/stubs/nvidia-smi}:/usr/bin/nvidia-smi:ro
+    - ${TRION_NVIDIA_ML_LIB_PATH:-./scripts/stubs/libnvidia-ml.so.1}:/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
     devices:
-    - /dev/nvidiactl:/dev/nvidiactl
-    - /dev/nvidia0:/dev/nvidia0
+    - ${TRION_NVIDIA_CTL_DEVICE:-/dev/null}:/dev/nvidiactl
+    - ${TRION_NVIDIA0_DEVICE:-/dev/null}:/dev/nvidia0
     networks:
     - big-bear-lobe-chat_default
     group_add:
@@ -257,7 +257,8 @@ services:
     - EXECUTOR_URL=http://tool-executor:8000
     - MEMORY_URL=http://mcp-sql-memory:8081
     volumes:
-    - /DATA/AppData/MCP/Jarvis/shared_skills:/skills:ro
+    # Portable default; can be overridden via TRION_SHARED_SKILLS_DIR in .env
+    - ${TRION_SHARED_SKILLS_DIR:-./shared_skills}:/skills:ro
     ports:
     - 8088:8088
     networks:
@@ -276,14 +277,14 @@ services:
     - PLUGINS_DIR=/trion/plugins
     - INTERNAL_SECRET_RESOLVE_TOKEN=${INTERNAL_SECRET_RESOLVE_TOKEN:-trion-internal-secret-resolve-token}
     volumes:
-    - /DATA/AppData/MCP/Jarvis/shared_skills:/skills:rw
-    - ~/.trion/plugins:/trion/plugins:rw
-    # GPU info access: nvidia-smi + NVML library (read-only, für system_hardware_info Skill)
-    - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
-    - /lib/x86_64-linux-gnu/libnvidia-ml.so.1:/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+    - ${TRION_SHARED_SKILLS_DIR:-./shared_skills}:/skills:rw
+    - ${TRION_PLUGINS_DIR:-./trion/plugins-host}:/trion/plugins:rw
+    # GPU diagnostics mounts are overrideable; defaults point to local stubs for portability.
+    - ${TRION_NVIDIA_SMI_PATH:-./scripts/stubs/nvidia-smi}:/usr/bin/nvidia-smi:ro
+    - ${TRION_NVIDIA_ML_LIB_PATH:-./scripts/stubs/libnvidia-ml.so.1}:/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
     devices:
-    - /dev/nvidiactl:/dev/nvidiactl
-    - /dev/nvidia0:/dev/nvidia0
+    - ${TRION_NVIDIA_CTL_DEVICE:-/dev/null}:/dev/nvidiactl
+    - ${TRION_NVIDIA0_DEVICE:-/dev/null}:/dev/nvidia0
     ports:
     - 8000:8000
     networks:
@@ -312,6 +313,7 @@ services:
     - DIGEST_LOCK_PATH=memory_speicher/digest.lock
     volumes:
     - ./core:/app/core:ro
+    - ./mcp_registry.py:/app/mcp_registry.py:ro
     - ./config.py:/app/config.py:ro
     - ./utils:/app/utils:ro
     - ./scripts/digest_worker.py:/app/scripts/digest_worker.py:ro

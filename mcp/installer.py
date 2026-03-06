@@ -3,7 +3,7 @@ MCP Installation & Management Module
 Handles Tier 1 (Simple Python) MCPs only
 """
 import asyncio
-from fastapi import APIRouter, UploadFile, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pathlib import Path
 import shutil
 import zipfile
@@ -95,7 +95,7 @@ async def _run_post_install_health_check(hub, mcp_name: str, attempts: int = 8, 
     return {"status": "unhealthy", "reason": reason}
 
 @router.post("/install")
-async def install_mcp(file: UploadFile):
+async def install_mcp(file=None, request: Request = None):
     """
     Install a Tier 1 (Simple) MCP from ZIP upload.
     
@@ -110,6 +110,34 @@ async def install_mcp(file: UploadFile):
     
     try:
         # PHASE 1: Upload & Size Check
+        if file is None and request is not None:
+            content_type = str(request.headers.get("content-type", "")).lower()
+            if "multipart/form-data" in content_type:
+                try:
+                    form = await request.form()
+                except Exception as e:
+                    raise HTTPException(
+                        400,
+                        "Multipart upload requires python-multipart at runtime",
+                    ) from e
+                file = form.get("file")
+            else:
+                body = await request.body()
+                if body:
+                    class _BodyUpload:
+                        filename = "mcp_upload.zip"
+
+                        def __init__(self, payload: bytes):
+                            self._payload = payload
+
+                        async def read(self):
+                            return self._payload
+
+                    file = _BodyUpload(body)
+
+        if file is None:
+            raise HTTPException(400, "No file upload provided")
+
         content = await file.read()
         if len(content) > MAX_SIZE:
             raise HTTPException(400, "File too large (max 50MB)")

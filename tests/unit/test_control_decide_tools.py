@@ -26,6 +26,20 @@ class _BrokenDiscoveryHub:
         raise RuntimeError("hub discovery unavailable")
 
 
+class _SkillPayloadHub:
+    def __init__(self, payload):
+        self._tool_definitions = {}
+        self._payload = payload
+
+    def get_mcp_for_tool(self, _name):
+        return None
+
+    def call_tool(self, name, _args):
+        if name == "list_skills":
+            return self._payload
+        return {}
+
+
 class TestControlDecideTools(unittest.TestCase):
     def test_decide_tools_filters_unavailable_and_dedupes(self):
         layer = ControlLayer()
@@ -183,6 +197,39 @@ class TestControlDecideTools(unittest.TestCase):
         self.assertEqual(len(decided), 1)
         self.assertEqual(decided[0]["name"], "autonomous_skill_task")
         self.assertEqual(decided[0]["arguments"], {})
+
+    def test_get_available_skills_reads_installed_payload(self):
+        layer = ControlLayer()
+        layer.set_mcp_hub(_SkillPayloadHub({
+            "installed": [
+                {"name": "system_hardware_info"},
+                {"name": "current_weather"},
+            ]
+        }))
+        self.assertEqual(
+            layer._get_available_skills(),
+            ["system_hardware_info", "current_weather"],
+        )
+
+    def test_get_available_skills_reads_structured_content_payload(self):
+        layer = ControlLayer()
+        layer.set_mcp_hub(_SkillPayloadHub({
+            "structuredContent": {
+                "installed": [{"name": "system_hardware_info"}],
+                "active": ["temperature_berlin"],
+            }
+        }))
+        self.assertEqual(
+            layer._get_available_skills(),
+            ["system_hardware_info", "temperature_berlin"],
+        )
+
+    def test_is_tool_available_accepts_installed_skill_name(self):
+        layer = ControlLayer()
+        layer.set_mcp_hub(_SkillPayloadHub({
+            "installed": [{"name": "system_hardware_info"}],
+        }))
+        self.assertTrue(layer._is_tool_available("system_hardware_info"))
 
 
 if __name__ == "__main__":

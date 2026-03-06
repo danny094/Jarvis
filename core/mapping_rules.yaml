@@ -143,3 +143,95 @@ output:
     next_strategy:
       - "goal"
       - "single_next_step"
+
+# Grounding policy for factual outputs (layer-preserving, non-hardcoded).
+# Used by orchestrator + output layer.
+grounding:
+  control:
+    force_verify_for_fact_query: true
+  output:
+    enforce_evidence_for_fact_query: true
+    enforce_evidence_when_tools_used: true
+    enforce_evidence_when_tools_suggested: true
+    min_successful_evidence: 1
+    allowed_evidence_statuses: ["ok"]
+    fact_query_response_mode: "hybrid"
+    fallback_mode: "explicit_uncertainty"
+    enable_postcheck_repair_once: true
+    forbid_new_numeric_claims: true
+    forbid_unverified_qualitative_claims: true
+    qualitative_claim_guard:
+      min_token_length: 5
+      max_overall_novelty_ratio: 0.72
+      max_sentence_novelty_ratio: 0.82
+      min_sentence_tokens: 4
+      min_assertive_sentence_violations: 1
+      assertive_cues:
+        - "is"
+        - "are"
+        - "runs"
+        - "running"
+        - "uses"
+        - "using"
+        - "has"
+        - "have"
+        - "läuft"
+        - "nutzt"
+        - "hat"
+        - "ist"
+        - "besteht"
+        - "verfügt"
+        - "befindet"
+      ignored_tokens:
+        - "system"
+        - "assistant"
+        - "modell"
+        - "model"
+        - "response"
+        - "antwort"
+        - "tool"
+        - "tools"
+        - "fakten"
+        - "faktenlage"
+        - "daten"
+        - "information"
+        - "informationen"
+        - "verifiziert"
+        - "nicht"
+        - "ohne"
+        - "direkt"
+        - "aktuell"
+        - "heute"
+  memory:
+    autosave_requires_evidence_for_fact_query: true
+
+# Tool execution policy (non-prompt, deterministic runtime behavior).
+tool_execution:
+  semantic_error:
+    enabled: true
+    keys: ["error", "errors", "exception", "traceback", "failure", "failure_reason"]
+    max_depth: 4
+    max_hits: 3
+    ignore_paths: []
+  conversational_guard:
+    suppress_dialogue_acts: ["ack", "feedback", "smalltalk"]
+    suppress_tools: ["run_skill", "create_skill", "autonomous_skill_task"]
+    allow_question_suffix_bypass: false
+
+# Light-CIM logic policy (non-prompt safety tuning).
+light_cim:
+  logic:
+    enforce_new_fact_completeness: true
+    relax_new_fact_completeness:
+      enabled: true
+      dialogue_acts: ["smalltalk", "ack", "feedback"]
+      intent_regex:
+        - "\\bselbstdarstellung\\b"
+        - "\\bmetakogn"
+        - "\\bself[-\\s]?description\\b"
+        - "\\b(körper|body)\\b"
+      user_text_regex:
+        - "\\bwie fühlst du\\b"
+        - "\\bdescribe your\\b"
+        - "\\bbeschreib[e]? deinen\\b"
+        - "\\bdein(?:e|en)? hardware\\b"

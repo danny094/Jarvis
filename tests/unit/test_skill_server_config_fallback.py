@@ -13,7 +13,37 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-_ROOT = "/DATA/AppData/MCP/Jarvis/Jarvis"
+def _detect_project_root() -> str:
+    env_root = str(os.getenv("JARVIS_PROJECT_ROOT") or "").strip()
+    candidates = []
+    if env_root:
+        candidates.append(env_root)
+
+    cur = os.path.abspath(os.path.dirname(__file__))
+    for _ in range(8):
+        candidates.append(cur)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    candidates.append(os.getcwd())
+    candidates.append("/DATA/AppData/MCP/Jarvis/Jarvis")
+
+    seen = set()
+    for cand in candidates:
+        root = os.path.abspath(str(cand or "").strip())
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        if os.path.exists(os.path.join(root, "config.py")) and os.path.exists(
+            os.path.join(root, "core")
+        ):
+            return root
+    return os.path.abspath(candidates[-1])
+
+
+_ROOT = _detect_project_root()
 _SKILL_SERVER = os.path.join(_ROOT, "mcp-servers", "skill-server")
 
 

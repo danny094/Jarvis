@@ -262,11 +262,13 @@ class TestSaveWorkspaceEntry:
             if original_get_hub is not None:
                 orch_module.get_hub = original_get_hub
 
-        mock_hub.call_tool.assert_called_once_with("workspace_save", {
+        mock_hub.call_tool.assert_called_once_with("workspace_event_save", {
             "conversation_id": "conv-X",
-            "content": "my content",
-            "entry_type": "task",
-            "source_layer": "control",
+            "event_type": "task",
+            "event_data": {
+                "content": "my content",
+                "source_layer": "control",
+            },
         })
 
 
@@ -320,3 +322,55 @@ class TestWorkspaceEmissionInPipeline:
         assert "compose" in result
         assert "Corrections" in result
         assert "docker_setup" in result
+
+
+class TestSequentialWorkspacePersistence:
+    """Test sequential planning telemetry helpers."""
+
+    def _make_orch(self):
+        return PipelineOrchestrator.__new__(PipelineOrchestrator)
+
+    def test_build_step_summary_contains_core_fields(self):
+        orch = self._make_orch()
+        entry_type, content = orch._build_sequential_workspace_summary({
+            "type": "sequential_step",
+            "task_id": "seq-1234",
+            "step_number": 2,
+            "title": "Collect Evidence",
+            "thought": "Detailed reasoning text",
+        })
+        assert entry_type == "planning_step"
+        assert "task_id=seq-1234" in content
+        assert "step=2" in content
+        assert "title=Collect Evidence" in content
+        assert "thought_len=" in content
+
+    def test_persist_ignores_non_sequential_events(self):
+        orch = self._make_orch()
+        result = orch._persist_sequential_workspace_event(
+            "conv-1",
+            {"type": "tool_result", "tool": "get_system_info"},
+        )
+        assert result is None
+
+    def test_persist_routes_through_save_workspace_entry(self):
+        orch = self._make_orch()
+        orch._save_workspace_entry = MagicMock(return_value={"type": "workspace_update", "entry_id": 99})
+
+        result = orch._persist_sequential_workspace_event(
+            "conv-2",
+            {
+                "type": "sequential_done",
+                "task_id": "seq-8888",
+                "steps": [{"step": 1}],
+                "summary": "1 step completed",
+            },
+        )
+
+        assert result == {"type": "workspace_update", "entry_id": 99}
+        orch._save_workspace_entry.assert_called_once()
+        args, kwargs = orch._save_workspace_entry.call_args
+        assert kwargs["conversation_id"] == "conv-2"
+        assert kwargs["entry_type"] == "planning_done"
+        assert kwargs["source_layer"] == "sequential"
+        assert "steps=1" in kwargs["content"]

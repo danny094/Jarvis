@@ -430,8 +430,10 @@ export async function pollUnmergedCount() {
 // ═══════════════════════════════════════════════════════════
 
 function formatDateShort(dateStr) {
-    const [y, m, d] = dateStr.split("-");
-    return `${d}.${m}`;
+    const raw = String(dateStr || "").trim();
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return raw || "Unbekannt";
+    return `${match[3]}.${match[2]}`;
 }
 
 function escapeHtml(text) {

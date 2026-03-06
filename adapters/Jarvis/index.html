@@ -196,13 +196,26 @@
                         <i data-lucide="arrow-up" class="w-4 h-4"></i>
                     </button>
                 </div>
-                <div class="mt-2 flex items-center justify-between text-[10px] text-gray-600 font-mono">
+                <div class="mt-2 flex items-center justify-between text-[10px] text-gray-600 font-mono gap-3">
                     <label for="deep-job-toggle" class="flex items-center gap-2 cursor-pointer select-none">
                         <input id="deep-job-toggle" type="checkbox"
                             class="w-3.5 h-3.5 rounded border-dark-border bg-dark-card text-accent-primary focus:ring-accent-primary/50">
                         <span>DEEP JOB (ASYNC)</span>
                     </label>
-                    <span>TR/ON AI SYSTEM v2.0 • AGENTIC MODE ACTIVE</span>
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div id="trion-activity" data-active="false" data-stalled="false"
+                            class="flex items-center gap-1.5 text-gray-500 min-w-0">
+                            <span id="trion-activity-pipe" class="trion-activity-pipe text-accent-primary">|</span>
+                            <span id="trion-activity-text" class="truncate">Ready for input</span>
+                        </div>
+                        <button id="cancel-btn"
+                            class="hidden px-2 py-1 rounded-md border border-accent-primary/40 text-accent-primary hover:bg-accent-primary/10 transition-colors">
+                            Stop
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-1 text-[10px] text-gray-600 font-mono text-right">
+                    TR/ON AI SYSTEM v2.0 • AGENTIC MODE ACTIVE
                 </div>
             </div>
         </div>
