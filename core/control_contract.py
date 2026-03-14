@@ -237,11 +237,40 @@ def control_decision_from_plan(
         return ControlDecision.from_verification({}, default_approved=default_approved)
     value = plan.get("_control_decision")
     if isinstance(value, dict):
-        return ControlDecision.from_verification(value, default_approved=default_approved)
-    obj = plan.get("_control_decision_obj")
-    if isinstance(obj, ControlDecision):
-        return obj
-    return ControlDecision.from_verification({}, default_approved=default_approved)
+        cd = ControlDecision.from_verification(value, default_approved=default_approved)
+    else:
+        obj = plan.get("_control_decision_obj")
+        if isinstance(obj, ControlDecision):
+            cd = obj
+        else:
+            cd = ControlDecision.from_verification({}, default_approved=default_approved)
+
+    # A1 Fix: enforce INV-01 — gate_blocked=True + approved=True is illegal.
+    # Blueprint Gate runs pre-Control and signals that request_container cannot proceed
+    # (no blueprint_id available). Control must not silently override this routing constraint.
+    # We reconcile here at read-time so the illegal state never propagates downstream.
+    if cd.approved and plan.get("_blueprint_gate_blocked"):
+        suggested = list(plan.get("suggested_tools") or [])
+        current_allowed = list(cd.tools_allowed) or suggested
+        # Exclude request_container — gate block makes it unexecutable regardless.
+        effective = [t for t in current_allowed if t != "request_container"]
+        gate_reason = str(plan.get("_blueprint_gate_reason") or "blueprint_routing_required")
+        if effective:
+            # Other tools remain approved; only request_container is excluded.
+            cd = cd.with_tools_allowed(effective)
+        else:
+            # request_container was the only tool (or no tools known) — downgrade to routing_block.
+            cd = ControlDecision(
+                approved=False,
+                hard_block=False,
+                decision_class="routing_block",
+                block_reason_code="blueprint_routing_required",
+                reason=f"Blueprint gate blocked request_container: {gate_reason}",
+                source="control_gate_reconcile",
+                policy_version=cd.policy_version,
+            )
+
+    return cd
 
 
 def persist_control_decision(plan: Optional[MutableMapping[str, Any]], decision: ControlDecision) -> None:
