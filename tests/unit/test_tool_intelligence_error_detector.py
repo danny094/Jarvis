@@ -14,6 +14,17 @@ def test_detect_tool_error_dict_error_with_success_true_is_not_error():
     assert error_msg is None
 
 
+def test_detect_tool_error_nested_result_error_with_success_true_is_error():
+    payload = {
+        "success": True,
+        "result": {"error": "name 'list_skills' is not defined"},
+        "error": None,
+    }
+    is_error, error_msg = detect_tool_error(payload)
+    assert is_error is True
+    assert "semantic_error@result.error" in str(error_msg)
+
+
 def test_detect_tool_error_dict_error_none_is_not_error():
     is_error, error_msg = detect_tool_error({"error": None})
     assert is_error is False

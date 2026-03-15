@@ -1,10 +1,19 @@
 // app.js - Main Application mit Settings & Debug
 
-import { getModels, checkHealth, setApiBase, getApiBase } from "./api.js";
+import { getModelCatalog, checkHealth, setApiBase, getApiBase } from "./api.js";
 
 // Expose getApiBase to window for non-module scripts
 window.getApiBase = getApiBase;
-import { setModel, handleUserMessage, clearChat, setHistoryLimit, getMessageCount, initChatFromStorage } from "./chat.js?v=1771975000";
+import {
+    setModel,
+    handleUserMessage,
+    clearChat,
+    setHistoryLimit,
+    getMessageCount,
+    initChatFromStorage,
+    cancelActiveRequest,
+    initCronFeedbackPolling
+} from "./chat.js?v=1773070000";
 import { log, clearLogs, setVerbose } from "./debug.js";
 // NOTE: Settings UI is handled exclusively by js/apps/settings.js (lazy-loaded by shell.js).
 // Do NOT call initSettings() from static/js/settings.js here — it would create a second controller.
@@ -21,7 +30,8 @@ const DEFAULT_SETTINGS = {
 };
 
 let settings = { ...DEFAULT_SETTINGS };
-let chatModelNames = [];
+let chatModelEntries = [];
+let currentOutputProvider = "ollama";
 
 function loadSettings() {
     try {
@@ -124,6 +134,7 @@ export async function initApp() {
     
     // Restore chat from localStorage
     initChatFromStorage();
+    initCronFeedbackPolling();
     
     // Init Maintenance UI
     initMaintenance();
@@ -175,76 +186,158 @@ async function checkConnection() {
 async function loadModels() {
     log("debug", "Loading models...");
 
-    const models = await getModels();
-    chatModelNames = [...models];
-    const dropdown = document.getElementById("model-dropdown");
     const nameEl = document.getElementById("model-name");
+    const catalog = await getModelCatalog();
+    const providerOrder = { ollama: 0, ollama_cloud: 1, openai: 2, anthropic: 3 };
 
-    if (models.length === 0) {
+    chatModelEntries = (Array.isArray(catalog?.models) ? catalog.models : [])
+        .map((entry) => ({
+            name: String(entry?.name || "").trim(),
+            provider: normalizeProvider(entry?.provider),
+            source: String(entry?.source || "unknown").trim() || "unknown",
+        }))
+        .filter((entry) => entry.name);
+    chatModelEntries.sort((a, b) => {
+        const pa = providerOrder[a.provider] ?? 99;
+        const pb = providerOrder[b.provider] ?? 99;
+        if (pa !== pb) return pa - pb;
+        return a.name.localeCompare(b.name);
+    });
+
+    if (chatModelEntries.length === 0) {
         nameEl.textContent = "Keine Models";
         log("warn", "No models found");
         return;
     }
 
-    const outputModel = await loadEffectiveOutputModel();
-    const allModels = [...models];
-    if (outputModel && !allModels.includes(outputModel)) {
-        allModels.unshift(outputModel);
-        chatModelNames = [...allModels];
+    const effectiveFromCatalog = {
+        model: String(catalog?.effective?.OUTPUT_MODEL || "").trim(),
+        provider: normalizeProvider(catalog?.effective?.OUTPUT_PROVIDER),
+    };
+    const effective = effectiveFromCatalog.model
+        ? effectiveFromCatalog
+        : await loadEffectiveOutputConfig();
+
+    if (effective.model) {
+        ensureChatModelInDropdown(effective.model, effective.provider, { source: "configured" });
     }
 
-    dropdown.innerHTML = allModels.map(m => `
-        <button class="w-full px-4 py-2 text-left hover:bg-dark-hover transition-colors text-sm"
-                data-model="${m}">
-            ${m}
+    renderChatModelDropdown();
+
+    // Select effective OUTPUT_MODEL/OUTPUT_PROVIDER when available.
+    let selectedEntry = null;
+    if (effective.model) {
+        selectedEntry = chatModelEntries.find(
+            (entry) =>
+                entry.name === effective.model && normalizeProvider(entry.provider) === normalizeProvider(effective.provider)
+        ) || null;
+    }
+    if (!selectedEntry) selectedEntry = chatModelEntries[0] || null;
+
+    if (!selectedEntry) {
+        nameEl.textContent = "Keine Models";
+        return;
+    }
+
+    setActiveChatModel(selectedEntry.name, selectedEntry.provider);
+    log(
+        "info",
+        `Loaded ${chatModelEntries.length} model entries, selected: ${selectedEntry.name} (${selectedEntry.provider})`
+    );
+}
+
+function escapeHtml(text) {
+    return String(text || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+}
+
+function normalizeProvider(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (["ollama", "ollama_cloud", "openai", "anthropic"].includes(normalized)) {
+        return normalized;
+    }
+    return "ollama";
+}
+
+function providerLabel(provider) {
+    const normalized = normalizeProvider(provider);
+    if (normalized === "ollama_cloud") return "Ollama Cloud";
+    if (normalized === "openai") return "OpenAI";
+    if (normalized === "anthropic") return "Claude";
+    return "Ollama";
+}
+
+function renderChatModelDropdown() {
+    const dropdown = document.getElementById("model-dropdown");
+    if (!dropdown) return;
+    dropdown.innerHTML = chatModelEntries.map((entry) => `
+        <button
+            class="w-full px-4 py-2 text-left hover:bg-dark-hover transition-colors text-sm flex items-center justify-between gap-3"
+            data-model="${escapeHtml(entry.name)}"
+            data-provider="${escapeHtml(entry.provider)}"
+        >
+            <span class="truncate">${escapeHtml(entry.name)}</span>
+            <span class="text-[10px] uppercase tracking-wide text-gray-500">${escapeHtml(providerLabel(entry.provider))}</span>
         </button>
     `).join("");
 
-    // Select OUTPUT_MODEL from effective settings when available.
-    const selectedModel = outputModel || allModels[0];
-    setActiveChatModel(selectedModel);
-    log("info", `Loaded ${allModels.length} models, selected: ${selectedModel}`);
-
-    // Model click handlers
-    dropdown.querySelectorAll("button").forEach(btn => {
+    dropdown.querySelectorAll("button").forEach((btn) => {
         btn.addEventListener("click", async () => {
-            const model = btn.dataset.model;
-            setActiveChatModel(model);
-            await persistOutputModelSelection(model);
+            const model = String(btn.dataset.model || "").trim();
+            const provider = normalizeProvider(btn.dataset.provider || "ollama");
+            if (!model) return;
+            setActiveChatModel(model, provider);
+            await persistOutputModelSelection(model, provider);
             window.dispatchEvent(new CustomEvent("jarvis:model-settings-updated", {
-                detail: { OUTPUT_MODEL: model, source: "chat-quick-select" }
+                detail: {
+                    OUTPUT_MODEL: model,
+                    OUTPUT_PROVIDER: provider,
+                    source: "chat-quick-select",
+                }
             }));
             dropdown.classList.add("hidden");
-            log("info", `Model changed to: ${model}`);
+            log("info", `Model changed to: ${model} (${provider})`);
         });
     });
 }
 
-function setActiveChatModel(model) {
+function setActiveChatModel(model, provider = "ollama") {
     if (!model) return;
+    currentOutputProvider = normalizeProvider(provider);
     const nameEl = document.getElementById("model-name");
-    if (nameEl) nameEl.textContent = model;
+    if (nameEl) {
+        const suffix = currentOutputProvider === "ollama" ? "" : ` · ${providerLabel(currentOutputProvider)}`;
+        nameEl.textContent = `${model}${suffix}`;
+    }
     setModel(model);
 }
 
-async function loadEffectiveOutputModel() {
+async function loadEffectiveOutputConfig() {
     try {
         const res = await fetch(`${getApiBase()}/api/settings/models/effective`);
-        if (!res.ok) return "";
+        if (!res.ok) return { model: "", provider: "ollama" };
         const data = await res.json();
-        return data?.effective?.OUTPUT_MODEL?.value || "";
+        return {
+            model: String(data?.effective?.OUTPUT_MODEL?.value || "").trim(),
+            provider: normalizeProvider(data?.effective?.OUTPUT_PROVIDER?.value || "ollama"),
+        };
     } catch (e) {
-        log("warn", `Failed to load effective OUTPUT_MODEL: ${e.message}`);
-        return "";
+        log("warn", `Failed to load effective OUTPUT_MODEL/PROVIDER: ${e.message}`);
+        return { model: "", provider: "ollama" };
     }
 }
 
-async function persistOutputModelSelection(model) {
+async function persistOutputModelSelection(model, provider = "ollama") {
     try {
+        const payload = { OUTPUT_MODEL: model, OUTPUT_PROVIDER: normalizeProvider(provider) };
         const res = await fetch(`${getApiBase()}/api/settings/models`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ OUTPUT_MODEL: model })
+            body: JSON.stringify(payload)
         });
         if (!res.ok) {
             const err = await res.text().catch(() => "");
@@ -255,27 +348,20 @@ async function persistOutputModelSelection(model) {
     }
 }
 
-function ensureChatModelInDropdown(model) {
+function ensureChatModelInDropdown(model, provider = "ollama", options = {}) {
     if (!model) return;
-    const dropdown = document.getElementById("model-dropdown");
-    if (!dropdown) return;
-    if (chatModelNames.includes(model)) return;
+    const normalizedProvider = normalizeProvider(provider);
+    const hasEntry = chatModelEntries.some(
+        (entry) => entry.name === model && normalizeProvider(entry.provider) === normalizedProvider
+    );
+    if (hasEntry) return;
 
-    chatModelNames.unshift(model);
-    const btn = document.createElement("button");
-    btn.className = "w-full px-4 py-2 text-left hover:bg-dark-hover transition-colors text-sm";
-    btn.dataset.model = model;
-    btn.textContent = model;
-    btn.addEventListener("click", async () => {
-        setActiveChatModel(model);
-        await persistOutputModelSelection(model);
-        window.dispatchEvent(new CustomEvent("jarvis:model-settings-updated", {
-            detail: { OUTPUT_MODEL: model, source: "chat-quick-select" }
-        }));
-        dropdown.classList.add("hidden");
-        log("info", `Model changed to: ${model}`);
+    chatModelEntries.unshift({
+        name: String(model),
+        provider: normalizedProvider,
+        source: String(options?.source || "configured"),
     });
-    dropdown.prepend(btn);
+    renderChatModelDropdown();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -295,6 +381,16 @@ function setupEventListeners() {
             if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
+            }
+        });
+    }
+
+    const cancelBtn = document.getElementById("cancel-btn");
+    if (cancelBtn) {
+        cancelBtn.addEventListener("click", () => {
+            const canceled = cancelActiveRequest();
+            if (canceled) {
+                log("info", "Active request canceled by user");
             }
         });
     }
@@ -337,9 +433,12 @@ function setupEventListeners() {
     // Keep chat quick selector synchronized with Settings > Models.
     window.addEventListener("jarvis:model-settings-updated", (event) => {
         const nextOutputModel = event?.detail?.OUTPUT_MODEL;
+        const nextOutputProvider = normalizeProvider(
+            event?.detail?.OUTPUT_PROVIDER || currentOutputProvider || "ollama"
+        );
         if (!nextOutputModel) return;
-        ensureChatModelInDropdown(nextOutputModel);
-        setActiveChatModel(nextOutputModel);
+        ensureChatModelInDropdown(nextOutputModel, nextOutputProvider, { source: "configured" });
+        setActiveChatModel(nextOutputModel, nextOutputProvider);
     });
 
     // Deep job mode quick toggle
@@ -385,7 +484,7 @@ async function loadTools() {
         }
 
         const data = await res.json();
-        log("info", `Loaded ${data.total_tools} tools from ${data.total_mcps} MCPs`);
+        log("debug", `Loaded ${data.total_tools} tools from ${data.total_mcps} MCPs`);
 
         // Render MCPs
         // Render MCPs via ZIP Upload

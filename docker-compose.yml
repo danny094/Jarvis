@@ -109,6 +109,8 @@ services:
     - DAILY_SUMMARY_HOUR=4
     - MEMORY_URL=http://mcp-sql-memory:8081
     - INTERNAL_SECRET_RESOLVE_TOKEN=${INTERNAL_SECRET_RESOLVE_TOKEN:-trion-internal-secret-resolve-token}
+    - STORAGE_BROKER_URL=http://storage-broker:8089
+    - STORAGE_BROKER_SETTINGS_PATH=/app/storage_broker/storage_policy.json
     volumes:
     - ./personas:/app/personas
     - ./core:/app/core:ro
@@ -123,22 +125,25 @@ services:
     - ./adapters/admin-api/settings_routes.py:/app/settings_routes.py:ro
     - ./adapters/admin-api/protocol_routes.py:/app/protocol_routes.py:ro
     - ./adapters/admin-api/commander_routes.py:/app/commander_routes.py:ro
+    - ./adapters/admin-api/commander_api:/app/commander_api:ro
     - ./adapters/admin-api/secrets_routes.py:/app/secrets_routes.py:ro
     - ./container_commander:/app/container_commander:ro
     - ./sysinfo:/app/sysinfo:ro
     - /var/run/docker.sock:/var/run/docker.sock
     - commander-data:/app/data
+    - storage-broker-data:/app/storage_broker
     - trion_home_data:/trion-home
     - memory-data:/app/memory_data
     - ./memory:/app/memory
     - ./memory_speicher:/app/memory_speicher
     - ./adapters/admin-api/runtime_routes.py:/app/runtime_routes.py:ro
-    # SysInfo: nvidia-smi + NVML für GPU-Diagnose (read-only)
-    - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
-    - /lib/x86_64-linux-gnu/libnvidia-ml.so.1:/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+    - ./adapters/admin-api/storage_broker_routes.py:/app/storage_broker_routes.py:ro
+    # SysInfo GPU diagnostics (overrideable; defaults use local stubs)
+    - ${TRION_NVIDIA_SMI_PATH:-./scripts/stubs/nvidia-smi}:/usr/bin/nvidia-smi:ro
+    - ${TRION_NVIDIA_ML_LIB_PATH:-./scripts/stubs/libnvidia-ml.so.1}:/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
     devices:
-    - /dev/nvidiactl:/dev/nvidiactl
-    - /dev/nvidia0:/dev/nvidia0
+    - ${TRION_NVIDIA_CTL_DEVICE:-/dev/null}:/dev/nvidiactl
+    - ${TRION_NVIDIA0_DEVICE:-/dev/null}:/dev/nvidia0
     networks:
     - big-bear-lobe-chat_default
     group_add:
@@ -257,7 +262,8 @@ services:
     - EXECUTOR_URL=http://tool-executor:8000
     - MEMORY_URL=http://mcp-sql-memory:8081
     volumes:
-    - /DATA/AppData/MCP/Jarvis/shared_skills:/skills:ro
+    # Portable default; can be overridden via TRION_SHARED_SKILLS_DIR in .env
+    - ${TRION_SHARED_SKILLS_DIR:-./shared_skills}:/skills:ro
     ports:
     - 8088:8088
     networks:
@@ -276,14 +282,14 @@ services:
     - PLUGINS_DIR=/trion/plugins
     - INTERNAL_SECRET_RESOLVE_TOKEN=${INTERNAL_SECRET_RESOLVE_TOKEN:-trion-internal-secret-resolve-token}
     volumes:
-    - /DATA/AppData/MCP/Jarvis/shared_skills:/skills:rw
-    - ~/.trion/plugins:/trion/plugins:rw
-    # GPU info access: nvidia-smi + NVML library (read-only, für system_hardware_info Skill)
-    - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
-    - /lib/x86_64-linux-gnu/libnvidia-ml.so.1:/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+    - ${TRION_SHARED_SKILLS_DIR:-./shared_skills}:/skills:rw
+    - ${TRION_PLUGINS_DIR:-./trion/plugins-host}:/trion/plugins:rw
+    # GPU diagnostics mounts are overrideable; defaults point to local stubs for portability.
+    - ${TRION_NVIDIA_SMI_PATH:-./scripts/stubs/nvidia-smi}:/usr/bin/nvidia-smi:ro
+    - ${TRION_NVIDIA_ML_LIB_PATH:-./scripts/stubs/libnvidia-ml.so.1}:/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
     devices:
-    - /dev/nvidiactl:/dev/nvidiactl
-    - /dev/nvidia0:/dev/nvidia0
+    - ${TRION_NVIDIA_CTL_DEVICE:-/dev/null}:/dev/nvidiactl
+    - ${TRION_NVIDIA0_DEVICE:-/dev/null}:/dev/nvidia0
     ports:
     - 8000:8000
     networks:
@@ -312,6 +318,7 @@ services:
     - DIGEST_LOCK_PATH=memory_speicher/digest.lock
     volumes:
     - ./core:/app/core:ro
+    - ./mcp_registry.py:/app/mcp_registry.py:ro
     - ./config.py:/app/config.py:ro
     - ./utils:/app/utils:ro
     - ./scripts/digest_worker.py:/app/scripts/digest_worker.py:ro
@@ -323,9 +330,57 @@ services:
     # When DIGEST_RUN_MODE=off the script exits with code 0 → no restart loop.
     restart: on-failure
 
+  storage-broker:
+    build:
+      context: ./mcp-servers/storage-broker
+    container_name: storage-broker
+    environment:
+    - LOG_LEVEL=INFO
+    - STORAGE_BROKER_DB=/app/data/storage_broker.db
+    - STORAGE_POLICY_PATH=/app/data/storage_policy.json
+    - STORAGE_MOUNTS_PATH=/host/proc_mounts
+    - ADMIN_API_URL=http://jarvis-admin-api:8200
+    # STORAGE_MANAGED_BASES: colon-separated list of approved managed host paths
+    # e.g. /mnt/trion-data:/srv/trion-storage
+    - STORAGE_MANAGED_BASES=${STORAGE_MANAGED_BASES:-}
+    # Per-zone base path overrides (optional)
+    - STORAGE_ZONE_MANAGED_SERVICES_BASE=${STORAGE_ZONE_MANAGED_SERVICES_BASE:-}
+    - STORAGE_ZONE_BACKUP_BASE=${STORAGE_ZONE_BACKUP_BASE:-}
+    volumes:
+    - storage-broker-data:/app/data
+    # Host proc/sys access for disk discovery
+    - /proc/1/mounts:/host/proc_mounts:ro
+    - /sys/block:/sys/block:ro
+    - /sys/class/block:/sys/class/block:ro
+    # Block device access for lsblk filesystem probing (read-only)
+    # storage-broker is a governance tool and needs raw device read access
+    devices:
+    - /dev/sda:/dev/sda
+    - /dev/sda1:/dev/sda1
+    - /dev/sda2:/dev/sda2
+    - /dev/sda3:/dev/sda3
+    - /dev/sdb:/dev/sdb
+    - /dev/sdb1:/dev/sdb1
+    - /dev/sdb2:/dev/sdb2
+    - /dev/sdb3:/dev/sdb3
+    - /dev/sdc:/dev/sdc
+    - /dev/sdc1:/dev/sdc1
+    - /dev/sdc2:/dev/sdc2
+    - /dev/sdc3:/dev/sdc3
+    # disk group (GID 6) = read access to block devices without root
+    group_add:
+    - '6'
+    ports:
+    - 8089:8089
+    networks:
+    - big-bear-lobe-chat_default
+    user: 1000:1000
+    restart: unless-stopped
+
 volumes:
   commander-data: null
   memory-data: null
+  storage-broker-data: null
   trion_home_data:
     external: true
 networks:

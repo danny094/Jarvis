@@ -1,0 +1,420 @@
+INFO:     172.18.0.13:57328 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:59472 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:57334 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34692 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34708 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34696 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34756 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34744 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34720 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34734 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34770 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34784 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34786 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34792 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34798 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34814 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34826 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:48624 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34830 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34846 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34854 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34860 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34866 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34874 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34876 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34882 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34888 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34896 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34912 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34924 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34934 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34948 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34962 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:48626 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34970 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:34982 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:35008 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:34994 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35018 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35032 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35042 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35058 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35066 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35074 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35076 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35082 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35096 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:35100 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:35110 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:48638 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:35114 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:35126 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:35138 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35132 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35156 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35164 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35186 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35174 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35152 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35162 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35194 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35206 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35218 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:35220 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:35228 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:48652 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:49932 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:49942 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:49952 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:49946 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:49960 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:49974 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:49988 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50000 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50012 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50018 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50034 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50046 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50058 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50064 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50072 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:41384 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50084 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50090 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50100 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50110 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50116 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50120 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50136 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50146 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50138 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50150 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50154 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50158 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50168 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50170 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50172 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:41394 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50182 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50190 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50210 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50226 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50232 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50202 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50236 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50250 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50260 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50268 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50274 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50282 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50284 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50294 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50304 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50310 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50322 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50324 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50340 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50320 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50344 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50346 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50362 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50372 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50386 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50388 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50394 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50404 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50416 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50418 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50436 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50426 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50422 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50444 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50456 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50458 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50464 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50472 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50480 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50492 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50496 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50512 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50524 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50530 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50552 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50546 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50568 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50582 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50558 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50588 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50590 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50576 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50594 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50600 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50614 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50622 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50628 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50636 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50650 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50642 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50660 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50672 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50682 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50690 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50696 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50712 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50726 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50732 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50742 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50752 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50756 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50760 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50764 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50776 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50766 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50826 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50804 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50788 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50832 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50812 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50846 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50848 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50856 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:50872 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50880 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:41406 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:50892 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:37986 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:37990 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:37996 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:60370 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:49450 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:49454 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:49462 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:49466 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:39484 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:37224 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:37234 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:37240 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:37254 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:58920 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:37264 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:37280 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:37290 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:37302 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:41864 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:33202 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:33218 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:33232 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:33248 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:41874 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:33804 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:33808 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:33818 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:33822 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:47558 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:49302 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:40592 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:49306 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:39958 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:38112 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:38128 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39042 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39052 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:51764 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:51766 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:38782 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:38790 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:40164 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:40180 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:42500 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:36060 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:42516 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.18.0.13:39464 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:56844 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39468 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39480 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:56854 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39490 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39492 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:56862 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39502 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39510 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:56870 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39522 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39534 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:56884 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39538 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.13:39554 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0
+INFO:     172.18.0.12:56890 - "POST /mcp HTTP/1.1" 200 OK
+[Embedding] role=sql_memory_embedding policy=cpu_only requested_target=cpu effective_target=cpu fallback=False reason=cpu_only/single→base+num_gpu=0

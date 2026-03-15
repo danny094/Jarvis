@@ -131,3 +131,38 @@ Secret management was made more tolerant but remains cryptographically determini
 
 - **Problem:** Events from the workspace disappeared after an Admin API refresh or were corrupted by different JSON shapes (list, stringified, dict).
 - **Fix:** `workspace.js` and the Admin backend now normalize returns extremely robustly (`tryParseJson`, `pickEventArray`). Deduping logic keeps the state synchronous, and fast-lane tool events now survive hard hub refreshes of the MCP registry.
+
+---
+
+## 7. March 2026 Stabilization Updates
+
+### 7.1 Grounding + Autonomy Improvements (Fact Queries)
+
+- **Issue:** Fact-query answers could fall back to raw, non-natural tool dumps (for example `list_skills` JSON) after grounding postchecks.
+- **Fixes implemented:**
+  - Structured grounding evidence for `list_skills` now stores `installed_count`, `available_count`, and `installed_names`.
+  - Output grounding fallback now renders `list_skills` naturally (human-readable summary) instead of raw JSON blobs.
+  - One-shot postcheck repair path added: before hard fallback, TRION now tries a strict evidence summary response once.
+  - New policy knob: `grounding.output.enable_postcheck_repair_once` (default `true`) for controlled rollout/tuning.
+
+### 7.2 Runtime Policy Regression Fix (sql-memory)
+
+- **Issue:** `sql-memory` could return default `auto` policy at cold start because runtime policy refresh happened only in the background worker.
+- **Fix:** `_resolve_runtime_config()` now triggers one synchronous refresh on empty cache so `runtime.active_policy` (for example `cpu_only`) is available immediately.
+
+### 7.3 Test Harness Cleanup (Path Robustness)
+
+- **Issue:** Multiple unit test suites were tied to hardcoded filesystem paths (`/DATA/AppData/MCP/Jarvis/Jarvis`) and failed outside that exact layout.
+- **Fixes implemented:**
+  - Added dynamic project-root detection in:
+    - `tests/unit/test_single_truth_skill_context_sync_stream.py`
+    - `tests/unit/test_skill_selection_budget.py`
+    - `tests/unit/test_skill_server_config_fallback.py`
+    - `tests/unit/test_phase8_operational.py`
+  - Frontend/runtime path checks in `test_phase8_operational.py` now resolve against detected project root.
+  - Source-inspection test `test_live_model_resolution.py` made robust against argumentized call-sites (`_resolve_model(` vs exact `_resolve_model()` string).
+  - Token budget test hardened against sporadic zero-token approximation edge case with safe local fallback.
+
+### 7.4 Validation Outcome
+
+- **Full unit suite after fixes:** `1519 passed, 12 skipped, 0 failed`.

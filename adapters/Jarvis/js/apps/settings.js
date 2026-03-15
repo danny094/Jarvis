@@ -19,25 +19,39 @@ const els = {
 export async function initSettingsApp() {
     log('info', 'Initializing Settings App...');
 
-    // Setup Navigation Listeners (if Shell didn't already covers generic switching, 
-    // but we might need specific load triggers)
+    const switchCategory = async (category) => {
+        if (!category) return;
+        const navItems = document.querySelectorAll('.settings-category');
+        navItems.forEach((item) => {
+            const isActive = String(item.dataset.category || '') === category;
+            item.classList.toggle('active', isActive);
+        });
+        document.querySelectorAll('.settings-page').forEach((page) => page.classList.add('hidden'));
+        const page = document.getElementById(`page-${category}`);
+        if (page) page.classList.remove('hidden');
+
+        if (category === 'plugins') await loadPlugins();
+        if (category === 'models') await loadModels();
+    };
+
+    // Own robust nav wiring (independent from shell.js)
     const navItems = document.querySelectorAll('.settings-category');
-    navItems.forEach(item => {
+    navItems.forEach((item) => {
+        if (item.dataset.settingsBound === '1') return;
+        item.dataset.settingsBound = '1';
         item.addEventListener('click', () => {
-            const category = item.dataset.category;
-            if (category === 'plugins') loadPlugins();
-            if (category === 'models') loadModels();
+            const category = String(item.dataset.category || '').trim();
+            switchCategory(category).catch((e) => {
+                log('error', `[Settings] category switch failed (${category}): ${e.message}`);
+                showToast(`Failed to open ${category}: ${e.message}`, 'error');
+            });
         });
     });
 
     // Initial load check
     const activeCat = document.querySelector('.settings-category.active');
-    if (activeCat && activeCat.dataset.category === 'plugins') {
-        loadPlugins();
-    }
-    if (activeCat && activeCat.dataset.category === 'models') {
-        loadModels();
-    }
+    const initialCategory = String(activeCat?.dataset?.category || 'memory');
+    await switchCategory(initialCategory);
 }
 
 /**
@@ -580,8 +594,7 @@ async function loadModels() {
         try { models = (await tagsResult.value.json()).models || []; }
         catch (e) { log('error', `Models JSON parse: ${e.message}`); }
     } else {
-        log('error', 'Models Load Error: failed to fetch /api/tags');
-        showToast('Could not load model list', 'error');
+        log('warn', 'Models Load Warning: failed to fetch /api/tags');
     }
 
     let effective = {};
@@ -641,6 +654,17 @@ const _ROUTING_ROLES = [
     { key: "embedding", label: "Embedding" },
 ];
 
+const _LLM_PROVIDER_OPTIONS = ["ollama", "ollama_cloud", "openai", "anthropic"];
+const _CLOUD_MODEL_PRESETS = [
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "claude-sonnet-4-5",
+    "claude-3-7-sonnet-latest",
+    "claude-3-5-haiku-latest",
+];
+
 function _formatTargetLabel(target, targetLabels = null) {
     if (targetLabels && target && targetLabels[target]) return targetLabels[target];
     if (target === "auto") return "Auto";
@@ -685,6 +709,36 @@ function _routingOptions(allowedTargets, selected, targetLabels = null) {
     }).join("");
 }
 
+function _providerOptions(selected) {
+    const normalized = String(selected || "ollama").toLowerCase();
+    return _LLM_PROVIDER_OPTIONS.map((name) => {
+        const isSelected = name === normalized ? "selected" : "";
+        const label = name === "ollama"
+            ? "Ollama (Local)"
+            : name === "ollama_cloud"
+                ? "Ollama Cloud"
+                : name === "openai"
+                    ? "OpenAI (ChatGPT)"
+                    : "Anthropic (Claude)";
+        return `<option value="${name}" ${isSelected}>${label}</option>`;
+    }).join("");
+}
+
+function _modelPresetOptions(models, currentValue = "") {
+    const names = new Set();
+    for (const m of (models || [])) {
+        const n = String(m?.name || "").trim();
+        if (n) names.add(n);
+    }
+    for (const preset of _CLOUD_MODEL_PRESETS) names.add(preset);
+    if (currentValue) names.add(String(currentValue).trim());
+    const sorted = [...names].filter(Boolean).sort((a, b) => a.localeCompare(b));
+    return [
+        `<option value="">Pick preset...</option>`,
+        ...sorted.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`),
+    ].join("");
+}
+
 function _routeSummary(routeInfo, targetLabels = null) {
     if (!routeInfo || typeof routeInfo !== "object") return "Effective: —";
     const eff = routeInfo.effective_target || "—";
@@ -710,6 +764,11 @@ function _renderInstanceStatus(instancesPayload) {
                 ? "text-yellow-400"
                 : "text-gray-500";
         const status = running && healthy ? "running/healthy" : running ? "running/unhealthy" : "stopped";
+        const action = running ? "stop" : "start";
+        const actionLabel = running ? "Stop" : "Start";
+        const actionButtonClass = running
+            ? "bg-red-500/20 text-red-300 hover:bg-red-500/30 border-red-500/40"
+            : "bg-green-500/20 text-green-300 hover:bg-green-500/30 border-green-500/40";
         return `
             <div class="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-xs">
                 <div class="flex items-center justify-between">
@@ -718,6 +777,15 @@ function _renderInstanceStatus(instancesPayload) {
                 </div>
                 <div class="text-gray-500 mt-1 font-mono">id: ${escapeHtml(id)}</div>
                 <div class="text-gray-500 mt-1">${escapeHtml(endpoint)}</div>
+                <div class="mt-2 flex justify-end">
+                    <button
+                        class="compute-instance-action px-2 py-1 text-[11px] rounded border transition-colors ${actionButtonClass}"
+                        data-instance-id="${escapeHtml(id)}"
+                        data-action="${escapeHtml(action)}"
+                    >
+                        ${actionLabel}
+                    </button>
+                </div>
             </div>
         `;
     }).join("");
@@ -738,10 +806,13 @@ function renderModels(models, container, effective, computeRouting = {}, compute
     if (!container) return;
     effective = effective || {};
 
-    const thinkingVal  = effective.THINKING_MODEL  ? effective.THINKING_MODEL.value  : '';
-    const controlVal   = effective.CONTROL_MODEL   ? effective.CONTROL_MODEL.value   : '';
-    const outputVal    = effective.OUTPUT_MODEL    ? effective.OUTPUT_MODEL.value    : '';
-    const embeddingVal = effective.EMBEDDING_MODEL ? effective.EMBEDDING_MODEL.value : '';
+    const thinkingVal  = effective.THINKING_MODEL ? effective.THINKING_MODEL.value : "";
+    const controlVal   = effective.CONTROL_MODEL ? effective.CONTROL_MODEL.value : "";
+    const outputVal    = effective.OUTPUT_MODEL ? effective.OUTPUT_MODEL.value : "";
+    const embeddingVal = effective.EMBEDDING_MODEL ? effective.EMBEDDING_MODEL.value : "";
+    const thinkingProvider = effective.THINKING_PROVIDER ? effective.THINKING_PROVIDER.value : "ollama";
+    const controlProvider = effective.CONTROL_PROVIDER ? effective.CONTROL_PROVIDER.value : "ollama";
+    const outputProvider = effective.OUTPUT_PROVIDER ? effective.OUTPUT_PROVIDER.value : "ollama";
 
     const allowedTargets = (
         Array.isArray(computeRouting.allowed_targets) && computeRouting.allowed_targets.length
@@ -765,157 +836,184 @@ function renderModels(models, container, effective, computeRouting = {}, compute
         return `<span class="text-xs ${colors[src] || 'text-gray-500'} font-mono ml-1">[${src}]</span>`;
     };
 
+    const buildLayerCard = ({
+        title,
+        modelId,
+        modelVal,
+        modelSourceKey,
+        providerId = "",
+        providerVal = "",
+        providerSourceKey = "",
+        description = "",
+        includeProvider = true,
+    }) => `
+        <div class="models-layer-card">
+            <h4>${escapeHtml(title)}</h4>
+            ${includeProvider ? `
+                <label class="models-label">Provider ${sourceLabel(providerSourceKey)}</label>
+                <select id="${providerId}" class="models-select">
+                    ${_providerOptions(providerVal)}
+                </select>
+            ` : `
+                <label class="models-label">Provider</label>
+                <div class="models-provider-fixed">Ollama (local)</div>
+            `}
+            <label class="models-label">Model ${sourceLabel(modelSourceKey)}</label>
+            <input
+                id="${modelId}"
+                class="models-input"
+                type="text"
+                value="${escapeHtml(modelVal || "")}"
+                placeholder="Enter model id (e.g. gpt-4.1 / claude-sonnet-4-5 / ministral-3:8b)"
+            />
+            <select id="${modelId}-preset" class="models-select">
+                ${_modelPresetOptions(models, modelVal)}
+            </select>
+            <p class="models-help">${escapeHtml(description)}</p>
+        </div>
+    `;
+
     const html = `
-        <div class="space-y-8 max-w-4xl">
-            <!-- Model Layers Configuration -->
-            <div class="bg-[#111] border border-dark-border rounded-xl p-6">
-                <h3 class="text-xl font-bold text-gray-200 mb-6 flex items-center gap-2">
-                    <i data-lucide="layers" class="text-accent-primary"></i>
-                    Cognitive Layers
-                </h3>
+        <div class="models-admin">
+            <header class="models-head">
+                <h3><i data-lucide="brain-circuit"></i> Model & Provider Routing</h3>
+                <button onclick="saveModelSettings()" class="models-btn primary">
+                    <i data-lucide="save" class="w-4 h-4"></i>
+                    Save Model Routing
+                </button>
+            </header>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <!-- Thinking Layer -->
-                    <div class="space-y-2">
-                        <label class="text-sm text-gray-400 font-mono uppercase">
-                            Thinking Model (System 2)${sourceLabel('THINKING_MODEL')}
-                        </label>
-                        <select id="setting-thinking-model" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
-                            <option value="">(Disabled)</option>
-                            ${_modelOptions(models, thinkingVal)}
-                        </select>
-                        <p class="text-xs text-gray-500">Handles deep reasoning and planning.</p>
+            <section class="models-grid-top">
+                <article class="models-card">
+                    <h3>Cognitive Layers</h3>
+                    <div class="models-layer-grid">
+                        ${buildLayerCard({
+                            title: "Thinking Layer",
+                            modelId: "setting-thinking-model",
+                            modelVal: thinkingVal,
+                            modelSourceKey: "THINKING_MODEL",
+                            providerId: "setting-thinking-provider",
+                            providerVal: thinkingProvider,
+                            providerSourceKey: "THINKING_PROVIDER",
+                            description: "Planning, decomposition, long-chain reasoning.",
+                            includeProvider: true,
+                        })}
+                        ${buildLayerCard({
+                            title: "Control Layer",
+                            modelId: "setting-control-model",
+                            modelVal: controlVal,
+                            modelSourceKey: "CONTROL_MODEL",
+                            providerId: "setting-control-provider",
+                            providerVal: controlProvider,
+                            providerSourceKey: "CONTROL_PROVIDER",
+                            description: "Safety, routing checks, policy enforcement.",
+                            includeProvider: true,
+                        })}
+                        ${buildLayerCard({
+                            title: "Output Layer",
+                            modelId: "setting-output-model",
+                            modelVal: outputVal,
+                            modelSourceKey: "OUTPUT_MODEL",
+                            providerId: "setting-output-provider",
+                            providerVal: outputProvider,
+                            providerSourceKey: "OUTPUT_PROVIDER",
+                            description: "Final user response generation.",
+                            includeProvider: true,
+                        })}
+                        ${buildLayerCard({
+                            title: "Embedding Layer",
+                            modelId: "setting-embedding-model",
+                            modelVal: embeddingVal,
+                            modelSourceKey: "EMBEDDING_MODEL",
+                            description: "Semantic retrieval and memory indexing.",
+                            includeProvider: false,
+                        })}
                     </div>
 
-                    <!-- Control Layer -->
-                    <div class="space-y-2">
-                        <label class="text-sm text-gray-400 font-mono uppercase">
-                            Control Model (System 1)${sourceLabel('CONTROL_MODEL')}
-                        </label>
-                        <select id="setting-control-model" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
-                            ${_modelOptions(models, controlVal)}
-                        </select>
-                        <p class="text-xs text-gray-500">Orchestrates tools and memory access.</p>
+                    <div class="models-note">
+                        Cloud providers require API keys (<code>OPENAI_API_KEY</code> / <code>ANTHROPIC_API_KEY</code> / <code>OLLAMA_API_KEY</code> or <code>OLLAMA</code>) via env or encrypted secrets.
                     </div>
+                </article>
 
-                    <!-- Output Layer -->
-                    <div class="space-y-2">
-                        <label class="text-sm text-gray-400 font-mono uppercase">
-                            Output Model (Generator)${sourceLabel('OUTPUT_MODEL')}
-                        </label>
-                        <select id="setting-output-model" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
-                            ${_modelOptions(models, outputVal)}
-                        </select>
-                        <p class="text-xs text-gray-500">Generates the final user response.</p>
+                <article class="models-card">
+                    <h3>Compute Target Routing</h3>
+                    <div class="models-routing-grid">
+                        ${_ROUTING_ROLES.map((role) => {
+                            const requested = layerRouting[role.key] || "auto";
+                            const routeInfo = effectiveRouting[role.key] || {};
+                            return `
+                                <div class="models-routing-item">
+                                    <label class="models-label">${role.label}</label>
+                                    <select id="setting-route-${role.key}" class="models-select">
+                                        ${_routingOptions(allowedTargets, requested, targetLabels)}
+                                    </select>
+                                    <p class="models-help">${escapeHtml(_routeSummary(routeInfo, targetLabels))}</p>
+                                </div>
+                            `;
+                        }).join("")}
                     </div>
-
-                    <!-- Embedding -->
-                    <div class="space-y-2">
-                        <label class="text-sm text-gray-400 font-mono uppercase">
-                            Embedding Model${sourceLabel('EMBEDDING_MODEL')}
-                        </label>
-                        <select id="setting-embedding-model" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
-                            ${_modelOptions(models, embeddingVal)}
-                        </select>
-                        <p class="text-xs text-gray-500">Used for semantic memory/search embeddings.</p>
+                    <div class="models-note">
+                        Allowed targets: ${escapeHtml(allowedTargetsFriendly.join(" | "))}
                     </div>
-                </div>
-
-                <div class="mt-6 bg-dark-bg border border-dark-border rounded-lg px-4 py-3 text-xs text-gray-400">
-                    Honest scope: only runtime-wired model keys are editable here
-                    (thinking, control, output, embedding).
-                    Compute routing is live below.
-                </div>
-
-                <div class="mt-8 flex justify-end">
-                    <button onclick="saveModelSettings()"
-                            class="px-6 py-2 bg-accent-primary hover:bg-orange-500 text-black font-bold rounded-lg transition-colors flex items-center gap-2">
-                        <i data-lucide="save" class="w-4 h-4"></i>
-                        Save Configuration
-                    </button>
-                </div>
-            </div>
-
-            <!-- Compute Routing -->
-            <div class="bg-[#111] border border-dark-border rounded-xl p-6">
-                <h3 class="text-xl font-bold text-gray-200 mb-6 flex items-center gap-2">
-                    <i data-lucide="cpu" class="text-accent-primary"></i>
-                    Compute Target Routing
-                </h3>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    ${_ROUTING_ROLES.map((role) => {
-                        const requested = layerRouting[role.key] || "auto";
-                        const routeInfo = effectiveRouting[role.key] || {};
-                        return `
-                            <div class="space-y-2">
-                                <label class="text-sm text-gray-400 font-mono uppercase">
-                                    ${role.label}
-                                </label>
-                                <select id="setting-route-${role.key}" class="w-full bg-dark-bg border border-dark-border rounded-lg p-3 text-gray-200 focus:border-accent-primary outline-none">
-                                    ${_routingOptions(allowedTargets, requested, targetLabels)}
-                                </select>
-                                <p class="text-xs text-gray-500">${escapeHtml(_routeSummary(routeInfo, targetLabels))}</p>
-                            </div>
-                        `;
-                    }).join('')}
-                </div>
-
-                <div class="mt-6 bg-dark-bg border border-dark-border rounded-lg px-4 py-3 text-xs text-gray-400">
-                    Allowed targets: <span class="text-gray-300">${escapeHtml(allowedTargetsFriendly.join(" | "))}</span>
-                </div>
-
-                <div class="mt-4">
-                    <h4 class="text-gray-500 font-medium mb-3 text-sm">Managed Compute Instances</h4>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div class="models-instance-grid">
                         ${_renderInstanceStatus(computeInstances)}
                     </div>
-                </div>
+                    <div class="models-actions">
+                        <button id="save-compute-routing" class="models-btn">
+                            <i data-lucide="save" class="w-4 h-4"></i>
+                            Save Compute Routing
+                        </button>
+                    </div>
+                </article>
+            </section>
 
-                <div class="mt-8 flex justify-end">
-                    <button id="save-compute-routing"
-                            class="px-6 py-2 bg-accent-primary hover:bg-orange-500 text-black font-bold rounded-lg transition-colors flex items-center gap-2">
-                        <i data-lucide="save" class="w-4 h-4"></i>
-                        Save Compute Routing
-                    </button>
-                </div>
-            </div>
-
-            <!-- Model List (Read Only) -->
-            <div>
-                <h4 class="text-gray-500 font-medium mb-4">Installed Models</h4>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <section class="models-card">
+                <h3>Installed Local Models (Ollama)</h3>
+                <div class="models-installed-grid">
                     ${models.map(m => `
-                        <div class="bg-dark-card border border-dark-border rounded-lg p-4 flex justify-between items-center opacity-70 hover:opacity-100 transition-opacity">
-                            <span class="font-mono text-sm text-gray-300">${escapeHtml(m.name)}</span>
-                            <span class="text-xs text-gray-500">${(m.size / 1e9).toFixed(1)} GB</span>
+                        <div class="models-installed-item">
+                            <span>${escapeHtml(m.name)}</span>
+                            <small>${(m.size / 1e9).toFixed(1)} GB</small>
                         </div>
-                    `).join('')}
+                    `).join('') || '<div class="models-note">No local models detected.</div>'}
                 </div>
-            </div>
+            </section>
         </div>
     `;
 
     container.innerHTML = html;
     lucide.createIcons();
 
-    // Apply effective values to selects
-    const selMap = {
-        'setting-thinking-model': thinkingVal,
-        'setting-control-model':  controlVal,
-        'setting-output-model':   outputVal,
-        'setting-embedding-model': embeddingVal,
+    const presetToInput = {
+        "setting-thinking-model-preset": "setting-thinking-model",
+        "setting-control-model-preset": "setting-control-model",
+        "setting-output-model-preset": "setting-output-model",
+        "setting-embedding-model-preset": "setting-embedding-model",
     };
-    for (const [elId, val] of Object.entries(selMap)) {
-        if (!val) continue;
-        const sel = document.getElementById(elId);
-        if (sel) sel.value = val;
+    for (const [presetId, inputId] of Object.entries(presetToInput)) {
+        const preset = document.getElementById(presetId);
+        const input = document.getElementById(inputId);
+        if (!preset || !input) continue;
+        preset.addEventListener("change", () => {
+            const next = String(preset.value || "").trim();
+            if (!next) return;
+            input.value = next;
+        });
     }
 
     const saveRoutingBtn = document.getElementById("save-compute-routing");
     if (saveRoutingBtn) {
         saveRoutingBtn.addEventListener("click", saveComputeRoutingSettings);
     }
+
+    container.querySelectorAll(".compute-instance-action").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const instanceId = String(btn.dataset.instanceId || "").trim();
+            const action = String(btn.dataset.action || "").trim().toLowerCase();
+            if (!instanceId || !["start", "stop"].includes(action)) return;
+            await controlComputeInstance(instanceId, action);
+        });
+    });
 }
 
 async function saveModelSettings() {
@@ -928,10 +1026,16 @@ async function saveModelSettings() {
     const control  = val('setting-control-model');
     const output   = val('setting-output-model');
     const embedding = val('setting-embedding-model');
+    const thinkingProvider = val('setting-thinking-provider').toLowerCase();
+    const controlProvider = val('setting-control-provider').toLowerCase();
+    const outputProvider = val('setting-output-provider').toLowerCase();
     if (thinking) changes.THINKING_MODEL = thinking;
     if (control)  changes.CONTROL_MODEL  = control;
     if (output)   changes.OUTPUT_MODEL   = output;
     if (embedding) changes.EMBEDDING_MODEL = embedding;
+    if (thinkingProvider) changes.THINKING_PROVIDER = thinkingProvider;
+    if (controlProvider) changes.CONTROL_PROVIDER = controlProvider;
+    if (outputProvider) changes.OUTPUT_PROVIDER = outputProvider;
 
     if (!Object.keys(changes).length) {
         showToast('Nothing to save', 'info');
@@ -991,6 +1095,26 @@ async function saveComputeRoutingSettings() {
         await loadModels();
     } catch (e) {
         showToast(`Routing save failed: ${e.message}`, 'error');
+    }
+}
+
+async function controlComputeInstance(instanceId, action) {
+    const normalizedAction = action === "stop" ? "stop" : "start";
+    const endpoint = `${getApiBase()}/api/runtime/compute/instances/${encodeURIComponent(instanceId)}/${normalizedAction}`;
+    showToast(`${normalizedAction === "start" ? "Starting" : "Stopping"} ${instanceId}...`, "info");
+    try {
+        const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        showToast(`Instance ${instanceId} ${normalizedAction} request accepted`, "success");
+        await loadModels();
+    } catch (e) {
+        showToast(`Instance ${instanceId} ${normalizedAction} failed: ${e.message}`, "error");
     }
 }
 
@@ -1310,6 +1434,350 @@ function setupEmbeddingRuntimeHandlers() {
 }
 
 // ═══════════════════════════════════════════════════════
+// AUTONOMY CRON GUARDRAILS
+// ═══════════════════════════════════════════════════════
+
+const CRON_POLICY_FIELDS = [
+    { key: "AUTONOMY_CRON_MAX_JOBS", inputId: "cron-policy-max-jobs", sourceId: "cron-policy-max-jobs-source", type: "int" },
+    { key: "AUTONOMY_CRON_MAX_JOBS_PER_CONVERSATION", inputId: "cron-policy-max-jobs-per-conversation", sourceId: "cron-policy-max-jobs-per-conversation-source", type: "int" },
+    { key: "AUTONOMY_CRON_MIN_INTERVAL_S", inputId: "cron-policy-min-interval-s", sourceId: "cron-policy-min-interval-s-source", type: "int" },
+    { key: "AUTONOMY_CRON_MAX_PENDING_RUNS", inputId: "cron-policy-max-pending-runs", sourceId: "cron-policy-max-pending-runs-source", type: "int" },
+    { key: "AUTONOMY_CRON_MAX_PENDING_RUNS_PER_JOB", inputId: "cron-policy-max-pending-runs-per-job", sourceId: "cron-policy-max-pending-runs-per-job-source", type: "int" },
+    { key: "AUTONOMY_CRON_MANUAL_RUN_COOLDOWN_S", inputId: "cron-policy-manual-run-cooldown-s", sourceId: "cron-policy-manual-run-cooldown-s-source", type: "int" },
+    { key: "AUTONOMY_CRON_TRION_MIN_INTERVAL_S", inputId: "cron-policy-trion-min-interval-s", sourceId: "cron-policy-trion-min-interval-s-source", type: "int" },
+    { key: "AUTONOMY_CRON_TRION_MAX_LOOPS", inputId: "cron-policy-trion-max-loops", sourceId: "cron-policy-trion-max-loops-source", type: "int" },
+    { key: "AUTONOMY_CRON_TRION_SAFE_MODE", inputId: "cron-policy-trion-safe-mode", sourceId: "cron-policy-trion-safe-mode-source", type: "bool" },
+    { key: "AUTONOMY_CRON_TRION_REQUIRE_APPROVAL_FOR_RISKY", inputId: "cron-policy-trion-require-approval", sourceId: "cron-policy-trion-require-approval-source", type: "bool" },
+];
+
+async function loadAutonomyCronPolicy() {
+    try {
+        const r = await fetch(`${getApiBase()}/api/settings/autonomy/cron-policy`);
+        if (!r.ok) return;
+        const d = await r.json();
+        const eff = d.effective || {};
+        CRON_POLICY_FIELDS.forEach(({ key, inputId, sourceId, type }) => {
+            const entry = eff[key] || {};
+            const input = document.getElementById(inputId);
+            const source = document.getElementById(sourceId);
+            if (input) {
+                if (type === "bool") input.checked = Boolean(entry.value);
+                else input.value = Number(entry.value ?? "");
+            }
+            if (source) source.textContent = entry.source || "default";
+        });
+        log('info', '[CronPolicy] loaded', d);
+    } catch (e) {
+        log('error', `[CronPolicy] load failed: ${e.message}`);
+    }
+}
+
+async function saveAutonomyCronPolicy() {
+    const payload = {};
+    for (const { key, inputId, type } of CRON_POLICY_FIELDS) {
+        const input = document.getElementById(inputId);
+        if (!input) continue;
+        if (type === "bool") {
+            payload[key] = Boolean(input.checked);
+            continue;
+        }
+        const value = Number(input.value);
+        if (!Number.isFinite(value)) {
+            showToast(`Invalid value for ${key}`, 'error');
+            return;
+        }
+        payload[key] = Math.trunc(value);
+    }
+
+    try {
+        const r = await fetch(`${getApiBase()}/api/settings/autonomy/cron-policy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (r.ok) {
+            showToast('Cron guardrails saved (restart admin-api to apply).', 'success');
+            await loadAutonomyCronPolicy();
+        } else {
+            const err = await r.json().catch(() => ({}));
+            showToast(`Save failed: ${err.detail || err.error || r.status}`, 'error');
+        }
+    } catch (e) {
+        showToast('Failed to save cron guardrails', 'error');
+    }
+}
+
+function setupAutonomyCronPolicyHandlers() {
+    const saveBtn = document.getElementById('save-cron-policy-settings');
+    if (saveBtn) saveBtn.addEventListener('click', saveAutonomyCronPolicy);
+
+    const advancedNav = document.querySelector('.settings-category[data-category="advanced"]');
+    if (advancedNav) {
+        advancedNav.addEventListener('click', () => {
+            setTimeout(loadAutonomyCronPolicy, 180);
+        });
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+// GITHUB REFERENCE COLLECTIONS (Cronjobs | Skills | Blueprints)
+// ═══════════════════════════════════════════════════════
+
+const REFERENCE_LINK_CATEGORIES = ["cronjobs", "skills", "blueprints"];
+let referenceLinksState = {
+    activeTab: "cronjobs",
+    collections: {
+        cronjobs: [],
+        skills: [],
+        blueprints: [],
+    },
+};
+
+function escapeAttr(text) {
+    return String(text ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
+function _emptyReferenceCollections() {
+    return {
+        cronjobs: [],
+        skills: [],
+        blueprints: [],
+    };
+}
+
+function _normalizeReferenceCollections(raw) {
+    const out = _emptyReferenceCollections();
+    const input = raw && typeof raw === "object" ? raw : {};
+    for (const category of REFERENCE_LINK_CATEGORIES) {
+        const rows = Array.isArray(input[category]) ? input[category] : [];
+        out[category] = rows.map((entry) => ({
+            name: String((entry && entry.name) || "").trim(),
+            url: String((entry && entry.url) || "").trim(),
+            description: String((entry && entry.description) || "").trim(),
+            enabled: entry && entry.enabled === false ? false : true,
+            read_only: true,
+        }));
+    }
+    return out;
+}
+
+function _referenceTabLabel(category) {
+    if (category === "cronjobs") return "CRONJOBS";
+    if (category === "skills") return "SKILLS";
+    return "BLUEPRINTS";
+}
+
+function renderReferenceLinksTabs() {
+    const tabs = document.querySelectorAll('.reference-links-tab');
+    tabs.forEach((tab) => {
+        const isActive = tab.dataset.tab === referenceLinksState.activeTab;
+        tab.classList.toggle('bg-accent-primary/20', isActive);
+        tab.classList.toggle('text-accent-primary', isActive);
+        tab.classList.toggle('bg-dark-hover', !isActive);
+        tab.classList.toggle('text-gray-400', !isActive);
+    });
+}
+
+function updateReferenceLinkField(index, field, value) {
+    const category = referenceLinksState.activeTab;
+    const entries = referenceLinksState.collections[category] || [];
+    if (index < 0 || index >= entries.length) return;
+    entries[index][field] = value;
+}
+
+function removeReferenceLinkRow(index) {
+    const category = referenceLinksState.activeTab;
+    const entries = referenceLinksState.collections[category] || [];
+    if (index < 0 || index >= entries.length) return;
+    entries.splice(index, 1);
+    renderReferenceLinksRows();
+}
+
+function renderReferenceLinksRows() {
+    const rowsEl = document.getElementById('reference-links-rows');
+    if (!rowsEl) return;
+
+    const category = referenceLinksState.activeTab;
+    const entries = referenceLinksState.collections[category] || [];
+
+    if (!entries.length) {
+        rowsEl.innerHTML = `<tr><td colspan="6" class="px-3 py-4 text-center text-gray-500">No ${_referenceTabLabel(category)} links yet.</td></tr>`;
+        return;
+    }
+
+    rowsEl.innerHTML = entries.map((entry, idx) => `
+        <tr class="border-b border-dark-border/60">
+            <td class="px-3 py-2 align-top">
+                <input
+                    class="reference-link-input w-full bg-dark-bg border border-dark-border rounded px-2 py-1 text-sm"
+                    data-index="${idx}"
+                    data-field="name"
+                    placeholder="Display name"
+                    value="${escapeAttr(entry.name)}"
+                />
+            </td>
+            <td class="px-3 py-2 align-top">
+                <input
+                    class="reference-link-input w-full bg-dark-bg border border-dark-border rounded px-2 py-1 text-xs font-mono"
+                    data-index="${idx}"
+                    data-field="url"
+                    placeholder="https://github.com/org/repo"
+                    value="${escapeAttr(entry.url)}"
+                />
+            </td>
+            <td class="px-3 py-2 align-top">
+                <input
+                    class="reference-link-input w-full bg-dark-bg border border-dark-border rounded px-2 py-1 text-sm"
+                    data-index="${idx}"
+                    data-field="description"
+                    placeholder="Optional note"
+                    value="${escapeAttr(entry.description)}"
+                />
+            </td>
+            <td class="px-3 py-2 text-center align-top">
+                <input
+                    type="checkbox"
+                    class="reference-link-checkbox accent-accent-primary"
+                    data-index="${idx}"
+                    data-field="enabled"
+                    ${entry.enabled ? "checked" : ""}
+                />
+            </td>
+            <td class="px-3 py-2 align-top text-xs text-cyan-300">
+                read_only
+            </td>
+            <td class="px-3 py-2 text-right align-top">
+                <button
+                    class="reference-link-remove px-2 py-1 text-xs rounded bg-red-500/15 text-red-300 hover:bg-red-500/25"
+                    data-index="${idx}"
+                >
+                    Remove
+                </button>
+            </td>
+        </tr>
+    `).join('');
+
+    rowsEl.querySelectorAll('.reference-link-input').forEach((el) => {
+        el.addEventListener('input', (event) => {
+            const index = Number(event.target.dataset.index || "-1");
+            const field = String(event.target.dataset.field || "");
+            updateReferenceLinkField(index, field, String(event.target.value || ""));
+        });
+    });
+
+    rowsEl.querySelectorAll('.reference-link-checkbox').forEach((el) => {
+        el.addEventListener('change', (event) => {
+            const index = Number(event.target.dataset.index || "-1");
+            const field = String(event.target.dataset.field || "");
+            updateReferenceLinkField(index, field, Boolean(event.target.checked));
+        });
+    });
+
+    rowsEl.querySelectorAll('.reference-link-remove').forEach((el) => {
+        el.addEventListener('click', () => {
+            const index = Number(el.dataset.index || "-1");
+            removeReferenceLinkRow(index);
+        });
+    });
+}
+
+function addReferenceLinkRow() {
+    const category = referenceLinksState.activeTab;
+    if (!referenceLinksState.collections[category]) {
+        referenceLinksState.collections[category] = [];
+    }
+    referenceLinksState.collections[category].push({
+        name: "",
+        url: "",
+        description: "",
+        enabled: true,
+        read_only: true,
+    });
+    renderReferenceLinksRows();
+}
+
+async function loadReferenceLinksSettings() {
+    try {
+        const r = await fetch(`${getApiBase()}/api/settings/reference-links`);
+        if (!r.ok) return;
+        const d = await r.json();
+        referenceLinksState.collections = _normalizeReferenceCollections(d.collections || {});
+        if (!REFERENCE_LINK_CATEGORIES.includes(referenceLinksState.activeTab)) {
+            referenceLinksState.activeTab = REFERENCE_LINK_CATEGORIES[0];
+        }
+        renderReferenceLinksTabs();
+        renderReferenceLinksRows();
+        log('info', '[ReferenceLinks] loaded');
+    } catch (e) {
+        log('error', `[ReferenceLinks] load failed: ${e.message}`);
+    }
+}
+
+async function saveReferenceLinksSettings() {
+    const payload = _normalizeReferenceCollections(referenceLinksState.collections);
+
+    for (const category of REFERENCE_LINK_CATEGORIES) {
+        const rows = payload[category] || [];
+        for (let idx = 0; idx < rows.length; idx += 1) {
+            const entry = rows[idx];
+            if (!entry.name || !entry.url) {
+                showToast(`Missing name/url in ${_referenceTabLabel(category)} row ${idx + 1}`, 'error');
+                return;
+            }
+        }
+    }
+
+    try {
+        const r = await fetch(`${getApiBase()}/api/settings/reference-links`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (r.ok) {
+            const d = await r.json();
+            referenceLinksState.collections = _normalizeReferenceCollections(d.collections || payload);
+            renderReferenceLinksRows();
+            showToast('Reference collections saved!', 'success');
+        } else {
+            const err = await r.json().catch(() => ({}));
+            showToast(`Save failed: ${err.detail || err.error || r.status}`, 'error');
+        }
+    } catch (e) {
+        showToast('Failed to save reference collections', 'error');
+    }
+}
+
+function setupReferenceLinksSettingsHandlers() {
+    const saveBtn = document.getElementById('save-reference-links-settings');
+    if (saveBtn) saveBtn.addEventListener('click', saveReferenceLinksSettings);
+
+    const addBtn = document.getElementById('reference-links-add-row');
+    if (addBtn) addBtn.addEventListener('click', addReferenceLinkRow);
+
+    const tabs = document.querySelectorAll('.reference-links-tab');
+    tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+            const nextTab = String(tab.dataset.tab || "").toLowerCase();
+            if (!REFERENCE_LINK_CATEGORIES.includes(nextTab)) return;
+            referenceLinksState.activeTab = nextTab;
+            renderReferenceLinksTabs();
+            renderReferenceLinksRows();
+        });
+    });
+
+    const advancedNav = document.querySelector('.settings-category[data-category="advanced"]');
+    if (advancedNav) {
+        advancedNav.addEventListener('click', () => {
+            setTimeout(loadReferenceLinksSettings, 200);
+        });
+    }
+}
+
+// ═══════════════════════════════════════════════════════
 // DIGEST PIPELINE STATUS PANEL (Phase 8 — DIGEST_UI_ENABLE)
 // ═══════════════════════════════════════════════════════
 
@@ -1511,11 +1979,15 @@ if (document.readyState === 'loading') {
         setupMasterSettingsHandlers();
         setupCompressionHandlers();
         setupEmbeddingRuntimeHandlers();
+        setupAutonomyCronPolicyHandlers();
+        setupReferenceLinksSettingsHandlers();
         setupDigestUIHandlers();
     });
 } else {
     setupMasterSettingsHandlers();
     setupCompressionHandlers();
     setupEmbeddingRuntimeHandlers();
+    setupAutonomyCronPolicyHandlers();
+    setupReferenceLinksSettingsHandlers();
     setupDigestUIHandlers();
 }

@@ -795,7 +795,7 @@ def get_autonomy_cron_trion_max_loops() -> int:
     """
     val = int(settings.get(
         "AUTONOMY_CRON_TRION_MAX_LOOPS",
-        os.getenv("AUTONOMY_CRON_TRION_MAX_LOOPS", "12")
+        os.getenv("AUTONOMY_CRON_TRION_MAX_LOOPS", "50")
     ))
     return max(1, min(200, val))
 

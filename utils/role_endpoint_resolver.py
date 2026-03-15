@@ -43,15 +43,58 @@ def _normalize_endpoint(endpoint: str) -> str:
     return (endpoint or "").strip().rstrip("/")
 
 
+def _docker_default_gateway_endpoint(port: int = 11434) -> Optional[str]:
+    """
+    Best-effort discovery of the current container/network default gateway.
+    Avoids hardcoded bridge IP assumptions (e.g. 172.17.0.1).
+    """
+    try:
+        with open("/proc/net/route", "r", encoding="utf-8") as fh:
+            # Skip header
+            next(fh, None)
+            for line in fh:
+                cols = line.strip().split()
+                if len(cols) < 4:
+                    continue
+                destination = cols[1]
+                gateway_hex = cols[2]
+                flags_hex = cols[3]
+
+                # Default route + gateway flag.
+                if destination != "00000000":
+                    continue
+                try:
+                    flags = int(flags_hex, 16)
+                except Exception:
+                    continue
+                if not (flags & 0x2):
+                    continue
+
+                try:
+                    raw = bytes.fromhex(gateway_hex)
+                except Exception:
+                    continue
+                if len(raw) != 4:
+                    continue
+                ip = ".".join(str(b) for b in raw[::-1])
+                if ip and ip != "0.0.0.0":
+                    return f"http://{ip}:{int(port)}"
+    except Exception:
+        return None
+    return None
+
+
 def _candidate_default_endpoints(preferred: str) -> list[str]:
     custom_raw = os.getenv("TRION_OLLAMA_DISCOVERY_CANDIDATES", "").strip()
     custom = [x.strip().rstrip("/") for x in custom_raw.split(",") if x.strip()]
+    gateway_candidate = None
+    if _is_truthy(os.getenv("TRION_OLLAMA_DISCOVERY_INCLUDE_GATEWAY", "true")):
+        gateway_candidate = _docker_default_gateway_endpoint(11434)
     defaults = [
         preferred,
         "http://host.docker.internal:11434",
         "http://ollama:11434",
-        "http://172.17.0.1:11434",
-        "http://172.18.0.1:11434",
+        gateway_candidate or "",
         "http://127.0.0.1:11434",
         "http://localhost:11434",
     ]

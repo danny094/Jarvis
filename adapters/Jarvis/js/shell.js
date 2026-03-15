@@ -13,7 +13,10 @@ const state = {
     maintenanceOpen: false,
     toolsLoaded: false,
     protocolLoaded: false,
-    terminalLoaded: false
+    terminalLoaded: false,
+    cronLoaded: false,
+    sessionLoaded: false,
+    marketplaceLoaded: false
 };
 
 // DOM Elements
@@ -25,7 +28,10 @@ const els = {
         tools: document.getElementById('app-tools'),
         settings: document.getElementById('app-settings'),
         protocol: document.getElementById('app-protocol'),
-        terminal: document.getElementById('app-terminal')
+        terminal: document.getElementById('app-terminal'),
+        cron: document.getElementById('app-cron'),
+        session: document.getElementById('app-session'),
+        marketplace: document.getElementById('app-marketplace')
     },
     debugBtn: document.getElementById('debug-toggle-btn'),
     maintenanceBtn: document.getElementById('maintenance-trigger'),
@@ -381,6 +387,39 @@ function switchApp(appName) {
                 })
                 .catch(err => console.error("Failed to load Terminal App:", err));
         }
+    }
+
+    if (appName === 'cron') {
+        import('./apps/cron.js')
+            .then(module => {
+                if (module.initCronApp) {
+                    module.initCronApp();
+                }
+                state.cronLoaded = true;
+            })
+            .catch(err => console.error("Failed to load Cron App:", err));
+    }
+
+    if (appName === 'session') {
+        import('./apps/session.js')
+            .then(module => {
+                if (module.initSessionApp) {
+                    module.initSessionApp();
+                }
+                state.sessionLoaded = true;
+            })
+            .catch(err => console.error("Failed to load Session App:", err));
+    }
+
+    if (appName === 'marketplace') {
+        import('./apps/marketplace.js')
+            .then(module => {
+                if (module.initMarketplaceApp) {
+                    module.initMarketplaceApp();
+                }
+                state.marketplaceLoaded = true;
+            })
+            .catch(err => console.error("Failed to load Marketplace App:", err));
     }
 }
 

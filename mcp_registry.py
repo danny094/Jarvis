@@ -51,52 +51,16 @@ MCPS: Dict[str, Dict[str, Any]] = {
         "enabled": True,
         "description": "AI Skill Studio - Create, validate and manage skills",
     },
-    
-    # ─────────────────────────────────────────────────────────────
-    # N8N Workflows (wenn aktiviert)
-    # ─────────────────────────────────────────────────────────────
-    "n8n": {
-        "url": os.getenv("MCP_N8N", "http://n8n:5678/mcp/sse"),
-        "enabled": os.getenv("ENABLE_MCP_N8N", "false").lower() == "true",
-        "description": "N8N Workflow Automation",
-    },
-    
-    # ─────────────────────────────────────────────────────────────
-    # OPTIONAL: Code Executor
-    # ─────────────────────────────────────────────────────────────
-    "code-exec": {
-        "url": os.getenv("MCP_CODE_EXEC", "http://mcp-code-exec:8084/mcp"),
-        "enabled": os.getenv("ENABLE_MCP_CODE_EXEC", "false").lower() == "true",
-        "description": "Sichere Code-Ausführung in Sandbox",
-    },
-    
-    # ─────────────────────────────────────────────────────────────
-    # OPTIONAL: STDIO-basierter MCP (lokaler Prozess)
-    # ─────────────────────────────────────────────────────────────
-    "local-tools": {
-        "command": os.getenv("MCP_LOCAL_TOOLS_CMD", ""),
-        "transport": "stdio",  # Nur bei STDIO explizit nötig
-        "enabled": os.getenv("ENABLE_MCP_LOCAL_TOOLS", "false").lower() == "true",
-        "description": "Lokale Tools via STDIO",
-    },
-    
-    # ─────────────────────────────────────────────────────────────
-    # CUSTOM: User-definierte MCPs
-    # ─────────────────────────────────────────────────────────────
-    "custom-1": {
-        "url": os.getenv("MCP_CUSTOM_1", ""),
-        "enabled": os.getenv("ENABLE_MCP_CUSTOM_1", "false").lower() == "true",
-        "api_key": os.getenv("MCP_CUSTOM_1_API_KEY", ""),
-        "description": os.getenv("MCP_CUSTOM_1_DESC", "Custom MCP 1"),
-    },
-    
-    "custom-2": {
-        "url": os.getenv("MCP_CUSTOM_2", ""),
-        "enabled": os.getenv("ENABLE_MCP_CUSTOM_2", "false").lower() == "true",
-        "api_key": os.getenv("MCP_CUSTOM_2_API_KEY", ""),
-        "description": os.getenv("MCP_CUSTOM_2_DESC", "Custom MCP 2"),
-    },
 
+    # ─────────────────────────────────────────────────────────────
+    # CORE: Storage Broker - Storage governance / policy broker
+    # ─────────────────────────────────────────────────────────────
+    "storage-broker": {
+        "url": os.getenv("MCP_STORAGE_BROKER", "http://storage-broker:8089/mcp"),
+        "enabled": os.getenv("ENABLE_MCP_STORAGE_BROKER", "true").lower() == "true",
+        "description": "Storage governance broker (disk discovery, zones, policy, audit)",
+    },
+    
     # ─────────────────────────────────────────────────────────────
     # DEMO: Time MCP
     # ─────────────────────────────────────────────────────────────
@@ -104,8 +68,8 @@ MCPS: Dict[str, Dict[str, Any]] = {
         "command": "python3 -u /app/custom_mcps/time-mcp/server.py",
         "transport": "stdio",
         "path": "/app/custom_mcps/time-mcp",
-        "enabled": False,  # DISABLED - 60s timeout blocker!
-        "description": "Simple Time MCP (STDIO)",
+        "enabled": os.getenv("ENABLE_MCP_TIME_MCP", "true").lower() == "true",
+        "description": "Simple Time MCP (STDIO, configurable timezone/country/region)",
     },
 
 
@@ -119,6 +83,11 @@ def get_enabled_mcps() -> Dict[str, Dict[str, Any]]:
         for name, config in MCPS.items() 
         if config.get("enabled") and (config.get("url") or config.get("command"))
     }
+
+
+def get_mcps() -> Dict[str, Dict[str, Any]]:
+    """Backward-compatible full MCP registry snapshot."""
+    return dict(MCPS)
 
 
 def get_mcp_config(name: str) -> Dict[str, Any]:
@@ -276,5 +245,48 @@ def get_enabled_tools() -> list:
             "arguments": "container_id (str), tail (int, optional)"
         },
     ])
+
+    # ─────────────────────────────────────────────────────────────
+    # STORAGE BROKER TOOLS
+    # ─────────────────────────────────────────────────────────────
+    if MCPS.get("storage-broker", {}).get("enabled"):
+        tools.extend([
+            {
+                "name": "storage_list_disks",
+                "mcp": "storage-broker",
+                "description": "Listet erkannte physische Disks und Partitionen inkl. Policy/Zonenstatus.",
+                "arguments": "keine"
+            },
+            {
+                "name": "storage_get_summary",
+                "mcp": "storage-broker",
+                "description": "Gibt Speicher-Übersicht (Anzahlen, Kapazität, Managed/Blocked-Verteilung) zurück.",
+                "arguments": "keine"
+            },
+            {
+                "name": "storage_set_disk_zone",
+                "mcp": "storage-broker",
+                "description": "Setzt Zone für eine Disk/Partition (z. B. managed_services, backup, external).",
+                "arguments": "disk_id (str), zone (str)"
+            },
+            {
+                "name": "storage_set_disk_policy",
+                "mcp": "storage-broker",
+                "description": "Setzt Policy-State für Disk/Partition (blocked, read_only, managed_rw).",
+                "arguments": "disk_id (str), policy_state (str)"
+            },
+            {
+                "name": "storage_validate_path",
+                "mcp": "storage-broker",
+                "description": "Prüft einen Pfad gegen Storage-Policy (inkl. Immutable/System-Guards).",
+                "arguments": "path (str)"
+            },
+            {
+                "name": "storage_create_service_dir",
+                "mcp": "storage-broker",
+                "description": "Erstellt Service-Verzeichnisstruktur in erlaubter Zone (dry_run standardmäßig aktiv).",
+                "arguments": "service_name (str), zone (str), profile (str, optional), dry_run (bool, optional)"
+            },
+        ])
 
     return tools

@@ -17,6 +17,7 @@ from utils.logger import log_info, log_error, log_debug, log_warning
 import json
 import os
 import threading
+import asyncio
 from pathlib import Path
 
 
@@ -776,6 +777,14 @@ Examples: {"; ".join(examples[:2])}
         except Exception as e:
             log_error(f"[MCPHub] Tool call failed{trace_suffix}: {e}")
             return {"error": str(e)}
+
+    async def call_tool_async(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """
+        Async-safe MCP tool call wrapper.
+        Keeps existing sync routing logic, but offloads blocking transport I/O
+        from the event loop. Useful for async request paths (/api/chat stream/deep).
+        """
+        return await asyncio.to_thread(self.call_tool, tool_name, arguments)
     
     def get_mcp_for_tool(self, tool_name: str) -> Optional[str]:
         """Gibt den MCP-Namen für ein Tool zurück."""

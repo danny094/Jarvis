@@ -2,11 +2,23 @@ import pytest
 import httpx
 import asyncio
 import json
+import os
 from typing import Dict, Any
 
 # Configuration
 SKILL_SERVER_URL = "http://localhost:8088"
 TOOL_EXECUTOR_URL = "http://localhost:8000"
+
+_RUN_AUTONOMOUS_SKILL_INTEGRATION = (
+    os.environ.get("RUN_AUTONOMOUS_SKILL_INTEGRATION", "0").strip() == "1"
+)
+pytestmark = pytest.mark.skipif(
+    not _RUN_AUTONOMOUS_SKILL_INTEGRATION,
+    reason=(
+        "Autonomous skill integration requires a prepared live stack "
+        "(set RUN_AUTONOMOUS_SKILL_INTEGRATION=1)."
+    ),
+)
 
 def extract_result(data: Dict[str, Any]) -> Dict[str, Any]:
     """Helper to extract the actual result from MCP wrapper if present."""

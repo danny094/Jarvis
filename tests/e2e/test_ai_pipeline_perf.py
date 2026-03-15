@@ -755,8 +755,15 @@ def test_ai_pipeline_perf_live():
         )
         assert has_ctx, "Context markers required but not present in perf stream"
 
-    _assert_thresholds(summary)
-    _assert_baseline_regression(summary)
+    gate_failures: List[str] = []
+    try:
+        _assert_thresholds(summary)
+    except AssertionError as exc:
+        gate_failures.append(f"thresholds: {exc}")
+    try:
+        _assert_baseline_regression(summary)
+    except AssertionError as exc:
+        gate_failures.append(f"baseline: {exc}")
 
     report = {
         "meta": {
@@ -784,6 +791,10 @@ def test_ai_pipeline_perf_live():
         "summary": summary,
         "failed_runs": failed,
         "records": records,
+        "gate": {
+            "ok": len(gate_failures) == 0,
+            "failures": gate_failures,
+        },
     }
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -798,3 +809,5 @@ def test_ai_pipeline_perf_live():
         f"overall_p95_total_tokens={summary.get('overall', {}).get('p95_total_tokens_est', 0)}"
     )
     print(f"[perf] report={report_path}")
+    if gate_failures:
+        pytest.fail("; ".join(gate_failures))

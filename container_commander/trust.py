@@ -24,10 +24,30 @@ Verwendung:
 """
 
 from __future__ import annotations
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .models import Blueprint
+
+
+TRUSTED_IMAGE_PATTERNS = [
+    r"^(library/)?(ubuntu|debian|alpine|busybox):",
+    r"^(library/)?(python|node|ruby|golang|rust|openjdk):",
+    r"^(library/)?(postgres|mysql|mariadb|mongo|redis|memcached):",
+    r"^(library/)?(nginx|httpd|traefik|caddy):",
+    r"^(library/)?(elasticsearch|kibana|logstash):",
+    r"^(library/)?(grafana|prometheus):",
+    r"^josh5/steam-headless(:|@|$)",
+]
+
+
+def is_trusted_image(image: str) -> bool:
+    """Check whether an image ref matches trusted official image patterns."""
+    for pattern in TRUSTED_IMAGE_PATTERNS:
+        if re.match(pattern, image.lower()):
+            return True
+    return False
 
 
 # ── Official IDs (single source of truth for trust) ───────
@@ -59,7 +79,6 @@ def evaluate_blueprint_trust(blueprint: "Blueprint") -> dict:
         }
 
     # 2. Image-Prefix aus Trusted-Pattern-Liste → verified
-    from .mcp_tools import is_trusted_image
     if image_ref and is_trusted_image(image_ref):
         return {
             "level": "verified",
@@ -84,8 +103,6 @@ def evaluate_image_trust(image_ref: str) -> dict:
     Standalone Image-Trust-Check (ohne Blueprint-Kontext).
     Für zukünftige Digest-Verifikation vorbereitet.
     """
-    from .mcp_tools import is_trusted_image
-
     if is_trusted_image(image_ref):
         return {
             "level": "verified",

@@ -8,7 +8,7 @@ Architecture Pattern: COMPOSITION (not parallel execution!)
 
 Based on Gemini's architecture analysis and critical.md fixes.
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 import time
@@ -49,6 +49,9 @@ class MasterContext:
     max_loops: int = 10                         # Safety limit
     started_at: float = 0.0                     # Start timestamp
     observations: Dict[str, Any] = field(default_factory=dict)  # Current observations
+    terminal_error_code: str = ""               # Stable terminal error code (if failed)
+    terminal_error_detail: str = ""             # Human-readable terminal error detail
+    stop_reason: str = ""                       # Terminal stop reason (success/failure)
     
     def __post_init__(self):
         """Initialize timestamp if not set"""
@@ -108,7 +111,11 @@ class MasterOrchestrator:
                 return default
         return default
 
-    def __init__(self, pipeline_orchestrator):
+    def __init__(
+        self,
+        pipeline_orchestrator,
+        event_sink: Optional[Callable[[str, str, Dict[str, Any]], Any]] = None,
+    ):
         """
         Initialize Master Orchestrator
         
@@ -116,6 +123,7 @@ class MasterOrchestrator:
             pipeline_orchestrator: PipelineOrchestrator instance (composition!)
         """
         self.pipeline = pipeline_orchestrator
+        self._event_sink = event_sink
         
         # Load settings
         self.settings = self._load_settings()
@@ -126,6 +134,50 @@ class MasterOrchestrator:
         
         thinking_status = 'ON' if self.settings.get('use_thinking_layer') else 'OFF'
         log_info(f"[MasterOrchestrator] Initialized (ThinkingLayer: {thinking_status}, MaxLoops: {self.settings.get('max_loops', 10)})")
+
+    def set_event_sink(
+        self,
+        event_sink: Optional[Callable[[str, str, Dict[str, Any]], Any]],
+    ) -> None:
+        """Attach or replace telemetry sink for planning events."""
+        self._event_sink = event_sink
+
+    async def _emit_event(
+        self,
+        conversation_id: str,
+        event_type: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Best-effort event emission for workspace/planning telemetry."""
+        if not callable(self._event_sink):
+            return
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id:
+            return
+        data = payload if isinstance(payload, dict) else {}
+        try:
+            result = self._event_sink(conv_id, str(event_type or "planning_event"), data)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as e:
+            log_warning(f"[MasterOrchestrator] Event sink failed ({event_type}): {e}")
+
+    @staticmethod
+    def _set_terminal_error(
+        context: MasterContext,
+        code: str,
+        detail: str = "",
+    ) -> None:
+        """Set terminal error only once to preserve first/root failure reason."""
+        if not context.terminal_error_code:
+            context.terminal_error_code = str(code or "autonomy_error").strip() or "autonomy_error"
+        if detail and not context.terminal_error_detail:
+            context.terminal_error_detail = str(detail).strip()[:400]
+
+    @staticmethod
+    def _set_stop_reason(context: MasterContext, reason: str) -> None:
+        if reason:
+            context.stop_reason = str(reason).strip()[:120]
     
     # ========================================================================
     # PUBLIC API
@@ -150,7 +202,25 @@ class MasterOrchestrator:
         Returns:
             Execution summary with results and metadata
         """
+        # Refresh settings for every objective run so /api/settings/master takes effect immediately.
+        self.settings = self._load_settings()
         log_info(f"[MasterOrchestrator] Starting objective: {objective}")
+
+        if not bool(self.settings.get("enabled", True)):
+            msg = "Master orchestrator is disabled by settings"
+            await self._emit_event(
+                conversation_id,
+                "planning_error",
+                {"objective": objective, "error": msg},
+            )
+            return {
+                "success": False,
+                "objective": objective,
+                "error": msg,
+                "steps_completed": 0,
+                "elapsed_time": 0.0,
+                "final_state": OrchestrationState.FAILED.value,
+            }
         
         # Initialize context
         # Use settings if max_loops not explicitly provided
@@ -163,24 +233,80 @@ class MasterOrchestrator:
             conversation_id=conversation_id,
             max_loops=max_loops
         )
+
+        await self._emit_event(
+            conversation_id,
+            "planning_start",
+            {
+                "objective": objective,
+                "max_loops": max_loops,
+                "state": context.state.value,
+                "planning_mode": "deep" if bool(self.settings.get("use_thinking_layer", False)) else "fast",
+            },
+        )
         
         try:
             # Run autonomous loop
             result = await self._autonomous_loop(context)
-            
-            log_info(f"[MasterOrchestrator] Objective completed in {context.get_elapsed_time():.1f}s")
-            
-            return {
-                "success": True,
+            final_state = str(result.get("final_state") or context.state.value)
+            error_code = str(result.get("error_code") or context.terminal_error_code or "").strip()
+            stop_reason = str(result.get("stop_reason") or context.stop_reason or "").strip()
+            success = final_state == OrchestrationState.COMPLETED.value and not error_code
+
+            if success:
+                log_info(f"[MasterOrchestrator] Objective completed in {context.get_elapsed_time():.1f}s")
+                await self._emit_event(
+                    conversation_id,
+                    "planning_done",
+                    {
+                        "objective": objective,
+                        "loops_executed": context.loop_count,
+                        "steps_completed": len(context.steps_completed),
+                        "final_state": final_state,
+                        "stop_reason": stop_reason or "completed",
+                    },
+                )
+            else:
+                detail = str(result.get("error") or context.terminal_error_detail or "objective_not_completed")
+                await self._emit_event(
+                    conversation_id,
+                    "planning_error",
+                    {
+                        "objective": objective,
+                        "phase": "terminal",
+                        "error": detail,
+                        "error_code": error_code or "objective_not_completed",
+                        "final_state": final_state,
+                        "stop_reason": stop_reason or "terminal_failure",
+                        "loops_executed": context.loop_count,
+                    },
+                )
+
+            out = {
+                "success": success,
                 "objective": objective,
                 "steps_completed": len(context.steps_completed),
                 "elapsed_time": context.get_elapsed_time(),
-                "final_state": context.state.value,
-                "result": result
+                "final_state": final_state,
+                "result": result,
+                "stop_reason": stop_reason or ("completed" if success else "terminal_failure"),
             }
+            if error_code:
+                out["error_code"] = error_code
+                out["error"] = str(result.get("error") or context.terminal_error_detail or "objective_not_completed")
+            return out
             
         except Exception as e:
             log_error(f"[MasterOrchestrator] Objective failed: {e}")
+            await self._emit_event(
+                conversation_id,
+                "planning_error",
+                {
+                    "objective": objective,
+                    "error": str(e),
+                    "loops_executed": context.loop_count,
+                },
+            )
             
             return {
                 "success": False,
@@ -214,6 +340,16 @@ class MasterOrchestrator:
             context.loop_count += 1
             
             log_info(f"[MasterOrchestrator] Loop {context.loop_count}/{context.max_loops}")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_step",
+                {
+                    "phase": "loop",
+                    "loop": context.loop_count,
+                    "state": context.state.value,
+                    "steps_completed": len(context.steps_completed),
+                },
+            )
             
             # State machine dispatch
             if context.state == OrchestrationState.IDLE:
@@ -228,8 +364,12 @@ class MasterOrchestrator:
                 if plan_created:
                     context.state = OrchestrationState.EXECUTING
                 else:
-                    # No more actions needed
-                    context.state = OrchestrationState.COMPLETED
+                    # No more actions needed OR terminal planning error.
+                    context.state = (
+                        OrchestrationState.FAILED
+                        if context.terminal_error_code
+                        else OrchestrationState.COMPLETED
+                    )
                     break
             
             elif context.state == OrchestrationState.EXECUTING:
@@ -241,20 +381,48 @@ class MasterOrchestrator:
                 if should_continue:
                     context.state = OrchestrationState.OBSERVING
                 else:
-                    context.state = OrchestrationState.COMPLETED
+                    context.state = (
+                        OrchestrationState.FAILED
+                        if context.terminal_error_code
+                        else OrchestrationState.COMPLETED
+                    )
                     break
             
             elif context.state in [OrchestrationState.COMPLETED, OrchestrationState.FAILED]:
                 break
         
         # Check if we hit loop limit
-        if context.loop_count >= context.max_loops:
+        if (
+            context.loop_count >= context.max_loops
+            and context.state not in {OrchestrationState.COMPLETED, OrchestrationState.FAILED}
+        ):
             log_warning(f"[MasterOrchestrator] Hit max loops ({context.max_loops})")
-        
+            self._set_terminal_error(
+                context,
+                "max_loops_reached",
+                f"max_loops_reached:{context.max_loops}",
+            )
+            self._set_stop_reason(context, "max_loops_reached")
+            context.state = OrchestrationState.FAILED
+            await self._emit_event(
+                context.conversation_id,
+                "planning_error",
+                {
+                    "phase": "loop_guard",
+                    "loop": context.loop_count,
+                    "error": f"max_loops_reached:{context.max_loops}",
+                    "error_code": "max_loops_reached",
+                },
+            )
+
         return {
             "loops_executed": context.loop_count,
             "final_state": context.state.value,
             "steps": context.steps_completed
+            ,
+            "error_code": context.terminal_error_code or None,
+            "error": context.terminal_error_detail or None,
+            "stop_reason": context.stop_reason or None,
         }
     
     # ========================================================================
@@ -334,6 +502,11 @@ class MasterOrchestrator:
             True if plan created, False if objective already achieved
         """
         log_info("[MasterOrchestrator] PLAN: Creating action plan...")
+        await self._emit_event(
+            context.conversation_id,
+            "planning_step",
+            {"phase": "planning", "loop": context.loop_count},
+        )
         
         # ====================================================================
         # CHECK IF OBJECTIVE ACHIEVED
@@ -342,6 +515,12 @@ class MasterOrchestrator:
         # Simple heuristic for now: if we've done 5+ steps, probably done
         if len(context.steps_completed) >= 5:
             log_info("[MasterOrchestrator] Objective likely achieved (5+ steps)")
+            self._set_stop_reason(context, "max_steps_heuristic")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_step",
+                {"phase": "planning", "decision": "stop", "reason": "max_steps_heuristic"},
+            )
             return False
         
         # ====================================================================
@@ -358,6 +537,18 @@ class MasterOrchestrator:
             # If last 3 actions are identical → stuck in loop!
             if len(set(last_actions)) == 1:
                 log_warning(f"[MasterOrchestrator] Loop detected: {last_actions[0]} repeated 3x")
+                self._set_terminal_error(context, "loop_detected", f"repeated_action:{last_actions[0]}")
+                self._set_stop_reason(context, "loop_detected")
+                await self._emit_event(
+                    context.conversation_id,
+                    "planning_error",
+                    {
+                        "phase": "planning",
+                        "error": "loop_detected",
+                        "error_code": "loop_detected",
+                        "action": last_actions[0],
+                    },
+                )
                 return False
         
         # ====================================================================
@@ -379,6 +570,15 @@ class MasterOrchestrator:
         context.active_plan = plan
         
         log_info(f"[MasterOrchestrator] Plan created: {plan['next_action']}")
+        await self._emit_event(
+            context.conversation_id,
+            "planning_step",
+            {
+                "phase": "planning",
+                "decision": "continue",
+                "next_action": plan["next_action"],
+            },
+        )
         
         return True
     
@@ -416,14 +616,31 @@ class MasterOrchestrator:
         Critical: This is NOT parallel execution - Master is CLIENT of Pipeline.
         """
         log_info("[MasterOrchestrator] EXECUTE: Running sub-tasks...")
+        await self._emit_event(
+            context.conversation_id,
+            "planning_step",
+            {"phase": "executing", "loop": context.loop_count},
+        )
         
         if not context.active_plan:
             log_error("[MasterOrchestrator] No active plan to execute!")
+            self._set_terminal_error(context, "missing_active_plan", "missing_active_plan")
+            self._set_stop_reason(context, "missing_active_plan")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_error",
+                {"phase": "executing", "error": "missing_active_plan", "error_code": "missing_active_plan"},
+            )
             return
         
         action = context.active_plan.get("next_action", "unknown")
         
         log_info(f"[MasterOrchestrator] Executing action: {action}")
+        await self._emit_event(
+            context.conversation_id,
+            "planning_step",
+            {"phase": "executing", "action": action},
+        )
         
         # ====================================================================
         # CALL PIPELINE (Composition Pattern!)
@@ -463,6 +680,16 @@ class MasterOrchestrator:
             if is_error:
                 error_msg = result.content if result.content else "Unknown error"
                 log_error(f"[MasterOrchestrator] Pipeline error: {error_msg}")
+                await self._emit_event(
+                    context.conversation_id,
+                    "planning_error",
+                    {
+                        "phase": "executing",
+                        "action": action,
+                        "error": error_msg,
+                        "done_reason": result.done_reason,
+                    },
+                )
                 
                 # Record error
                 context.add_step({
@@ -487,9 +714,28 @@ class MasterOrchestrator:
             })
             
             log_info(f"[MasterOrchestrator] Step completed successfully")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_step",
+                {
+                    "phase": "executing",
+                    "action": action,
+                    "status": "success",
+                    "done_reason": result.done_reason,
+                },
+            )
             
         except Exception as e:
             log_error(f"[MasterOrchestrator] Execution failed: {e}")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_error",
+                {
+                    "phase": "executing",
+                    "action": action,
+                    "error": str(e),
+                },
+            )
             
             # Record failure
             context.add_step({
@@ -514,9 +760,21 @@ class MasterOrchestrator:
             True to continue loop, False if objective achieved
         """
         log_info("[MasterOrchestrator] REFLECT: Analyzing results...")
+        await self._emit_event(
+            context.conversation_id,
+            "planning_step",
+            {"phase": "reflecting", "loop": context.loop_count},
+        )
         
         if not context.steps_completed:
             log_warning("[MasterOrchestrator] No steps to reflect on")
+            self._set_terminal_error(context, "no_steps_to_reflect", "no_steps_to_reflect")
+            self._set_stop_reason(context, "no_steps_to_reflect")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_error",
+                {"phase": "reflecting", "error": "no_steps_to_reflect", "error_code": "no_steps_to_reflect"},
+            )
             return False
         
         # ====================================================================
@@ -544,15 +802,45 @@ class MasterOrchestrator:
         
         log_info(f"[MasterOrchestrator] Successful steps: {successful_steps}/{len(context.steps_completed)}")
         
-        # Completion criterion: 3+ successful steps
-        if successful_steps >= 2:
-            log_info("[MasterOrchestrator] Objective likely achieved (2+ successes)")
+        completion_threshold = int(self.settings.get("completion_threshold", 2) or 2)
+        if completion_threshold < 1:
+            completion_threshold = 1
+
+        if successful_steps >= completion_threshold:
+            log_info(
+                "[MasterOrchestrator] Objective likely achieved "
+                f"({successful_steps}+ successes, threshold={completion_threshold})"
+            )
+            self._set_stop_reason(context, "completion_threshold_met")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_step",
+                {
+                    "phase": "reflecting",
+                    "decision": "stop",
+                    "reason": "completion_threshold_met",
+                    "successful_steps": successful_steps,
+                    "completion_threshold": completion_threshold,
+                },
+            )
             return False
         
         # Safety: Don't continue if too many failures
         failed_steps = len(context.steps_completed) - successful_steps
         if failed_steps >= 3:
             log_warning("[MasterOrchestrator] Too many failures (3+), stopping")
+            self._set_terminal_error(context, "too_many_failures", f"failed_steps={failed_steps}")
+            self._set_stop_reason(context, "too_many_failures")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_error",
+                {
+                    "phase": "reflecting",
+                    "error": "too_many_failures",
+                    "error_code": "too_many_failures",
+                    "failed_steps": failed_steps,
+                },
+            )
             return False
         
         # ====================================================================
@@ -562,9 +850,19 @@ class MasterOrchestrator:
         # If we're making progress, continue
         if success:
             log_info("[MasterOrchestrator] Progress made, continuing...")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_step",
+                {"phase": "reflecting", "decision": "continue", "last_step_success": True},
+            )
             return True
         else:
             log_warning("[MasterOrchestrator] Last step failed, but trying again...")
+            await self._emit_event(
+                context.conversation_id,
+                "planning_step",
+                {"phase": "reflecting", "decision": "continue", "last_step_success": False},
+            )
             return True  # Give it another chance
 
 

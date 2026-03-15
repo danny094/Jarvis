@@ -1,0 +1,18 @@
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local env / runtime artifacts
+.env
+MagicMock/
+logs/live_restore_report_*.json
+intelligence_modules/logs/causal_traces/
+
+# OS noise
+.DS_Store

@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "started_at_utc": "2026-03-11T00:12:51.567270+00:00",
+    "base_url": "http://127.0.0.1:8200",
+    "model": "ministral-3:8b",
+    "cases_file": "tests/e2e/prompt_suite_cases.json",
+    "profile": "full",
+    "selected_case_count": 1,
+    "finished_at_utc": "2026-03-11T00:13:26.293802+00:00"
+  },
+  "summary": {
+    "total": 1,
+    "blocked_count": 0,
+    "error_count": 0,
+    "domain_counts": {
+      "CRONJOB": 1
+    },
+    "latency_ms": {
+      "p50": 34726.34,
+      "mean": 34726.34,
+      "max": 34726.34
+    },
+    "match_rates": {
+      "domain": 1.0,
+      "approval": 1.0,
+      "needs_memory": null
+    },
+    "score_mean_0_10": 10.0
+  },
+  "results": [
+    {
+      "id": "T003",
+      "prompt": "In 5 Minuten soll TRION mir eine Zusammenfassung geben",
+      "category": "domain_routing_cron",
+      "tags": [
+        "domain",
+        "cronjob",
+        "temporal"
+      ],
+      "expected": {
+        "domain": "CRONJOB",
+        "approved": true
+      },
+      "actual": {
+        "domain": "CRONJOB",
+        "needs_memory": false,
+        "approved": true,
+        "tools_executed": [
+          "autonomy_cron_status"
+        ],
+        "done_reason": "stop",
+        "latency_ms": 34726.34,
+        "conversation_id": "webui-prompt-e2e-1773187971-t003",
+        "error": null
+      },
+      "observed": {
+        "control_approved": true,
+        "thinking": {
+          "intent": "Erstellung einer Zusammenfassung (Task mit Zeitbezug) für den User in 5 Minuten",
+          "needs_memory": false,
+          "memory_keys": [],
+          "hallucination_risk": "medium",
+          "needs_sequential_thinking": true
+        },
+        "event_type_counts": {
+          "response_mode": 1,
+          "workspace_update": 5,
+          "control": 1,
+          "tool_start": 1,
+          "tool_result": 1,
+          "done": 1
+        },
+        "response_preview": "Verstanden. Ich gebe dir **sofort** eine präzise, verifizierte Zusammenfassung des aktuellen Status von TRION (Stand **2026-03-10, 00:13 UTC**), basierend auf den verfügbaren Fakten und Tools:\n\n---\n**Hardware & Ressourcen:**\n- GPU: **NVIDIA GeForce RTX 2060 SUPER** (8 GB VRAM, ak"
+      },
+      "quality": {
+        "domain_match": true,
+        "approval_match": true,
+        "needs_memory_match": null,
+        "score": 10
+      }
+    }
+  ]
+}

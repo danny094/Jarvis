@@ -15,6 +15,204 @@
     gap: 10px;
 }
 
+/* ─── Autonomy Control ─── */
+.ws-autonomy {
+    background: #0b0f14;
+    border: 1px solid #1e2a36;
+    border-radius: 10px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+
+.ws-autonomy-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.ws-autonomy-head h3 {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    color: #dbeafe;
+    margin: 0;
+}
+
+.ws-autonomy-refresh {
+    border: 1px solid #2e3f51;
+    background: #121c27;
+    color: #9ec5fe;
+    border-radius: 6px;
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+}
+
+.ws-autonomy-refresh:hover {
+    background: #162333;
+    color: #dbeafe;
+}
+
+.ws-autonomy-runtime {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 11px;
+    color: #9ca3af;
+    margin-bottom: 8px;
+}
+
+.ws-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 1px 8px;
+    border: 1px solid transparent;
+}
+
+.ws-pill-ok {
+    color: #34d399;
+    background: rgba(16, 185, 129, 0.12);
+    border-color: rgba(16, 185, 129, 0.35);
+}
+
+.ws-pill-warn {
+    color: #fbbf24;
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.35);
+}
+
+.ws-pill-err {
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.12);
+    border-color: rgba(239, 68, 68, 0.35);
+}
+
+.ws-autonomy-form {
+    display: grid;
+    grid-template-columns: 1fr 70px auto;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.ws-autonomy-form input {
+    background: #0f1721;
+    border: 1px solid #233346;
+    color: #d1d5db;
+    border-radius: 6px;
+    font-size: 12px;
+    padding: 6px 8px;
+    outline: none;
+}
+
+.ws-autonomy-form input:focus {
+    border-color: #60a5fa;
+}
+
+.ws-autonomy-form button {
+    background: #0b2d4d;
+    color: #93c5fd;
+    border: 1px solid #1d4e89;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 6px 10px;
+}
+
+.ws-autonomy-form button:hover {
+    background: #113a61;
+    color: #dbeafe;
+}
+
+.ws-autonomy-context {
+    color: #6b7280;
+    font-size: 10px;
+    margin-bottom: 8px;
+}
+
+.ws-autonomy-context code {
+    color: #9ca3af;
+}
+
+.ws-autonomy-jobs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.ws-autonomy-empty {
+    color: #6b7280;
+    font-size: 11px;
+}
+
+.ws-autonomy-job {
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    background: #0b111a;
+    padding: 7px 8px;
+}
+
+.ws-autonomy-job-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: #94a3b8;
+}
+
+.ws-autonomy-job-id {
+    font-family: monospace;
+    color: #93c5fd;
+}
+
+.ws-autonomy-job-date {
+    margin-left: auto;
+    color: #64748b;
+}
+
+.ws-autonomy-job-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+    color: #64748b;
+    font-size: 10px;
+}
+
+.ws-autonomy-job-detail {
+    margin-top: 4px;
+    color: #fda4af;
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.ws-autonomy-job-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.ws-autonomy-job-actions button {
+    border: 1px solid #334155;
+    border-radius: 5px;
+    background: #0f172a;
+    color: #cbd5e1;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 2px 8px;
+}
+
+.ws-autonomy-job-actions button:hover {
+    border-color: #60a5fa;
+    color: #dbeafe;
+}
+
 /* ─── Card ─── */
 .ws-card {
     background: #0d0d0d;
@@ -245,4 +443,10 @@
 .ws-empty small {
     font-size: 11px;
     color: #444;
+}
+
+@media (max-width: 640px) {
+    .ws-autonomy-form {
+        grid-template-columns: 1fr;
+    }
 }

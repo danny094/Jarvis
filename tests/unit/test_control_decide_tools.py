@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from core.layers.control import ControlLayer
+from core.layers.control import CONTROL_PROMPT, ControlLayer
 
 
 class _FakeHub:
@@ -24,6 +24,20 @@ class _BrokenDiscoveryHub:
 
     def get_mcp_for_tool(self, _name):
         raise RuntimeError("hub discovery unavailable")
+
+
+class _SkillPayloadHub:
+    def __init__(self, payload):
+        self._tool_definitions = {}
+        self._payload = payload
+
+    def get_mcp_for_tool(self, _name):
+        return None
+
+    def call_tool(self, name, _args):
+        if name == "list_skills":
+            return self._payload
+        return {}
 
 
 class TestControlDecideTools(unittest.TestCase):
@@ -163,6 +177,11 @@ class TestControlDecideTools(unittest.TestCase):
         self.assertTrue(len(payload["memory_excerpt"]) < len(long_memory))
         self.assertIn("truncated", payload["memory_excerpt"])
 
+    def test_control_prompt_contains_runtime_soft_warning_rules(self):
+        self.assertIn("ENTSCHEIDUNGSREGELN", CONTROL_PROMPT)
+        self.assertIn("Needs memory but no keys specified", CONTROL_PROMPT)
+        self.assertIn("Host/IP/Server-Lookups", CONTROL_PROMPT)
+
     def test_is_tool_available_fail_closed_when_hub_unavailable(self):
         layer = ControlLayer()
         layer.mcp_hub = None
@@ -175,14 +194,67 @@ class TestControlDecideTools(unittest.TestCase):
         with patch("mcp.hub.get_hub", side_effect=RuntimeError("hub down")):
             self.assertTrue(layer._is_tool_available("create_skill"))
 
+    def test_is_tool_available_keeps_container_native_when_hub_unavailable(self):
+        layer = ControlLayer()
+        layer.mcp_hub = None
+        with patch("mcp.hub.get_hub", side_effect=RuntimeError("hub down")):
+            self.assertTrue(layer._is_tool_available("container_list"))
+
     def test_decide_tools_filters_non_native_on_discovery_error(self):
         layer = ControlLayer()
         layer.set_mcp_hub(_BrokenDiscoveryHub())
         plan = {"suggested_tools": ["memory_graph_search", "autonomous_skill_task"]}
-        decided = asyncio.run(layer.decide_tools("test", plan))
+        decided = asyncio.run(layer.decide_tools("Erstelle einen Skill bitte", plan))
         self.assertEqual(len(decided), 1)
         self.assertEqual(decided[0]["name"], "autonomous_skill_task")
         self.assertEqual(decided[0]["arguments"], {})
+
+    def test_get_available_skills_reads_installed_payload(self):
+        layer = ControlLayer()
+        layer.set_mcp_hub(_SkillPayloadHub({
+            "installed": [
+                {"name": "system_hardware_info"},
+                {"name": "current_weather"},
+            ]
+        }))
+        self.assertEqual(
+            layer._get_available_skills(),
+            ["system_hardware_info", "current_weather"],
+        )
+
+    def test_get_available_skills_reads_structured_content_payload(self):
+        layer = ControlLayer()
+        layer.set_mcp_hub(_SkillPayloadHub({
+            "structuredContent": {
+                "installed": [{"name": "system_hardware_info"}],
+                "active": ["temperature_berlin"],
+            }
+        }))
+        self.assertEqual(
+            layer._get_available_skills(),
+            ["system_hardware_info", "temperature_berlin"],
+        )
+
+    def test_is_tool_available_accepts_installed_skill_name(self):
+        layer = ControlLayer()
+        layer.set_mcp_hub(_SkillPayloadHub({
+            "installed": [{"name": "system_hardware_info"}],
+        }))
+        self.assertTrue(layer._is_tool_available("system_hardware_info"))
+
+    def test_decide_tools_filters_skill_tools_without_explicit_skill_intent(self):
+        layer = ControlLayer()
+        layer.set_mcp_hub(_FakeHub())
+        plan = {"suggested_tools": ["autonomous_skill_task", "create_skill", "run_skill"]}
+        decided = asyncio.run(layer.decide_tools("Erkläre mir was Machine Learning ist", plan))
+        self.assertEqual(decided, [])
+
+    def test_decide_tools_keeps_skill_tools_with_explicit_skill_intent(self):
+        layer = ControlLayer()
+        layer.set_mcp_hub(_FakeHub())
+        plan = {"suggested_tools": ["list_skills", "run_skill"]}
+        decided = asyncio.run(layer.decide_tools("Welche Skills sind installiert?", plan))
+        self.assertEqual([item["name"] for item in decided], ["list_skills", "run_skill"])
 
 
 if __name__ == "__main__":

@@ -57,6 +57,11 @@
     <!-- Markdown Parser -->
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <link rel="stylesheet" href="./static/css/terminal.css">
+    <link rel="stylesheet" href="./static/css/cron.css">
+    <link rel="stylesheet" href="./static/css/settings-models.css">
+    <link rel="stylesheet" href="./static/css/tools.css?v=20260312e">
+    <link rel="stylesheet" href="./static/css/marketplace.css">
+    <link rel="stylesheet" href="./static/css/session.css">
 </head>
 
 <body class="bg-dark-bg text-gray-100 h-screen w-screen overflow-hidden flex selection:bg-accent-primary/20">
@@ -105,6 +110,12 @@
             </button>
             <button class="launcher-icon" data-app="terminal" title="Container Commander">
                 <i data-lucide="terminal" class="w-4 h-4"></i>
+            </button>
+            <button class="launcher-icon" data-app="cron" title="Autonomy Cron">
+                <i data-lucide="calendar-clock" class="w-4 h-4"></i>
+            </button>
+            <button class="launcher-icon" data-app="session" title="Session Insights">
+                <i data-lucide="activity" class="w-4 h-4"></i>
             </button>
 
             <!-- Maintenance (Overlay, not full app) -->
@@ -196,13 +207,26 @@
                         <i data-lucide="arrow-up" class="w-4 h-4"></i>
                     </button>
                 </div>
-                <div class="mt-2 flex items-center justify-between text-[10px] text-gray-600 font-mono">
+                <div class="mt-2 flex items-center justify-between text-[10px] text-gray-600 font-mono gap-3">
                     <label for="deep-job-toggle" class="flex items-center gap-2 cursor-pointer select-none">
                         <input id="deep-job-toggle" type="checkbox"
                             class="w-3.5 h-3.5 rounded border-dark-border bg-dark-card text-accent-primary focus:ring-accent-primary/50">
                         <span>DEEP JOB (ASYNC)</span>
                     </label>
-                    <span>TR/ON AI SYSTEM v2.0 • AGENTIC MODE ACTIVE</span>
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div id="trion-activity" data-active="false" data-stalled="false"
+                            class="flex items-center gap-1.5 text-gray-500 min-w-0">
+                            <span id="trion-activity-pipe" class="trion-activity-pipe text-accent-primary">|</span>
+                            <span id="trion-activity-text" class="truncate">Ready for input</span>
+                        </div>
+                        <button id="cancel-btn"
+                            class="hidden px-2 py-1 rounded-md border border-accent-primary/40 text-accent-primary hover:bg-accent-primary/10 transition-colors">
+                            Stop
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-1 text-[10px] text-gray-600 font-mono text-right">
+                    TR/ON AI SYSTEM v2.0 • AGENTIC MODE ACTIVE
                 </div>
             </div>
         </div>
@@ -230,6 +254,12 @@
         </div>
         <!-- Container Commander Terminal -->
         <div id="app-terminal" class="app-window flex flex-col h-full hidden">
+        </div>
+        <div id="app-cron" class="app-window flex flex-col h-full hidden">
+        </div>
+        <div id="app-session" class="app-window flex flex-col h-full hidden">
+        </div>
+        <div id="app-marketplace" class="app-window flex flex-col h-full hidden">
         </div>
 
     </main>
@@ -279,6 +309,27 @@
                     <i data-lucide="terminal" class="w-10 h-10 text-gray-300"></i>
                 </div>
                 <span class="app-name">Terminal</span>
+            </div>
+
+            <div class="launchpad-app group" data-action="app:cron">
+                <div class="app-icon bg-gradient-to-br from-sky-700 to-cyan-900">
+                    <i data-lucide="calendar-clock" class="w-10 h-10 text-white"></i>
+                </div>
+                <span class="app-name">Cron</span>
+            </div>
+
+            <div class="launchpad-app group" data-action="app:session">
+                <div class="app-icon bg-gradient-to-br from-amber-600 to-yellow-800">
+                    <i data-lucide="activity" class="w-10 h-10 text-white"></i>
+                </div>
+                <span class="app-name">Session</span>
+            </div>
+
+            <div class="launchpad-app group" data-action="app:marketplace">
+                <div class="app-icon bg-gradient-to-br from-emerald-600 to-teal-800">
+                    <i data-lucide="store" class="w-10 h-10 text-white"></i>
+                </div>
+                <span class="app-name">Marketplace</span>
             </div>
 
             <!-- Future Apps / Placeholders -->
@@ -685,6 +736,137 @@
                                 <button id="save-embedding-runtime" class="w-full bg-accent-primary hover:bg-accent-primary/80 text-white font-medium py-2 px-4 rounded-lg transition flex items-center justify-center gap-2">
                                     <i data-lucide="save" class="w-4 h-4"></i>
                                     Save Embedding Settings
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Autonomy Cron Guardrails -->
+                    <div class="bg-dark-surface border border-dark-border rounded-xl p-6 mt-4">
+                        <div class="space-y-4">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-8 h-8 rounded-lg bg-accent-primary/20 flex items-center justify-center text-sm">⏱</div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">Autonomy Cron Guardrails</h3>
+                                    <p class="text-xs text-text-secondary">Scheduler limits for queue safety and anti-spam</p>
+                                </div>
+                            </div>
+
+                            <div class="bg-dark-bg rounded-lg px-3 py-2 text-xs text-text-secondary">
+                                Changes are persisted immediately, but active scheduler workers apply new limits after admin-api restart.
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="text-sm font-medium block mb-1">Max Jobs</label>
+                                    <input id="cron-policy-max-jobs" type="number" min="1" max="2000" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-max-jobs-source">—</span></p>
+                                </div>
+                                <div>
+                                    <label class="text-sm font-medium block mb-1">Max Jobs per Conversation</label>
+                                    <input id="cron-policy-max-jobs-per-conversation" type="number" min="1" max="500" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-max-jobs-per-conversation-source">—</span></p>
+                                </div>
+                                <div>
+                                    <label class="text-sm font-medium block mb-1">Min Interval (s)</label>
+                                    <input id="cron-policy-min-interval-s" type="number" min="60" max="86400" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-min-interval-s-source">—</span></p>
+                                </div>
+                                <div>
+                                    <label class="text-sm font-medium block mb-1">Max Pending Runs (global)</label>
+                                    <input id="cron-policy-max-pending-runs" type="number" min="1" max="5000" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-max-pending-runs-source">—</span></p>
+                                </div>
+                                <div>
+                                    <label class="text-sm font-medium block mb-1">Max Pending Runs per Job</label>
+                                    <input id="cron-policy-max-pending-runs-per-job" type="number" min="1" max="100" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-max-pending-runs-per-job-source">—</span></p>
+                                </div>
+                                <div>
+                                    <label class="text-sm font-medium block mb-1">Run-Now Cooldown (s)</label>
+                                    <input id="cron-policy-manual-run-cooldown-s" type="number" min="0" max="3600" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-manual-run-cooldown-s-source">—</span></p>
+                                </div>
+                                <div>
+                                    <label class="text-sm font-medium block mb-1">TRION Min Interval (s)</label>
+                                    <input id="cron-policy-trion-min-interval-s" type="number" min="60" max="86400" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-trion-min-interval-s-source">—</span></p>
+                                </div>
+                                <div>
+                                    <label class="text-sm font-medium block mb-1">TRION Max Loops</label>
+                                    <input id="cron-policy-trion-max-loops" type="number" min="1" max="200" class="w-full bg-dark-surface border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent-primary">
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-trion-max-loops-source">—</span></p>
+                                </div>
+                                <div class="md:col-span-2">
+                                    <label class="inline-flex items-center gap-2 text-sm font-medium">
+                                        <input id="cron-policy-trion-safe-mode" type="checkbox" class="accent-accent-primary">
+                                        TRION Safe Mode
+                                    </label>
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-trion-safe-mode-source">—</span></p>
+                                </div>
+                                <div class="md:col-span-2">
+                                    <label class="inline-flex items-center gap-2 text-sm font-medium">
+                                        <input id="cron-policy-trion-require-approval" type="checkbox" class="accent-accent-primary">
+                                        TRION Risky Objectives Require User Approval
+                                    </label>
+                                    <p class="text-xs text-gray-500 mt-1">source: <span id="cron-policy-trion-require-approval-source">—</span></p>
+                                </div>
+                            </div>
+
+                            <div class="mt-4 pt-4 border-t border-dark-border">
+                                <button id="save-cron-policy-settings" class="w-full bg-accent-primary hover:bg-accent-primary/80 text-white font-medium py-2 px-4 rounded-lg transition flex items-center justify-center gap-2">
+                                    <i data-lucide="save" class="w-4 h-4"></i>
+                                    Save Cron Guardrails
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- GitHub Reference Collections -->
+                    <div class="bg-dark-surface border border-dark-border rounded-xl p-6 mt-4">
+                        <div class="space-y-4">
+                            <div class="flex items-center gap-3 mb-2">
+                                <div class="w-8 h-8 rounded-lg bg-accent-primary/20 flex items-center justify-center text-sm">GH</div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">GitHub Reference Collections</h3>
+                                    <p class="text-xs text-text-secondary">Read-only inspiration links for TRION planning and creation</p>
+                                </div>
+                            </div>
+
+                            <div class="bg-dark-bg rounded-lg px-3 py-2 text-xs text-text-secondary">
+                                TRION can read these links in read-only mode. Allowed domains: github.com, raw.githubusercontent.com, gist.github.com.
+                            </div>
+
+                            <div class="flex flex-wrap gap-2" id="reference-links-tabs">
+                                <button class="reference-links-tab px-3 py-1.5 rounded-lg bg-accent-primary/20 text-accent-primary text-xs font-medium" data-tab="cronjobs">CRONJOBS</button>
+                                <button class="reference-links-tab px-3 py-1.5 rounded-lg bg-dark-hover text-gray-400 text-xs font-medium" data-tab="skills">SKILLS</button>
+                                <button class="reference-links-tab px-3 py-1.5 rounded-lg bg-dark-hover text-gray-400 text-xs font-medium" data-tab="blueprints">BLUEPRINTS</button>
+                            </div>
+
+                            <div class="border border-dark-border rounded-lg overflow-hidden">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="border-b border-dark-border text-gray-500 text-xs uppercase">
+                                            <th class="text-left px-3 py-2">Name</th>
+                                            <th class="text-left px-3 py-2">GitHub URL</th>
+                                            <th class="text-left px-3 py-2">Note</th>
+                                            <th class="text-left px-3 py-2">Enabled</th>
+                                            <th class="text-left px-3 py-2">Mode</th>
+                                            <th class="px-3 py-2"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="reference-links-rows">
+                                        <tr><td colspan="6" class="px-3 py-4 text-center text-gray-500">Loading...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div class="flex flex-wrap gap-2 pt-2">
+                                <button id="reference-links-add-row" class="px-3 py-2 bg-dark-hover hover:bg-[#333] text-gray-200 rounded-lg text-sm">
+                                    Add Link
+                                </button>
+                                <button id="save-reference-links-settings" class="px-3 py-2 bg-accent-primary hover:bg-accent-primary/80 text-white rounded-lg text-sm font-medium">
+                                    Save Reference Collections
                                 </button>
                             </div>
                         </div>

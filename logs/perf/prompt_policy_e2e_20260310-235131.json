@@ -1,0 +1,82 @@
+{
+  "meta": {
+    "started_at_utc": "2026-03-10T23:51:24.357118+00:00",
+    "base_url": "http://127.0.0.1:8200",
+    "model": "ministral-3:8b",
+    "cases_file": "tests/e2e/prompt_suite_cases.json",
+    "profile": "full",
+    "selected_case_count": 1,
+    "finished_at_utc": "2026-03-10T23:51:31.559498+00:00"
+  },
+  "summary": {
+    "total": 1,
+    "blocked_count": 0,
+    "error_count": 0,
+    "domain_counts": {
+      "SKILL": 1
+    },
+    "latency_ms": {
+      "p50": 7202.19,
+      "mean": 7202.19,
+      "max": 7202.19
+    },
+    "match_rates": {
+      "domain": 0.0,
+      "approval": 1.0,
+      "needs_memory": null
+    },
+    "score_mean_0_10": 5.0
+  },
+  "results": [
+    {
+      "id": "T014",
+      "prompt": "Erkläre mir was Machine Learning ist",
+      "category": "domain_routing_generic",
+      "tags": [
+        "domain",
+        "generic"
+      ],
+      "expected": {
+        "domain": "GENERIC",
+        "approved": true
+      },
+      "actual": {
+        "domain": "SKILL",
+        "needs_memory": false,
+        "approved": true,
+        "tools_executed": [
+          "autonomous_skill_task"
+        ],
+        "done_reason": "stop",
+        "latency_ms": 7202.19,
+        "conversation_id": "webui-prompt-e2e-1773186684-t014",
+        "error": null
+      },
+      "observed": {
+        "control_approved": true,
+        "thinking": {
+          "intent": "query_budget_fast_path",
+          "needs_memory": false,
+          "skipped": true,
+          "reason": "query_budget_skip_candidate"
+        },
+        "event_type_counts": {
+          "response_mode": 1,
+          "skill_blocked": 1,
+          "control": 1,
+          "workspace_update": 4,
+          "tool_start": 1,
+          "tool_result": 1,
+          "done": 1
+        },
+        "response_preview": "Tool-Ausführung fehlgeschlagen:\n- autonomous_skill_task [error]: no_explicit_skill_intent\nBitte Parameter korrigieren oder den vorgeschlagenen sicheren Fallback bestätigen."
+      },
+      "quality": {
+        "domain_match": false,
+        "approval_match": true,
+        "needs_memory_match": null,
+        "score": 5
+      }
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "meta": {
+    "started_at_utc": "2026-03-11T00:06:55.393921+00:00",
+    "base_url": "http://127.0.0.1:8200",
+    "model": "ministral-3:8b",
+    "cases_file": "tests/e2e/prompt_suite_cases.json",
+    "profile": "full",
+    "selected_case_count": 1,
+    "finished_at_utc": "2026-03-11T00:07:08.054117+00:00"
+  },
+  "summary": {
+    "total": 1,
+    "blocked_count": 0,
+    "error_count": 0,
+    "domain_counts": {
+      "GENERIC": 1
+    },
+    "latency_ms": {
+      "p50": 12660.0,
+      "mean": 12660.0,
+      "max": 12660.0
+    },
+    "match_rates": {
+      "domain": null,
+      "approval": 1.0,
+      "needs_memory": null
+    },
+    "score_mean_0_10": 10.0
+  },
+  "results": [
+    {
+      "id": "T090",
+      "prompt": "Done.",
+      "category": "quickfire",
+      "tags": [
+        "latency",
+        "short"
+      ],
+      "expected": {
+        "approved": true
+      },
+      "actual": {
+        "domain": "GENERIC",
+        "needs_memory": false,
+        "approved": true,
+        "tools_executed": [
+          "memory_search"
+        ],
+        "done_reason": "stop",
+        "latency_ms": 12660.0,
+        "conversation_id": "webui-prompt-e2e-1773187615-t090",
+        "error": null
+      },
+      "observed": {
+        "control_approved": true,
+        "thinking": {
+          "intent": "query_budget_fast_path",
+          "needs_memory": false,
+          "skipped": true,
+          "reason": "query_budget_skip_candidate"
+        },
+        "event_type_counts": {
+          "response_mode": 1,
+          "control": 1,
+          "workspace_update": 4,
+          "tool_start": 1,
+          "tool_result": 1,
+          "done": 1
+        },
+        "response_preview": "Verstanden. Falls du damit eine Aufgabe oder einen Vorgang als abgeschlossen markieren möchtest, bestätige ich das gerne:\n\n**\"Die Aufgabe ist abgeschlossen.\"**\n\nFalls du etwas Bestimmtes damit gemeint hast (z. B. einen Container, eine Analyse oder eine andere Aktion), lass es mic"
+      },
+      "quality": {
+        "domain_match": null,
+        "approval_match": true,
+        "needs_memory_match": null,
+        "score": 10
+      }
+    }
+  ]
+}

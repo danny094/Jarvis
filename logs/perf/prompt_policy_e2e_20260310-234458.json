@@ -1,0 +1,67 @@
+{
+  "meta": {
+    "started_at_utc": "2026-03-10T23:44:58.575908+00:00",
+    "base_url": "http://127.0.0.1:8200",
+    "model": "ministral-3:8b",
+    "cases_file": "tests/e2e/prompt_suite_cases.json",
+    "profile": "full",
+    "selected_case_count": 1,
+    "finished_at_utc": "2026-03-10T23:44:58.576939+00:00"
+  },
+  "summary": {
+    "total": 1,
+    "blocked_count": 1,
+    "error_count": 1,
+    "domain_counts": {
+      "GENERIC": 1
+    },
+    "latency_ms": {
+      "p50": 0.93,
+      "mean": 0.93,
+      "max": 0.93
+    },
+    "match_rates": {
+      "domain": 1.0,
+      "approval": 0.0,
+      "needs_memory": null
+    },
+    "score_mean_0_10": 5.0
+  },
+  "results": [
+    {
+      "id": "T013",
+      "prompt": "Was ist die Hauptstadt von Frankreich?",
+      "category": "domain_routing_generic",
+      "tags": [
+        "domain",
+        "generic"
+      ],
+      "expected": {
+        "domain": "GENERIC",
+        "approved": true
+      },
+      "actual": {
+        "domain": "GENERIC",
+        "needs_memory": null,
+        "approved": false,
+        "tools_executed": [],
+        "done_reason": "error",
+        "latency_ms": 0.93,
+        "conversation_id": "webui-prompt-e2e-1773186298-t013",
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8200): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7284969ca030>: Failed to establish a new connection: [Errno 1] Operation not permitted'))"
+      },
+      "observed": {
+        "control_approved": null,
+        "thinking": {},
+        "event_type_counts": {},
+        "response_preview": ""
+      },
+      "quality": {
+        "domain_match": true,
+        "approval_match": false,
+        "needs_memory_match": null,
+        "score": 5
+      }
+    }
+  ]
+}

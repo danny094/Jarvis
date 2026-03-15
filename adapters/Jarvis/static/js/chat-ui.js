@@ -1,18 +1,36 @@
-import { log } from "./debug.js";
-
 // ═══════════════════════════════════════════════════════════
 // UI HELPERS
 // ═══════════════════════════════════════════════════════════
 
 export function updateUIState(loading) {
     const sendBtn = document.getElementById("send-btn");
+    const cancelBtn = document.getElementById("cancel-btn");
     const input = document.getElementById("user-input");
 
     if (sendBtn) sendBtn.disabled = loading;
+    if (cancelBtn) cancelBtn.classList.toggle("hidden", !loading);
     if (input) {
         input.disabled = loading;
         if (!loading) input.focus();
     }
+}
+
+export function setActivityState(text, { active = false, stalled = false } = {}) {
+    const activity = document.getElementById("trion-activity");
+    const textEl = document.getElementById("trion-activity-text");
+    if (!activity || !textEl) return;
+
+    activity.dataset.active = active ? "true" : "false";
+    activity.dataset.stalled = stalled ? "true" : "false";
+    if (typeof text === "string" && text.trim()) {
+        textEl.textContent = text.trim();
+    }
+}
+
+export function setProfileBusy(active) {
+    const profileBtn = document.getElementById("profile-btn");
+    if (!profileBtn) return;
+    profileBtn.classList.toggle("trion-working", Boolean(active));
 }
 
 export function scrollToBottom() {

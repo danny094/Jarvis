@@ -94,11 +94,16 @@ _IMPORT_TO_PACKAGE = {
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 CODE_GEN_MODEL = os.getenv("CODE_GEN_MODEL", "qwen2.5-coder:3b")
+CODE_GEN_MODEL_DEEP = os.getenv("CODE_GEN_MODEL_DEEP", CODE_GEN_MODEL)
 SKILLS_DIR = os.getenv("SKILLS_DIR", "/skills")
 MEMORY_URL = os.getenv("MEMORY_URL", "http://mcp-sql-memory:8081")
 
 # Auto-create threshold (complexity 1-10, lower = simpler)
 AUTO_CREATE_THRESHOLD = int(os.getenv("AUTO_CREATE_THRESHOLD", "4"))
+AUTO_CREATE_DEEP_THRESHOLD = int(os.getenv("AUTO_CREATE_DEEP_THRESHOLD", "10"))
+AUTO_CREATE_ESCALATE_TO_DEEP = os.getenv("AUTO_CREATE_ESCALATE_TO_DEEP", "true").lower() == "true"
+AUTO_REPAIR_ON_VALIDATION_FAIL = os.getenv("AUTO_REPAIR_ON_VALIDATION_FAIL", "true").lower() == "true"
+AUTO_REPAIR_MAX_ATTEMPTS = int(os.getenv("AUTO_REPAIR_MAX_ATTEMPTS", "1"))
 
 
 class ControlAction(Enum):
@@ -218,6 +223,45 @@ class SkillMiniControl:
         self.block_score_threshold = 0.3
         self.warn_score_threshold = 0.7
         self.auto_create_threshold = AUTO_CREATE_THRESHOLD
+        self.auto_create_deep_threshold = AUTO_CREATE_DEEP_THRESHOLD
+        self.auto_create_escalate_to_deep = AUTO_CREATE_ESCALATE_TO_DEEP
+        self.auto_repair_on_validation_fail = AUTO_REPAIR_ON_VALIDATION_FAIL
+        self.auto_repair_max_attempts = max(0, AUTO_REPAIR_MAX_ATTEMPTS)
+
+    @staticmethod
+    def _is_run_result_success(run_result: Dict[str, Any]) -> bool:
+        """
+        Normalize executor run payloads.
+        Treat nested error payloads as failed runs even when top-level success=true.
+        """
+        if not isinstance(run_result, dict):
+            return False
+        if not run_result.get("success", False):
+            return False
+        if run_result.get("error"):
+            return False
+        payload = run_result.get("result")
+        if isinstance(payload, dict):
+            if payload.get("success") is False:
+                return False
+            if payload.get("error"):
+                return False
+        return True
+
+    @staticmethod
+    def _extract_run_error(run_result: Dict[str, Any]) -> Optional[str]:
+        """Best-effort error extraction from normalized/nested run payloads."""
+        if not isinstance(run_result, dict):
+            return "invalid_run_result"
+        error = run_result.get("error")
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        payload = run_result.get("result")
+        if isinstance(payload, dict):
+            nested_error = payload.get("error")
+            if nested_error:
+                return str(nested_error)
+        return None
 
     @staticmethod
     def _is_skill_discovery_enabled() -> bool:
@@ -227,6 +271,26 @@ class SkillMiniControl:
             return bool(get_skill_discovery_enable())
         except Exception:
             return os.getenv("SKILL_DISCOVERY_ENABLE", "true").lower() == "true"
+
+    @staticmethod
+    def _summarize_validation_issues(validation: ValidationResult, limit: int = 3) -> List[str]:
+        """Build a stable, compact list of validation issues for logs/errors/prompts."""
+        messages: List[str] = []
+        issues = list(getattr(validation, "issues", []) or [])
+        max_items = max(1, int(limit or 1))
+        for issue in issues[:max_items]:
+            sev = str(getattr(issue, "severity", "unknown") or "unknown").lower()
+            desc = str(getattr(issue, "description", "") or "").strip()
+            if not desc:
+                desc = str(getattr(issue, "pattern", "validation issue") or "validation issue").strip()
+            remediation = str(getattr(issue, "remediation", "") or "").strip()
+            text = f"[{sev}] {desc}"
+            if remediation:
+                text += f" | fix: {remediation}"
+            messages.append(text)
+        if not messages:
+            messages.append("[unknown] validation failed without issue details")
+        return messages
     
     # ================================================================
     # AUTONOMOUS TASK HANDLING (NEW!)
@@ -265,6 +329,7 @@ class SkillMiniControl:
         else:
             print("[MiniControl] Explicit create intent detected - skipping existing-skill reuse")
         
+        reuse_failure: Optional[Dict[str, Any]] = None
         if matching_skill:
             print(f"[MiniControl] Found matching skill: {matching_skill['name']}")
             
@@ -274,14 +339,41 @@ class SkillMiniControl:
                     matching_skill["name"], 
                     self._extract_args_from_text(task.user_text)
                 )
-                return AutonomousTaskResult(
-                    success=run_result.get("success", False),
-                    action_taken="used_existing",
-                    skill_name=matching_skill["name"],
-                    skill_created=False,
-                    execution_result=run_result.get("result"),
-                    error=run_result.get("error"),
-                    message=f"Used existing skill '{matching_skill['name']}'"
+                run_ok = self._is_run_result_success(run_result)
+                run_error = self._extract_run_error(run_result)
+                if run_ok:
+                    return AutonomousTaskResult(
+                        success=True,
+                        action_taken="used_existing",
+                        skill_name=matching_skill["name"],
+                        skill_created=False,
+                        execution_result=run_result.get("result"),
+                        error=run_error,
+                        message=f"Used existing skill '{matching_skill['name']}'"
+                    )
+
+                # Hardening: if a matched skill is broken at runtime, fall back to
+                # auto-create path when policy permits instead of failing immediately.
+                reuse_failure = {
+                    "skill_name": matching_skill["name"],
+                    "error": run_error,
+                }
+                if not self._should_auto_create(task.complexity, task.allow_auto_create):
+                    return AutonomousTaskResult(
+                        success=False,
+                        action_taken="used_existing",
+                        skill_name=matching_skill["name"],
+                        skill_created=False,
+                        execution_result=run_result.get("result"),
+                        error=run_error,
+                        message=(
+                            f"Existing skill '{matching_skill['name']}' failed and "
+                            "auto-create fallback is not allowed for this task"
+                        ),
+                    )
+                print(
+                    "[MiniControl] Existing skill execution failed - "
+                    f"fallback to auto-create path ({matching_skill['name']})"
                 )
             else:
                 return AutonomousTaskResult(
@@ -305,21 +397,41 @@ class SkillMiniControl:
 
         # 3. AUTO-CREATE POLICY
         should_auto = self._should_auto_create(task.complexity, task.allow_auto_create)
-        
+        use_deep_codegen = False
+        selected_codegen_model = CODE_GEN_MODEL
+
         if not should_auto:
-            print(f"[MiniControl] Complexity {task.complexity} > threshold, escalating")
-            return AutonomousTaskResult(
-                success=False,
-                action_taken="escalated",
-                error="Task too complex for auto-creation",
-                message=f"Complexity ({task.complexity}) exceeds auto-create threshold ({self.auto_create_threshold}). User confirmation required."
+            use_deep_codegen = self._should_escalate_to_deep_codegen(
+                task.complexity, task.allow_auto_create
             )
-        
+            if not use_deep_codegen:
+                print(f"[MiniControl] Complexity {task.complexity} > deep-threshold, escalating")
+                return AutonomousTaskResult(
+                    success=False,
+                    action_taken="escalated",
+                    error="Task too complex for auto-creation",
+                    message=(
+                        f"Complexity ({task.complexity}) exceeds deep auto-create threshold "
+                        f"({self.auto_create_deep_threshold}). User confirmation required."
+                    ),
+                )
+            selected_codegen_model = CODE_GEN_MODEL_DEEP or CODE_GEN_MODEL
+            print(
+                f"[MiniControl] Complexity {task.complexity} exceeds fast-threshold "
+                f"({self.auto_create_threshold}) - escalating codegen model to {selected_codegen_model}"
+            )
+        else:
+            print(f"[MiniControl] Generating code with {CODE_GEN_MODEL}")
+
         # 3. CODE GENERATION
-        print(f"[MiniControl] Generating code with {CODE_GEN_MODEL}")
-        
         skill_name = self._generate_skill_name(task.intent)
-        generated_code = await self._generate_code_with_coder(task.intent, task.user_text, task.thinking_plan)
+        generated_code = await self._generate_code_with_coder(
+            task.intent,
+            task.user_text,
+            task.thinking_plan,
+            model_name=selected_codegen_model,
+            timeout_s=120.0 if use_deep_codegen else 60.0,
+        )
         
         if not generated_code:
             return AutonomousTaskResult(
@@ -337,87 +449,124 @@ class SkillMiniControl:
             _pkg_mode = os.getenv("SKILL_PACKAGE_INSTALL_MODE", "allowlist_auto").lower()
             if _pkg_mode not in ("allowlist_auto", "manual_only"):
                 _pkg_mode = "allowlist_auto"
-        missing_pkgs = await self._check_missing_packages(generated_code)
-        if missing_pkgs:
-            if _pkg_mode == "manual_only":
-                # Rollback: preserve existing manual behavior
-                pkg_list = ", ".join(f"`{p}`" for p in missing_pkgs)
-                print(f"[MiniControl] Missing packages (manual_only): {missing_pkgs}")
-                return AutonomousTaskResult(
-                    success=False,
-                    action_taken="needs_package_install",
-                    skill_name=skill_name,
-                    error=f"missing_packages:{','.join(missing_pkgs)}",
-                    message=(
-                        f"Der Skill benötigt folgende Pakete die noch nicht installiert sind: "
-                        f"{pkg_list}\n\n"
-                        f"Bitte installiere {'sie' if len(missing_pkgs) > 1 else 'es'} zuerst, "
-                        f"dann kann ich den Skill erstellen."
-                    ),
-                )
 
-            # allowlist_auto: classify against executor allowlist
-            _allowlist = await self._get_package_allowlist()
-            _allowlisted = [p for p in missing_pkgs if p.lower() in _allowlist]
-            _non_allowlisted = [p for p in missing_pkgs if p.lower() not in _allowlist]
+        scanner_warnings: List[str] = []
+        repair_attempt = 0
+        validation: Optional[ValidationResult] = None
+        generation_timeout = 120.0 if use_deep_codegen else 60.0
 
-            if _non_allowlisted:
-                _pkg_list = ", ".join(f"`{p}`" for p in _non_allowlisted)
-                print(f"[MiniControl] Non-allowlisted packages: {_non_allowlisted}")
-                return AutonomousTaskResult(
-                    success=False,
-                    action_taken="pending_package_approval",
-                    skill_name=skill_name,
-                    error=f"missing_packages:{','.join(missing_pkgs)}",
-                    message=(
-                        f"Der Skill benötigt Pakete die nicht auf der Allowlist stehen: "
-                        f"{_pkg_list}. Bitte Admin-Freigabe einholen."
-                    ),
-                )
-
-            # Only allowlisted missing → auto-install
-            if _allowlisted:
-                _install_result = await self._auto_install_packages(_allowlisted)
-                if not _install_result["success"]:
-                    print(f"[MiniControl] Auto-install failed: {_install_result['error']}")
+        while True:
+            missing_pkgs = await self._check_missing_packages(generated_code)
+            if missing_pkgs:
+                if _pkg_mode == "manual_only":
+                    # Rollback: preserve existing manual behavior
+                    pkg_list = ", ".join(f"`{p}`" for p in missing_pkgs)
+                    print(f"[MiniControl] Missing packages (manual_only): {missing_pkgs}")
                     return AutonomousTaskResult(
                         success=False,
                         action_taken="needs_package_install",
                         skill_name=skill_name,
-                        error=f"missing_packages:{','.join(_allowlisted)}",
-                        message=f"Auto-Installation der Pakete fehlgeschlagen: {_install_result['error']}",
+                        error=f"missing_packages:{','.join(missing_pkgs)}",
+                        message=(
+                            f"Der Skill benötigt folgende Pakete die noch nicht installiert sind: "
+                            f"{pkg_list}\n\n"
+                            f"Bitte installiere {'sie' if len(missing_pkgs) > 1 else 'es'} zuerst, "
+                            f"dann kann ich den Skill erstellen."
+                        ),
                     )
-                print(f"[MiniControl] Allowlisted packages auto-installed: {_allowlisted}")
 
-        # 3.8 Secret Scanner
-        try:
-            from secret_scanner import SecretScanner
-            scanner = SecretScanner()
-            scan_res = scanner.enforce(generated_code)
-            if not scan_res["passed"]:
+                # allowlist_auto: classify against executor allowlist
+                _allowlist = await self._get_package_allowlist()
+                _allowlisted = [p for p in missing_pkgs if p.lower() in _allowlist]
+                _non_allowlisted = [p for p in missing_pkgs if p.lower() not in _allowlist]
+
+                if _non_allowlisted:
+                    _pkg_list = ", ".join(f"`{p}`" for p in _non_allowlisted)
+                    print(f"[MiniControl] Non-allowlisted packages: {_non_allowlisted}")
+                    return AutonomousTaskResult(
+                        success=False,
+                        action_taken="pending_package_approval",
+                        skill_name=skill_name,
+                        error=f"missing_packages:{','.join(missing_pkgs)}",
+                        message=(
+                            f"Der Skill benötigt Pakete die nicht auf der Allowlist stehen: "
+                            f"{_pkg_list}. Bitte Admin-Freigabe einholen."
+                        ),
+                    )
+
+                # Only allowlisted missing → auto-install
+                if _allowlisted:
+                    _install_result = await self._auto_install_packages(_allowlisted)
+                    if not _install_result["success"]:
+                        print(f"[MiniControl] Auto-install failed: {_install_result['error']}")
+                        return AutonomousTaskResult(
+                            success=False,
+                            action_taken="needs_package_install",
+                            skill_name=skill_name,
+                            error=f"missing_packages:{','.join(_allowlisted)}",
+                            message=f"Auto-Installation der Pakete fehlgeschlagen: {_install_result['error']}",
+                        )
+                    print(f"[MiniControl] Allowlisted packages auto-installed: {_allowlisted}")
+
+            # 3.8 Secret Scanner
+            try:
+                from secret_scanner import SecretScanner
+                scanner = SecretScanner()
+                scan_res = scanner.enforce(generated_code)
+                if not scan_res["passed"]:
+                    return AutonomousTaskResult(
+                        success=False,
+                        action_taken="validation_failed",
+                        error=scan_res["error"],
+                        message="Generated code violated secret policy (secret_policy_violation)"
+                    )
+                scanner_warnings = scan_res["warnings"]
+            except Exception as e:
+                print(f"[MiniControl] SecretScanner error: {e}")
+                scanner_warnings = []
+
+            # 4. VALIDATION
+            print(f"[MiniControl] Validating generated code (attempt {repair_attempt + 1})")
+            validation = self.cim.validate_code(generated_code)
+            if validation.passed:
+                break
+
+            issue_messages = self._summarize_validation_issues(validation, limit=3)
+            if not self.auto_repair_on_validation_fail or repair_attempt >= self.auto_repair_max_attempts:
                 return AutonomousTaskResult(
                     success=False,
                     action_taken="validation_failed",
-                    error=scan_res["error"],
-                    message="Generated code violated secret policy (secret_policy_violation)"
+                    error=f"Code validation failed: {issue_messages}",
+                    validation_score=validation.score,
+                    message="Generated code did not pass safety validation"
                 )
-            scanner_warnings = scan_res["warnings"]
-        except Exception as e:
-            print(f"[MiniControl] SecretScanner error: {e}")
-            scanner_warnings = []
 
-        # 4. VALIDATION
-        print(f"[MiniControl] Validating generated code")
-        validation = self.cim.validate_code(generated_code)
-
-        if not validation.passed:
-            return AutonomousTaskResult(
-                success=False,
-                action_taken="validation_failed",
-                error=f"Code validation failed: {[i.description for i in validation.issues[:3]]}",
-                validation_score=validation.score,
-                message="Generated code did not pass safety validation"
+            repair_attempt += 1
+            print(
+                f"[MiniControl] Validation failed - auto-repair attempt "
+                f"{repair_attempt}/{self.auto_repair_max_attempts}"
             )
+            repaired_code = await self._generate_code_with_coder(
+                task.intent,
+                task.user_text,
+                task.thinking_plan,
+                model_name=selected_codegen_model,
+                timeout_s=generation_timeout,
+                repair_context={
+                    "attempt": repair_attempt,
+                    "max_attempts": self.auto_repair_max_attempts,
+                    "validation_issues": "\n".join(issue_messages),
+                    "previous_code": str(generated_code or "")[:4000],
+                },
+            )
+            if not repaired_code:
+                return AutonomousTaskResult(
+                    success=False,
+                    action_taken="generation_failed",
+                    error="Code repair generation failed",
+                    message="Could not repair generated code after validation failure"
+                )
+            generated_code = repaired_code
 
         # Build delegated control_decision (C4.5: skill-server is authority)
         _has_medium = any(i.severity.lower() == "medium" for i in validation.issues)
@@ -465,25 +614,39 @@ class SkillMiniControl:
                 skill_name,
                 self._extract_args_from_text(task.user_text)
             )
+            run_ok = self._is_run_result_success(run_result)
+            run_error = self._extract_run_error(run_result)
             
+            _msg = f"Created and executed new skill '{skill_name}'"
+            if reuse_failure:
+                _msg = (
+                    f"Replaced failing skill '{reuse_failure['skill_name']}' "
+                    f"with new skill '{skill_name}' and executed it"
+                )
             return AutonomousTaskResult(
-                success=run_result.get("success", False),
+                success=run_ok,
                 action_taken="created_and_ran",
                 skill_name=skill_name,
                 skill_created=True,
                 execution_result=run_result.get("result"),
-                error=run_result.get("error"),
+                error=run_error,
                 validation_score=validation.score,
-                message=f"Created and executed new skill '{skill_name}'"
+                message=_msg
             )
         
+        _msg = f"Created new skill '{skill_name}' - ready to run"
+        if reuse_failure:
+            _msg = (
+                f"Replaced failing skill '{reuse_failure['skill_name']}' "
+                f"with new skill '{skill_name}'"
+            )
         return AutonomousTaskResult(
             success=True,
             action_taken="created_new",
             skill_name=skill_name,
             skill_created=True,
             validation_score=validation.score,
-            message=f"Created new skill '{skill_name}' - ready to run"
+            message=_msg
         )
     
     # ================================================================
@@ -814,6 +977,14 @@ class SkillMiniControl:
             return False
         
         return complexity <= self.auto_create_threshold
+
+    def _should_escalate_to_deep_codegen(self, complexity: int, user_allows: bool) -> bool:
+        """Second-stage escalation before returning a hard complexity failure."""
+        if not user_allows:
+            return False
+        if not self.auto_create_escalate_to_deep:
+            return False
+        return complexity <= self.auto_create_deep_threshold
     
     def _detect_gaps(self, intent: str, user_text: str) -> Optional[str]:
         """
@@ -904,7 +1075,10 @@ class SkillMiniControl:
         self, 
         intent: str, 
         user_text: str,
-        thinking_plan: Optional[Dict[str, Any]] = None
+        thinking_plan: Optional[Dict[str, Any]] = None,
+        model_name: Optional[str] = None,
+        timeout_s: float = 60.0,
+        repair_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Generate skill code using qwen2.5-coder with CIM-RAG integration.
@@ -913,6 +1087,7 @@ class SkillMiniControl:
             intent: What the skill should do
             user_text: Original user request for context
             thinking_plan: Optional plan from ThinkingLayer with reasoning
+            repair_context: Optional validation feedback to repair previous code
             
         Returns:
             Generated Python code or None if failed
@@ -949,6 +1124,28 @@ Reasoning Type: {reasoning_type}
 Suggested Approach: {', '.join(suggested_tools) if suggested_tools else 'None specified'}
 === END THINKING CONTEXT ===
 """
+
+        repair_mode_block = ""
+        if repair_context:
+            attempt = repair_context.get("attempt", 1)
+            max_attempts = repair_context.get("max_attempts", 1)
+            issues = str(repair_context.get("validation_issues", "") or "").strip()
+            previous_code = str(repair_context.get("previous_code", "") or "").strip()
+            if not issues:
+                issues = "[unknown] validation failed without issue details"
+            repair_mode_block = f"""
+=== REPAIR MODE ===
+Repair attempt: {attempt}/{max_attempts}
+The previous code failed validation and must be fixed.
+Validation issues:
+{issues}
+
+Previous code:
+```python
+{previous_code}
+```
+=== END REPAIR MODE ===
+"""
         
         # 5. Build enhanced prompt
         prompt = f"""{coder_persona}
@@ -957,6 +1154,7 @@ AUFGABE: Erstelle eine Python-Funktion basierend auf dieser Beschreibung:
 Intent: {intent}
 User Request: {user_text}
 {thinking_context}
+{repair_mode_block}
 """
         
         # Add template if found
@@ -979,6 +1177,7 @@ REGELN:
 5. Dokumentiere mit einem kurzen Docstring
 6. Handle Fehler mit try/except
 7. Validiere Eingaben am Anfang der Funktion
+8. Wenn REPAIR MODE aktiv ist: behebe exakt die gemeldeten Validierungsprobleme
 
 BEISPIEL:
 ```python
@@ -1000,11 +1199,12 @@ Generiere NUR den Python-Code, keine Erklärungen:
 """
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            model_to_use = str(model_name or CODE_GEN_MODEL).strip() or CODE_GEN_MODEL
+            async with httpx.AsyncClient(timeout=float(timeout_s or 60.0)) as client:
                 response = await client.post(
                     f"{OLLAMA_BASE_URL}/api/generate",
                     json={
-                        "model": CODE_GEN_MODEL,
+                        "model": model_to_use,
                         "prompt": prompt,
                         "stream": False,
                         "options": {
@@ -1069,6 +1269,7 @@ Generiere NUR den Python-Code, keine Erklärungen:
     def _extract_args_from_text(self, user_text: str) -> Dict[str, Any]:
         """Extract potential arguments from user text."""
         args = {}
+        user_lower = str(user_text or "").lower()
         
         # Try to find numbers
         numbers = re.findall(r'\b(\d+)\b', user_text)
@@ -1077,8 +1278,16 @@ Generiere NUR den Python-Code, keine Erklärungen:
             if len(numbers) == 1:
                 args['n'] = int(numbers[0])
             else:
-                args['a'] = int(numbers[0])
-                args['b'] = int(numbers[1])
+                first = int(numbers[0])
+                second = int(numbers[1])
+                args['a'] = first
+                args['b'] = second
+                # Heuristic for range-style intents ("1 bis 100", "1 to 100"):
+                # many math skills expect n=end when summing/folding ranges.
+                if any(tok in user_lower for tok in (" bis ", " to ", " through ", " von ", " from ")):
+                    args['n'] = second
+                    args['start'] = first
+                    args['end'] = second
         
         # Try to find quoted strings
         strings = re.findall(r'"([^"]+)"', user_text)
@@ -1297,27 +1506,62 @@ Generiere NUR den Python-Code, keine Erklärungen:
         the executor can operate as a pure side-effect executor without re-running
         its own Mini-Control validation.
         """
-        executor_url = os.getenv("EXECUTOR_URL", "http://tool-executor:8000")
+        configured_url = (os.getenv("EXECUTOR_URL", "http://tool-executor:8000") or "").strip().rstrip("/")
+        candidates: List[str] = []
+        for url in (configured_url, "http://localhost:8000", "http://127.0.0.1:8000"):
+            normalized = (url or "").strip().rstrip("/")
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+
+        payload = {
+            "name": name,
+            "code": code,
+            "description": description,
+            "triggers": self._extract_keywords(description),
+            "auto_promote": auto_promote,
+            "gap_patterns": gap_patterns or [],
+            "gap_question": gap_question,
+            "default_params": default_params or {},
+            "control_decision": control_decision,
+        }
+        attempt_errors: List[str] = []
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{executor_url}/v1/skills/create",
-                    json={
-                        "name": name,
-                        "code": code,
-                        "description": description,
-                        "triggers": self._extract_keywords(description),
-                        "auto_promote": auto_promote,
-                        "gap_patterns": gap_patterns or [],
-                        "gap_question": gap_question,
-                        "default_params": default_params or {},
-                        "control_decision": control_decision,
-                    }
-                )
-                return response.json()
+                for executor_url in candidates:
+                    try:
+                        response = await client.post(
+                            f"{executor_url}/v1/skills/create",
+                            json=payload,
+                        )
+                    except Exception as exc:
+                        attempt_errors.append(f"{executor_url}: {exc}")
+                        continue
+
+                    try:
+                        result = response.json()
+                    except Exception as exc:
+                        body_preview = (response.text or "").strip()[:400]
+                        attempt_errors.append(
+                            f"{executor_url}: non-json response status={response.status_code} err={exc} body={body_preview!r}"
+                        )
+                        continue
+
+                    if isinstance(result, dict):
+                        return result
+
+                    attempt_errors.append(
+                        f"{executor_url}: unexpected response type {type(result).__name__}"
+                    )
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            attempt_errors.append(str(e))
+
+        return {
+            "success": False,
+            "error": "Skill installation request failed across all executor endpoints",
+            "detail": "; ".join(attempt_errors)[:1500],
+            "attempts": candidates,
+        }
     
     async def _run_skill(
         self, 

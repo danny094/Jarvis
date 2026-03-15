@@ -698,15 +698,7 @@ async def handle_list_skills(args: Dict[str, Any]) -> Dict[str, Any]:
 async def handle_install_skill(args: Dict[str, Any]) -> Dict[str, Any]:
     name = args.get("name")
     if not name: raise ValueError("Skill name is required")
-    # Proxy to skill_manager which proxies to executor or registry?
-    # Original install_skill fetched from registry then installed.
-    # skill_manager.install_skill logic still needs full rework to delegate WRITE to executor.
-    # We simplified create_skill but not install_skill in step 99 (it was just cut off?)
-    # Wait, check step 99 output. I see install_skill method in the diff?
-    # No, I think I cut it off or didn't implement it fully in step 99.
-    # But server.py calls skill_manager.install_skill.
-    # Let's assume skill_manager handles it.
-    
+    # Write path is delegated to SkillManager -> Tool Executor.
     return await skill_manager.install_skill(name)
 
 

@@ -351,8 +351,8 @@ class TestSourceInspection(unittest.TestCase):
 
     def test_control_call_sites_use_resolve(self):
         src = _read_source("core/layers/control.py")
-        self.assertIn("_resolve_model()", src)
-        self.assertIn("_resolve_sequential_model()", src)
+        self.assertIn("_resolve_model(", src)
+        self.assertIn("_resolve_sequential_model(", src)
 
     def test_output_import_uses_getter(self):
         src = _read_source("core/layers/output.py")

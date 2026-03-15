@@ -7,6 +7,12 @@
   "transport": "stdio",
   "command": "python",
   "args": ["server.py"],
+  "enabled": true,
+  "country": "US",
+  "region": "",
+  "timezone": "UTC",
+  "locale": "en-US",
+  "hour_cycle": "24h",
   
   "detection": {
     "get_current_time": {

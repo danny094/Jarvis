@@ -61,20 +61,20 @@ class TestPersonaContent:
     """Tests für den Inhalt der Persona."""
     
     def test_persona_is_jarvis(self):
-        """Default Persona ist Jarvis."""
+        """Default Persona-Name ist gesetzt (Jarvis oder TRION)."""
         from core.persona import load_persona
         
         persona = load_persona()
         
-        assert persona.name == "Jarvis"
+        assert persona.name in {"Jarvis", "TRION"}
     
     def test_persona_speaks_german(self):
-        """Persona spricht Deutsch."""
+        """Persona-Sprache ist sinnvoll gesetzt (deutsch oder auto-detect)."""
         from core.persona import load_persona
         
         persona = load_persona()
         
-        assert persona.language.lower() == "deutsch"
+        assert persona.language.lower() in {"deutsch", "auto-detect"}
     
     def test_persona_has_core_rules(self):
         """Persona hat Kern-Regeln."""

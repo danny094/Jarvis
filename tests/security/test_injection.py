@@ -1,6 +1,6 @@
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 
 # Wir testen hier vor allem die Input-Validierung und -Verarbeitung
 # Da wir keine Live-DB haben, testen wir, ob die Parameter 

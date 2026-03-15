@@ -11,7 +11,7 @@ import json
 sys.path.append(str(Path(__file__).parent.parent))
 
 import pytest
-import pandas as pd
+pd = pytest.importorskip("pandas")
 from context_builder import (
     ContextGraphBuilder, CausalNode, CausalEdge, 
     EdgeType, UncertaintyLevel

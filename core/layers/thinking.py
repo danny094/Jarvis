@@ -7,12 +7,12 @@ Analysiert die User-Anfrage und erstellt einen Plan.
 STREAMING: Zeigt das "Nachdenken" live an!
 """
 
-import httpx
-from typing import Dict, Any, AsyncGenerator, Tuple
-from config import OLLAMA_BASE, get_thinking_model
+from typing import Dict, Any, AsyncGenerator, Tuple, Optional
+from config import OLLAMA_BASE, get_thinking_model, get_thinking_provider
 from utils.logger import log_info, log_error, log_debug
 from utils.json_parser import safe_parse_json
 from utils.role_endpoint_resolver import resolve_role_endpoint
+from core.llm_provider_client import resolve_role_provider, stream_prompt
 from mcp.hub import get_hub
 
 
@@ -35,11 +35,16 @@ AUSGABE: NUR dieses JSON, nichts anderes:
     "memory_keys": ["key1", "key2"],
     "needs_chat_history": true/false,
     "is_fact_query": true/false,
+    "time_reference": "today|yesterday|day_before_yesterday|YYYY-MM-DD|null",
     "is_new_fact": false,
     "new_fact_key": null,
     "new_fact_value": null,
     "hallucination_risk": "low/medium/high",
     "suggested_response_style": "kurz/ausführlich",
+    "dialogue_act": "ack/feedback/question/request/analysis/smalltalk",
+    "response_tone": "mirror_user/warm/neutral/formal",
+    "response_length_hint": "short/medium/long",
+    "tone_confidence": 0.0,
     "needs_sequential_thinking": true/false,
     "sequential_complexity": 0,
     "suggested_cim_modes": [],
@@ -74,9 +79,31 @@ Container Commander Tools:
 - "snapshot/backup" → ["snapshot_list"]
 - "optimiere container" → ["optimize_container"]
 
+Runtime-Härtung (wichtig):
+- Runtime-/Tool-Anfragen (Container/Host/IP/Server/Blueprint/Skill/Cron/„nutze Tools“) sind ACTION:
+  - needs_memory: false
+  - is_fact_query: false
+- needs_memory darf NUR true sein bei explizitem Recall/Memory-Bedarf (z. B. "was weißt du", "erinnerst du").
+- Wenn needs_memory=true, dann memory_keys NICHT leer; sonst needs_memory=false setzen.
+- Nutze nur Tools aus "VERFÜGBARE TOOLS". Schlage keine nicht gelisteten Tools vor.
+- Wenn im Kontext aktive Container mit container_id stehen:
+  - Für Host/IP/Status-Abfragen zuerst exec_in_container oder container_stats mit vorhandener container_id
+  - container_list nur, wenn keine container_id vorhanden ist
+- Für reine Host/IP-Lookups kein request_container, wenn bereits ein aktiver Container verfügbar ist.
+
 Memory:
 - Persönliche Fragen → needs_memory: true
+- Folgefragen (z.B. "und ...?", "was sagt das ...?") sollen needs_chat_history=true setzen
+- Zeitbezug erkennen und time_reference setzen:
+  - "heute" → "today"
+  - "gestern" → "yesterday"
+  - "vorgestern" → "day_before_yesterday"
+  - explizites Datum → "YYYY-MM-DD"
 - Neue Fakten über User → is_new_fact: true + key/value
+- WICHTIG new_fact_value-Regel:
+  - new_fact_value NUR setzen wenn User einen expliziten Wert nennt (z.B. "Ich heiße Max", "mein Hobby ist Lesen")
+  - Bei Aufgaben oder Erinnerungen für SPÄTER (Schlüsselwörter: "später", "irgendwann", "berechnen", "erledigen", "noch") → new_fact_value: null
+  - new_fact_value NIEMALS selbst berechnen oder schlussfolgern; nur direkt aus User-Aussage entnehmen
 - Allgemeinwissen → needs_memory: false
 """
 
@@ -93,7 +120,8 @@ class ThinkingLayer:
         self, 
         user_text: str, 
         memory_context: str = "",
-        available_tools: list = None
+        available_tools: list = None,
+        tone_signal: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Tuple[str, bool, Dict[str, Any]], None]:
         """
         Analysiert die User-Anfrage MIT STREAMING.
@@ -108,6 +136,15 @@ class ThinkingLayer:
             import json
             tools_json = json.dumps(available_tools, indent=1)
             prompt += f"VERFÜGBARE TOOLS (Vorausgewählt):\n{tools_json}\n\n"
+
+        if tone_signal:
+            import json
+            tone_json = json.dumps(tone_signal, ensure_ascii=False, indent=1)
+            prompt += (
+                "TONALITÄTS-SIGNAL (Hybrid-Classifier, deterministisch):\n"
+                f"{tone_json}\n\n"
+                "Nutze dieses Signal als Leitplanke für dialog_act/response_tone/response_length_hint.\n\n"
+            )
         
         # Dynamic MCP Detection Rules
         try:
@@ -120,71 +157,56 @@ class ThinkingLayer:
 
         prompt += f"USER-ANFRAGE:\n{user_text}\n\nDeine Überlegung:"
 
-        payload = {
-            "model": self._resolve_model(),
-            "prompt": prompt,
-            "stream": True,
-            "keep_alive": "2m",
-        }
-        
+        model_name = self._resolve_model()
+        provider = resolve_role_provider("thinking", default=get_thinking_provider())
         full_response = ""
         
         try:
-            route = resolve_role_endpoint("thinking", default_endpoint=self.ollama_base)
-            log_info(
-                f"[Routing] role=thinking requested_target={route['requested_target']} "
-                f"effective_target={route['effective_target'] or 'none'} "
-                f"fallback={bool(route['fallback_reason'])} "
-                f"fallback_reason={route['fallback_reason'] or 'none'} "
-                f"endpoint_source={route['endpoint_source']}"
-            )
-            if route["hard_error"]:
-                log_error(
-                    f"[Routing] role=thinking hard_error=true code={route['error_code']} "
-                    f"requested_target={route['requested_target']}"
+            endpoint = self.ollama_base
+            if provider == "ollama":
+                route = resolve_role_endpoint("thinking", default_endpoint=self.ollama_base)
+                log_info(
+                    f"[Routing] role=thinking provider=ollama requested_target={route['requested_target']} "
+                    f"effective_target={route['effective_target'] or 'none'} "
+                    f"fallback={bool(route['fallback_reason'])} "
+                    f"fallback_reason={route['fallback_reason'] or 'none'} "
+                    f"endpoint_source={route['endpoint_source']}"
                 )
-                yield ("", True, self._default_plan())
-                return
-            endpoint = route["endpoint"] or self.ollama_base
+                if route["hard_error"]:
+                    log_error(
+                        f"[Routing] role=thinking hard_error=true code={route['error_code']} "
+                        f"requested_target={route['requested_target']}"
+                    )
+                    yield ("", True, self._default_plan())
+                    return
+                endpoint = route["endpoint"] or self.ollama_base
+            else:
+                log_info(f"[Routing] role=thinking provider={provider} endpoint=cloud")
 
-            log_debug(f"[ThinkingLayer] Streaming analysis: {user_text[:50]}...")
-            
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                async with client.stream(
-                    "POST",
-                    f"{endpoint}/api/generate",
-                    json=payload
-                ) as response:
-                    response.raise_for_status()
-                    
-                    async for line in response.aiter_lines():
-                        if not line:
-                            continue
-                        try:
-                            import json
-                            data = json.loads(line)
-                            chunk = data.get("response", "")
-                            if chunk:
-                                full_response += chunk
-                                yield (chunk, False, {})
-                            if data.get("done"):
-                                break
-                        except Exception:
-                            continue
+            log_debug(
+                f"[ThinkingLayer] Streaming analysis provider={provider} model={model_name}: "
+                f"{user_text[:50]}..."
+            )
+
+            async for chunk in stream_prompt(
+                provider=provider,
+                model=model_name,
+                prompt=prompt,
+                timeout_s=90.0,
+                ollama_endpoint=endpoint,
+            ):
+                if chunk:
+                    full_response += chunk
+                    yield (chunk, False, {})
             
             plan = self._extract_plan(full_response)
             log_info(f"[ThinkingLayer] Plan: intent={plan.get('intent')}, needs_memory={plan.get('needs_memory')}")
             log_info(f"[ThinkingLayer] sequential={plan.get('needs_sequential_thinking')}, complexity={plan.get('sequential_complexity')}")
             yield ("", True, plan)
                 
-        except httpx.TimeoutException:
-            log_error(f"[ThinkingLayer] Timeout nach 90s")
-            yield ("", True, self._default_plan())
-        except httpx.HTTPStatusError as e:
-            log_error(f"[ThinkingLayer] HTTP Error: {e.response.status_code}")
-            yield ("", True, self._default_plan())
         except Exception as e:
-            log_error(f"[ThinkingLayer] Error: {e}")
+            err_type = type(e).__name__
+            log_error(f"[ThinkingLayer] Error ({err_type}): {e}")
             yield ("", True, self._default_plan())
     
     def _extract_plan(self, full_response: str) -> Dict[str, Any]:
@@ -194,10 +216,21 @@ class ThinkingLayer:
             return plan
         return self._default_plan()
     
-    async def analyze(self, user_text: str, memory_context: str = "", available_tools: list = None) -> Dict[str, Any]:
+    async def analyze(
+        self,
+        user_text: str,
+        memory_context: str = "",
+        available_tools: list = None,
+        tone_signal: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """NON-STREAMING Version (Kompatibilität)."""
         plan = self._default_plan()
-        async for chunk, is_done, result in self.analyze_stream(user_text, memory_context, available_tools):
+        async for chunk, is_done, result in self.analyze_stream(
+            user_text,
+            memory_context,
+            available_tools,
+            tone_signal=tone_signal,
+        ):
             if is_done:
                 plan = result
                 break
@@ -211,11 +244,16 @@ class ThinkingLayer:
             "memory_keys": [],
             "needs_chat_history": False,
             "is_fact_query": False,
+            "time_reference": None,
             "is_new_fact": False,
             "new_fact_key": None,
             "new_fact_value": None,
             "hallucination_risk": "medium",
             "suggested_response_style": "freundlich",
+            "dialogue_act": "request",
+            "response_tone": "neutral",
+            "response_length_hint": "medium",
+            "tone_confidence": 0.55,
             "needs_sequential_thinking": False,
             "sequential_complexity": 3,
             "suggested_cim_modes": [],

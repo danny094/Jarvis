@@ -1,0 +1,81 @@
+{
+  "meta": {
+    "started_at_utc": "2026-03-10T23:56:23.713146+00:00",
+    "base_url": "http://127.0.0.1:8200",
+    "model": "ministral-3:8b",
+    "cases_file": "tests/e2e/prompt_suite_cases.json",
+    "profile": "full",
+    "selected_case_count": 1,
+    "finished_at_utc": "2026-03-10T23:56:39.279264+00:00"
+  },
+  "summary": {
+    "total": 1,
+    "blocked_count": 0,
+    "error_count": 0,
+    "domain_counts": {
+      "GENERIC": 1
+    },
+    "latency_ms": {
+      "p50": 15565.91,
+      "mean": 15565.91,
+      "max": 15565.91
+    },
+    "match_rates": {
+      "domain": 1.0,
+      "approval": 1.0,
+      "needs_memory": null
+    },
+    "score_mean_0_10": 10.0
+  },
+  "results": [
+    {
+      "id": "T014",
+      "prompt": "Erkläre mir was Machine Learning ist",
+      "category": "domain_routing_generic",
+      "tags": [
+        "domain",
+        "generic"
+      ],
+      "expected": {
+        "domain": "GENERIC",
+        "approved": true
+      },
+      "actual": {
+        "domain": "GENERIC",
+        "needs_memory": false,
+        "approved": true,
+        "tools_executed": [
+          "memory_search"
+        ],
+        "done_reason": "stop",
+        "latency_ms": 15565.91,
+        "conversation_id": "webui-prompt-e2e-1773186983-t014",
+        "error": null
+      },
+      "observed": {
+        "control_approved": true,
+        "thinking": {
+          "intent": "query_budget_fast_path",
+          "needs_memory": false,
+          "skipped": true,
+          "reason": "query_budget_skip_candidate"
+        },
+        "event_type_counts": {
+          "response_mode": 1,
+          "control": 1,
+          "workspace_update": 4,
+          "tool_start": 1,
+          "tool_result": 1,
+          "done": 1
+        },
+        "response_preview": "Machine Learning ist eine **Technik innerhalb der KI**, bei der Algorithmen aus Daten lernen, um Aufgaben zu bewältigen – ähnlich wie Menschen, aber systematischer und skalierbarer.\n\n**Beispiele:**\n- **Spracherkennung** (z. B. dein Smartphone transkribiert deine Stimme in Text).\n"
+      },
+      "quality": {
+        "domain_match": true,
+        "approval_match": true,
+        "needs_memory_match": null,
+        "score": 10
+      }
+    }
+  ]
+}

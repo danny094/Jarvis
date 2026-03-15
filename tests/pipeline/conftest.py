@@ -1,6 +1,7 @@
 # tests/pipeline/conftest.py
 import pytest
 import asyncio
+import os
 from typing import Dict, Any, List
 
 # Create event loop for async tests
@@ -16,6 +17,13 @@ def thinking_layer():
     Initializes the ThinkingLayer.
     Assumes standard config/environment is available (e.g. inside Docker container).
     """
+    live_enabled = str(
+        os.getenv("RUN_PIPELINE_LIVE_TESTS", os.getenv("RUN_CIM_LIVE_TESTS", ""))
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if not live_enabled:
+        pytest.skip(
+            "Pipeline live tests disabled (set RUN_PIPELINE_LIVE_TESTS=1 to enable)."
+        )
     from core.layers.thinking import ThinkingLayer
     layer = ThinkingLayer()
     return layer
@@ -25,6 +33,13 @@ def hub():
     """
     Initializes the MCPHub singleton.
     """
+    live_enabled = str(
+        os.getenv("RUN_PIPELINE_LIVE_TESTS", os.getenv("RUN_CIM_LIVE_TESTS", ""))
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if not live_enabled:
+        pytest.skip(
+            "Pipeline live tests disabled (set RUN_PIPELINE_LIVE_TESTS=1 to enable)."
+        )
     from mcp.hub import get_hub
     return get_hub()
 

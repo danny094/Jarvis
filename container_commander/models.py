@@ -9,7 +9,7 @@ Defines the data structures for:
 """
 
 from __future__ import annotations
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from enum import Enum
 from datetime import datetime
@@ -54,6 +54,7 @@ class MountDef(BaseModel):
     """Volume mount: host path → container path."""
     host: str = Field(..., description="Host path (relative to project root)")
     container: str = Field(..., description="Container mount path")
+    type: str = Field(default="bind", description="Mount type: bind or volume")
     mode: str = Field(default="rw", description="ro or rw")
 
 
@@ -120,6 +121,34 @@ class Blueprint(BaseModel):
     
     # Mounts
     mounts: List[MountDef] = Field(default_factory=list)
+    storage_scope: str = Field(
+        default="",
+        description="Optional approved storage scope name for host bind mounts.",
+    )
+
+    # Runtime wiring (P0 foundation for GPU/ports/hardware-aware blueprints)
+    ports: List[str] = Field(
+        default_factory=list,
+        description="Port mappings (e.g. ['47984:47984/tcp', '48100-48110:48100-48110/udp'])",
+    )
+    runtime: str = Field(default="", description="Container runtime (e.g. 'nvidia')")
+    devices: List[str] = Field(
+        default_factory=list,
+        description="Host devices passed through to container (e.g. ['/dev/dri:/dev/dri'])",
+    )
+    environment: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Static environment variables (non-secret).",
+    )
+    healthcheck: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Docker healthcheck configuration (test/interval/timeout/retries/start_period).",
+    )
+    cap_add: List[str] = Field(
+        default_factory=list,
+        description="Additional Linux capabilities (e.g. ['NET_ADMIN']).",
+    )
+    shm_size: str = Field(default="", description="Shared memory size (e.g. '1g').")
     
     # Network
     network: NetworkMode = Field(default=NetworkMode.INTERNAL)
@@ -214,6 +243,14 @@ class BlueprintCreateRequest(BaseModel):
     resources: Optional[ResourceLimits] = None
     secrets_required: List[SecretRequirement] = Field(default_factory=list)
     mounts: List[MountDef] = Field(default_factory=list)
+    storage_scope: str = ""
+    ports: List[str] = Field(default_factory=list)
+    runtime: str = ""
+    devices: List[str] = Field(default_factory=list)
+    environment: Dict[str, str] = Field(default_factory=dict)
+    healthcheck: Dict[str, Any] = Field(default_factory=dict)
+    cap_add: List[str] = Field(default_factory=list)
+    shm_size: str = ""
     network: NetworkMode = NetworkMode.INTERNAL
     tags: List[str] = Field(default_factory=list)
     icon: str = "📦"

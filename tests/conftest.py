@@ -5,10 +5,18 @@ Pytest Fixtures - Wiederverwendbare Test-Komponenten.
 
 import pytest
 import sys
+import os
 from pathlib import Path
 
 # Add parent dir to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(_ROOT))
+
+# Some legacy integration tests import modules directly from `sql-memory/`
+# (e.g. `from vector_store import VectorStore`).
+_SQL_MEMORY = _ROOT / "sql-memory"
+if _SQL_MEMORY.exists():
+    sys.path.insert(0, str(_SQL_MEMORY))
 
 # Standalone runner scripts that are not proper pytest files (use exit() at module level).
 # These cause INTERNALERROR during pytest collection because sys.exit() fires on import.
@@ -120,3 +128,38 @@ def sample_request(sample_messages):
         stream=False,
         source_adapter="test"
     )
+
+
+@pytest.fixture
+def base_url():
+    """Live CIM endpoint fixture (opt-in only)."""
+    if str(os.getenv("RUN_CIM_LIVE_TESTS", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+        pytest.skip("CIM live tests disabled (set RUN_CIM_LIVE_TESTS=1)")
+    return str(os.getenv("CIM_BASE_URL", "http://localhost:8086")).strip()
+
+
+@pytest.fixture
+def urls():
+    """Live integration URL bundle for CIM/Sequential/API tests (opt-in only)."""
+    if str(os.getenv("RUN_CIM_LIVE_TESTS", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+        pytest.skip("CIM live tests disabled (set RUN_CIM_LIVE_TESTS=1)")
+    mode = str(os.getenv("CIM_LIVE_MODE", "external")).strip().lower()
+    if mode == "internal":
+        return {
+            "cim": str(os.getenv("CIM_URL_INTERNAL", "http://cim-server:8086")).strip(),
+            "sequential": str(os.getenv("SEQUENTIAL_URL_INTERNAL", "http://sequential-thinking:8085")).strip(),
+            "api": str(os.getenv("API_URL_INTERNAL", "http://jarvis-admin-api:8200")).strip(),
+        }
+    return {
+        "cim": str(os.getenv("CIM_URL_EXTERNAL", "http://localhost:8086")).strip(),
+        "sequential": str(os.getenv("SEQUENTIAL_URL_EXTERNAL", "http://localhost:8085")).strip(),
+        "api": str(os.getenv("API_URL_EXTERNAL", "http://localhost:8200")).strip(),
+    }
+
+
+@pytest.fixture
+def results():
+    """Result collector fixture for script-like integration tests."""
+    from tests.test_cim_sequential_integration import TestResult
+
+    return TestResult()

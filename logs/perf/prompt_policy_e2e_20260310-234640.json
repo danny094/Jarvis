@@ -1,0 +1,76 @@
+{
+  "meta": {
+    "started_at_utc": "2026-03-10T23:46:34.073556+00:00",
+    "base_url": "http://127.0.0.1:8200",
+    "model": "ministral-3:8b",
+    "cases_file": "tests/e2e/prompt_suite_cases.json",
+    "profile": "full",
+    "selected_case_count": 1,
+    "finished_at_utc": "2026-03-10T23:46:40.296671+00:00"
+  },
+  "summary": {
+    "total": 1,
+    "blocked_count": 1,
+    "error_count": 0,
+    "domain_counts": {
+      "GENERIC": 1
+    },
+    "latency_ms": {
+      "p50": 6222.95,
+      "mean": 6222.95,
+      "max": 6222.95
+    },
+    "match_rates": {
+      "domain": 1.0,
+      "approval": 0.0,
+      "needs_memory": null
+    },
+    "score_mean_0_10": 5.0
+  },
+  "results": [
+    {
+      "id": "T016",
+      "prompt": "Rechne mir 2547 * 389 aus",
+      "category": "domain_routing_generic",
+      "tags": [
+        "domain",
+        "generic",
+        "math"
+      ],
+      "expected": {
+        "domain": "GENERIC",
+        "approved": true
+      },
+      "actual": {
+        "domain": "GENERIC",
+        "needs_memory": false,
+        "approved": false,
+        "tools_executed": [],
+        "done_reason": "blocked",
+        "latency_ms": 6222.95,
+        "conversation_id": "webui-prompt-e2e-1773186394-t016",
+        "error": null
+      },
+      "observed": {
+        "control_approved": null,
+        "thinking": {
+          "intent": "query_budget_fast_path",
+          "needs_memory": false,
+          "skipped": true,
+          "reason": "query_budget_skip_candidate"
+        },
+        "event_type_counts": {
+          "response_mode": 1,
+          "workspace_update": 1
+        },
+        "response_preview": "Safety policy violation\n\n_Keine Notwendigkeit für Tool-Aufrufe (Memory Search) – direkte Berechnung möglich., Docker-Container-Referenz irrelevant für mathematische Berechnung; ignorieren._"
+      },
+      "quality": {
+        "domain_match": true,
+        "approval_match": false,
+        "needs_memory_match": null,
+        "score": 5
+      }
+    }
+  ]
+}

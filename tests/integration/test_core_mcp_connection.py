@@ -8,35 +8,21 @@ from unittest.mock import MagicMock, patch, AsyncMock
 @pytest.mark.asyncio
 async def test_core_bridge_calls_memory_save():
     """Testet, ob die CoreBridge beim Autosave das memory_save Tool aufruft."""
-    
+
     # Mocks vorbereiten
     mock_hub = MagicMock()
     mock_hub.call_tool.return_value = {"result": "success"}
-    
-    # Patche get_hub, damit wir unsere Mock-Instanz zurückbekommen
-    with patch("mcp.hub.get_hub", return_value=mock_hub), \
-         patch("mcp.client.call_tool") as mock_client_call_tool:
-         
-        # Wir testen hier die 'autosave_assistant' Funktion, die von Core genutzt wird (technisch in mcp.client)
-        # Aber die Frage war "ob der Core zugreift".
-        # CoreBridge._process_step ruft Autosave auf.
-        
-        # Um CoreBridge zu initialisieren, brauchen wir viele Mocks (Classifier, Models etc.)
-        # Einfacher: Wir testen die Funktionen in mcp.client, die Core nutzt, 
-        # oder wir testen eine spezifische Methode in CoreBridge.
-        
-        # 1. Teste die direkte Verbindung via mcp.client (was Core nutzt)
-        from mcp.client import autosave_assistant
-        
-        # Mocke call_tool in mcp.client selbst, um sicherzugehen, dass es aufgerufen wird.
-        # Warte, autosave_assistant ruft mcp.client.call_tool auf.
-        # mcp.client.call_tool ruft hub.call_tool auf.
-        
+
+    # Mit dem Modulobjekt arbeiten, damit Patch + Funktionsaufruf garantiert
+    # auf derselben Instanz passieren (verhindert Reihenfolge/Import-Drift).
+    import mcp.client as mcp_client
+
+    with patch.object(mcp_client, "call_tool") as mock_client_call_tool:
         mock_client_call_tool.side_effect = lambda name, args: mock_hub.call_tool(name, args)
-        
+
         # Action
-        autosave_assistant("conv-123", "Hello World", layer="stm")
-        
+        mcp_client.autosave_assistant("conv-123", "Hello World", layer="stm")
+
         # Verify
         mock_hub.call_tool.assert_called_with("memory_save", {
             "conversation_id": "conv-123",
@@ -45,6 +31,7 @@ async def test_core_bridge_calls_memory_save():
             "tags": "",
             "layer": "stm"
         })
+        mock_client_call_tool.assert_called_once()
 
 @pytest.mark.asyncio
 async def test_control_layer_uses_hub():

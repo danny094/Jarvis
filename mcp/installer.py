@@ -3,19 +3,32 @@ MCP Installation & Management Module
 Handles Tier 1 (Simple Python) MCPs only
 """
 import asyncio
-from fastapi import APIRouter, UploadFile, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pathlib import Path
 import shutil
 import zipfile
 import json
 import subprocess
-from typing import Dict, List
+from typing import Any, Dict, List
 from .hub import get_hub
 
 router = APIRouter()
 
 CUSTOM_MCPS_DIR = Path("/app/custom_mcps")
 MAX_SIZE = 50 * 1024 * 1024  # 50MB
+
+CORE_MCP_NAMES = {
+    "sql-memory",
+    "sequential-thinking",
+    "cim",
+    "skill-server",
+    "storage-broker",
+    "time-mcp",
+}
+
+
+def _is_core_mcp(name: str) -> bool:
+    return str(name or "").strip() in CORE_MCP_NAMES
 
 class InstallationError(Exception):
     """Custom exception with rollback capability"""
@@ -95,7 +108,7 @@ async def _run_post_install_health_check(hub, mcp_name: str, attempts: int = 8, 
     return {"status": "unhealthy", "reason": reason}
 
 @router.post("/install")
-async def install_mcp(file: UploadFile):
+async def install_mcp(file=None, request: Request = None):
     """
     Install a Tier 1 (Simple) MCP from ZIP upload.
     
@@ -110,6 +123,34 @@ async def install_mcp(file: UploadFile):
     
     try:
         # PHASE 1: Upload & Size Check
+        if file is None and request is not None:
+            content_type = str(request.headers.get("content-type", "")).lower()
+            if "multipart/form-data" in content_type:
+                try:
+                    form = await request.form()
+                except Exception as e:
+                    raise HTTPException(
+                        400,
+                        "Multipart upload requires python-multipart at runtime",
+                    ) from e
+                file = form.get("file")
+            else:
+                body = await request.body()
+                if body:
+                    class _BodyUpload:
+                        filename = "mcp_upload.zip"
+
+                        def __init__(self, payload: bytes):
+                            self._payload = payload
+
+                        async def read(self):
+                            return self._payload
+
+                    file = _BodyUpload(body)
+
+        if file is None:
+            raise HTTPException(400, "No file upload provided")
+
         content = await file.read()
         if len(content) > MAX_SIZE:
             raise HTTPException(400, "File too large (max 50MB)")
@@ -235,15 +276,17 @@ async def list_mcps():
 @router.delete("/{name}")
 async def delete_mcp(name: str):
     """Delete a custom MCP"""
-    target = CUSTOM_MCPS_DIR / name
-    
-    if not target.exists():
-        raise HTTPException(404, f"MCP '{name}' not found")
-    
-    # Don't allow deleting core MCPs
-    from mcp_registry import CORE_MCPS
-    if name in CORE_MCPS:
+    if _is_core_mcp(name):
         raise HTTPException(403, "Cannot delete core MCPs")
+
+    target = CUSTOM_MCPS_DIR / name
+
+    if not target.exists():
+        hub = get_hub()
+        known = {str((m or {}).get("name", "")).strip() for m in (hub.list_mcps() or []) if isinstance(m, dict)}
+        if name in known:
+            raise HTTPException(403, "Cannot delete core MCPs")
+        raise HTTPException(404, f"MCP '{name}' not found")
     
     # Safely remove directory
     try:
@@ -260,32 +303,31 @@ async def delete_mcp(name: str):
 @router.post("/{name}/toggle")
 async def toggle_mcp(name: str):
     """Enable/Disable an MCP"""
-    from mcp_registry import get_mcps
-    mcps = get_mcps()
-    
-    if name not in mcps:
-        raise HTTPException(404, f"MCP '{name}' not found")
-    
-    # Toggle enabled state
+    if _is_core_mcp(name):
+        raise HTTPException(403, "Cannot toggle core MCPs")
+
+    # Toggle enabled state (custom MCPs only)
     config_path = CUSTOM_MCPS_DIR / name / "config.json"
-    
-    if config_path.exists():
-        try:
-            config = json.loads(config_path.read_text())
-            current_state = config.get("enabled", True)
-            config["enabled"] = not current_state
-            
-            config_path.write_text(json.dumps(config, indent=2))
-            
-            # Hot Reload
-            hub = get_hub()
-            _reload_hub_registry(hub)
-            
-            return {"success": True, "enabled": config["enabled"]}
-        except Exception as e:
-            raise HTTPException(500, f"Toggle failed: {e}")
-    
-    raise HTTPException(500, "Cannot toggle core MCPs (config.json not found)")
+    if not config_path.exists():
+        hub = get_hub()
+        known = {str((m or {}).get("name", "")).strip() for m in (hub.list_mcps() or []) if isinstance(m, dict)}
+        if name in known:
+            raise HTTPException(403, "Cannot toggle core MCPs (config.json not found)")
+        raise HTTPException(404, f"MCP '{name}' not found")
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        current_state = bool(config.get("enabled", True))
+        config["enabled"] = not current_state
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+        # Hot Reload
+        hub = get_hub()
+        _reload_hub_registry(hub)
+
+        return {"success": True, "enabled": config["enabled"]}
+    except Exception as e:
+        raise HTTPException(500, f"Toggle failed: {e}")
 
 @router.get("/{name}/details")
 async def get_mcp_details(name: str):
@@ -317,4 +359,66 @@ async def get_mcp_details(name: str):
     return {
         "mcp": mcp_info,
         "tools": tools
+    }
+
+
+@router.get("/{name}/config")
+async def get_mcp_config_payload(name: str):
+    """
+    Read editable config.json for custom MCPs.
+    Core MCPs are intentionally read-only here.
+    """
+    config_path = CUSTOM_MCPS_DIR / name / "config.json"
+    if not config_path.exists():
+        raise HTTPException(404, f"Editable config for MCP '{name}' not found (core MCPs are read-only)")
+
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read config: {e}")
+
+    return {
+        "name": name,
+        "custom": True,
+        "config": raw,
+    }
+
+
+@router.put("/{name}/config")
+async def update_mcp_config_payload(name: str, request: Request):
+    """
+    Update config.json for a custom MCP and hot-reload hub registry.
+    """
+    config_path = CUSTOM_MCPS_DIR / name / "config.json"
+    if not config_path.exists():
+        raise HTTPException(404, f"Editable config for MCP '{name}' not found (core MCPs are read-only)")
+
+    try:
+        payload = await request.json()
+    except Exception as e:
+        raise HTTPException(400, f"Invalid JSON payload: {e}")
+
+    config: Any = payload.get("config")
+    if not isinstance(config, dict):
+        raise HTTPException(400, "Field 'config' must be a JSON object")
+
+    required = {"name", "url", "description"}
+    missing = [k for k in required if k not in config]
+    if missing:
+        raise HTTPException(400, f"Missing required config keys: {', '.join(sorted(missing))}")
+
+    if str(config.get("name", "")).strip() != name:
+        raise HTTPException(400, f"Config name must stay '{name}'")
+
+    try:
+        config_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+        hub = get_hub()
+        _reload_hub_registry(hub)
+    except Exception as e:
+        raise HTTPException(500, f"Config update failed: {e}")
+
+    return {
+        "success": True,
+        "name": name,
+        "config": config,
     }

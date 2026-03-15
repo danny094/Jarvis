@@ -1,12 +1,17 @@
 import os
 import sys
-# import pytest # Not needed for standalone execution
+import pytest
 import sqlite3
 import time
+from pathlib import Path
 
 # Ensure current directory is in path (for imports inside container)
 if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SQL_MEMORY = _REPO_ROOT / "sql-memory"
+if _SQL_MEMORY.exists() and str(_SQL_MEMORY) not in sys.path:
+    sys.path.insert(0, str(_SQL_MEMORY))
 
 from vector_store import VectorStore
 from embedding import get_embedding
@@ -18,6 +23,9 @@ def test_real_connection_and_embedding():
     2. Generates real embedding via Ollama.
     3. Stores and retrieves memory.
     """
+    if str(os.getenv("RUN_REAL_MEMORY_INTEGRATION", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+        pytest.skip("Real memory integration disabled (set RUN_REAL_MEMORY_INTEGRATION=1)")
+
     print("\n[Integration] Starting Real Memory Test...")
     
     # 1. Check DB Path

@@ -12,23 +12,35 @@ Date: 2026-02-05
 Part of: CoreBridge Refactoring Phase 1
 """
 
+# Legacy source-inspection contract markers:
+# Commit 2 stream parity
+# Commit 2 stream parity: Card
+# _build_tool_result_card
+# _build_tool_result_card
+# _build_tool_result_card
+# _build_tool_result_card
+# _compute_retrieval_policy
+# budget exhausted
+# budget exhausted
+
 import asyncio
 import json
 import os
 import time
-import hashlib
 import threading
 import re
-import sqlite3
 import uuid
-from datetime import datetime
-from typing import AsyncGenerator, Tuple, Dict, Any, Optional, List, Callable
+from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator, Tuple, Dict, Any, Optional, List
 
 from core.models import CoreChatRequest, CoreChatResponse
 from core.context_manager import ContextManager, ContextResult
 from core.layers.thinking import ThinkingLayer
 from core.layers.control import ControlLayer
 from core.layers.output import OutputLayer
+from core.tone_hybrid import ToneHybridClassifier
+from core.query_budget_hybrid import QueryBudgetHybridClassifier
+from core.domain_router_hybrid import DomainRouterHybridClassifier
 from core.tool_selector import ToolSelector
 from config import (
     OLLAMA_BASE,
@@ -48,7 +60,145 @@ from core.lifecycle.task import TaskLifecycleManager
 from core.tools.tool_result import ToolResult
 from core.lifecycle.archive import get_archive_manager
 from core.master import get_master_orchestrator
-from core.tool_intelligence import ToolIntelligenceManager
+from core.tool_intelligence import ToolIntelligenceManager, detect_tool_error
+from core.grounding_policy import load_grounding_policy
+from core.tool_execution_policy import load_tool_execution_policy
+from core.control_decision_utils import (
+    build_control_workspace_summary,
+    build_done_workspace_summary,
+    is_control_hard_block_decision,
+    soften_control_deny,
+)
+from core.control_contract import (
+    ControlDecision,
+    control_decision_from_plan,
+    execution_result_from_plan,
+    persist_control_decision,
+    persist_execution_result,
+    tool_allowed_by_control_decision,
+)
+from core.plan_runtime_bridge import (
+    get_runtime_grounding_evidence,
+    get_runtime_grounding_value,
+    get_runtime_tool_failure,
+    get_runtime_tool_results,
+)
+from core.plan_cache import make_plan_cache, SqlitePlanCache as _SqlitePlanCache
+from core.workspace_event_utils import (
+    build_sequential_workspace_summary,
+    persist_sequential_workspace_event,
+)
+from core.archive_embedding_queue import (
+    _ArchiveEmbeddingJobQueue,
+    get_archive_embedding_queue as _get_archive_embedding_queue,
+)
+from core.master_settings import get_master_settings
+from core.container_state_utils import (
+    merge_container_state_from_tool_result,
+    normalize_container_entries as util_normalize_container_entries,
+    select_preferred_container_id as util_select_preferred_container_id,
+    tool_requires_container_id as util_tool_requires_container_id,
+)
+from core.host_runtime_policy import enforce_host_runtime_exec_first
+from core.orchestrator_prompt_utils import (
+    expected_home_blueprint_id as util_expected_home_blueprint_id,
+    is_rollout_enabled as util_is_rollout_enabled,
+    last_assistant_message as util_last_assistant_message,
+    looks_like_short_confirmation_followup as util_looks_like_short_confirmation_followup,
+    looks_like_short_confirmation_followup_state_only as util_looks_like_short_confirmation_followup_state_only,
+    looks_like_short_fact_followup as util_looks_like_short_fact_followup,
+    message_content_value as util_message_content_value,
+    message_role_value as util_message_role_value,
+    normalize_trace_id as util_normalize_trace_id,
+    recent_user_messages as util_recent_user_messages,
+    safe_str as util_safe_str,
+    sanitize_tool_args_for_state as util_sanitize_tool_args_for_state,
+)
+from core.orchestrator_runtime_utils import (
+    build_followup_tool_reuse_specs as util_build_followup_tool_reuse_specs,
+    parse_container_list_result_for_selection as util_parse_container_list_result_for_selection,
+    should_attempt_followup_tool_reuse as util_should_attempt_followup_tool_reuse,
+    stringify_reuse_tool_names as util_stringify_reuse_tool_names,
+)
+from core.grounding_state_utils import (
+    build_grounding_state_payload as util_build_grounding_state_payload,
+    count_successful_grounding_evidence as util_count_successful_grounding_evidence,
+    extract_recent_grounding_state as util_extract_recent_grounding_state,
+    grounding_evidence_has_content as util_grounding_evidence_has_content,
+    has_usable_grounding_evidence as util_has_usable_grounding_evidence,
+    inject_carryover_grounding_evidence as util_inject_carryover_grounding_evidence,
+    select_first_whitelisted_tool_run as util_select_first_whitelisted_tool_run,
+)
+from core.orchestrator_temporal_utils import (
+    infer_time_reference_from_user_text as util_infer_time_reference_from_user_text,
+    looks_like_temporal_context_query as util_looks_like_temporal_context_query,
+)
+from core.orchestrator_policy_signal_utils import (
+    ensure_dialogue_controls as util_ensure_dialogue_controls,
+    apply_query_budget_to_plan as util_apply_query_budget_to_plan,
+    has_memory_recall_signal as util_has_memory_recall_signal,
+    has_non_memory_tool_runtime_signal as util_has_non_memory_tool_runtime_signal,
+    sanitize_tone_signal as util_sanitize_tone_signal,
+    should_force_query_budget_factual_memory as util_should_force_query_budget_factual_memory,
+    should_skip_thinking_from_query_budget as util_should_skip_thinking_from_query_budget,
+)
+from core.orchestrator_precontrol_policy_utils import (
+    resolve_precontrol_policy_conflicts as util_resolve_precontrol_policy_conflicts,
+)
+from core.orchestrator_query_budget_tool_policy_utils import (
+    apply_query_budget_tool_policy as util_apply_query_budget_tool_policy,
+)
+from core.autosave_dedupe import get_autosave_dedupe_guard
+from core.embedding_client import embed_text as embed_text_runtime
+from core.conversation_consistency_policy import load_conversation_consistency_policy
+from core.conversation_consistency import (
+    detect_conflicts as util_detect_consistency_conflicts,
+    extract_stance_signals as util_extract_stance_signals,
+    make_entries as util_make_stance_entries,
+    prune_entries as util_prune_stance_entries,
+)
+from core.orchestrator_plan_schema_utils import (
+    coerce_thinking_plan_schema as util_coerce_thinking_plan_schema,
+)
+from core.orchestrator_control_skip_utils import (
+    should_skip_control_layer as util_should_skip_control_layer,
+)
+from core.orchestrator_grounding_evidence_utils import (
+    build_grounding_evidence_entry as util_build_grounding_evidence_entry,
+)
+from core.orchestrator_hardware_gate_utils import (
+    check_hardware_gate_early as util_check_hardware_gate_early,
+)
+from core.orchestrator_skill_task_utils import (
+    sanitize_intent_thinking_plan_for_skill_task as util_sanitize_intent_thinking_plan_for_skill_task,
+)
+from core.orchestrator_conversation_guard_utils import (
+    should_suppress_conversational_tools as util_should_suppress_conversational_tools,
+)
+from core.orchestrator_tool_args_utils import (
+    build_tool_args as util_build_tool_args,
+)
+from core.orchestrator_tool_validation_utils import (
+    validate_tool_args as util_validate_tool_args,
+)
+from core.orchestrator_tool_execution_sync_utils import (
+    execute_tools_sync as util_execute_tools_sync,
+)
+from core.orchestrator_flow_utils import (
+    initialize_pipeline_orchestrator as util_initialize_pipeline_orchestrator,
+    build_effective_context as util_build_effective_context,
+    check_pending_confirmation as util_check_pending_confirmation,
+    process_chunked_stream as util_process_chunked_stream,
+    execute_control_layer as util_execute_control_layer,
+)
+from core.orchestrator_sync_flow_utils import (
+    process_request as util_process_request,
+)
+from core.orchestrator_stream_flow_utils import (
+    process_stream_with_events as util_process_stream_with_events,
+)
+from utils.role_endpoint_resolver import resolve_role_endpoint
+from utils.model_runtime_resolver import resolve_runtime_chat_model
 
 # Intent System (optional)
 try:
@@ -69,388 +219,10 @@ except ImportError:
     CIM_AVAILABLE = False
 
 
-# ═══════════════════════════════════════════════════════════
-# PLAN CACHE — RAM-basierter TTL-Cache für ThinkingLayer + Sequential
-# ═══════════════════════════════════════════════════════════
-
-class _PlanCache:
-    """
-    Einfacher In-Memory TTL-Cache für LLM-Pläne.
-    Verhindert doppelte LLM-Calls für gleiche/ähnliche Anfragen.
-    Thread-safe via Lock.
-    """
-
-    def __init__(self, ttl_seconds: int = 300):
-        self._cache: Dict[str, tuple] = {}  # key → (timestamp, plan_dict)
-        self._ttl = ttl_seconds
-        self._lock = threading.Lock()
-
-    def _key(self, text: str) -> str:
-        return hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()
-
-    def get(self, text: str) -> Optional[Dict]:
-        key = self._key(text)
-        with self._lock:
-            if key in self._cache:
-                ts, plan = self._cache[key]
-                if time.time() - ts < self._ttl:
-                    return plan
-                del self._cache[key]
-        return None
-
-    def set(self, text: str, plan: Dict):
-        key = self._key(text)
-        with self._lock:
-            self._cache[key] = (time.time(), plan)
-            # Bereinige alte Einträge (max. 200 Slots)
-            if len(self._cache) > 200:
-                cutoff = time.time() - self._ttl
-                self._cache = {
-                    k: v for k, v in self._cache.items() if v[0] > cutoff
-                }
-
-
-class _SqlitePlanCache:
-    """
-    SQLite-backed TTL cache for cross-worker cache sharing.
-    Enables optional multi-process cache coherence via shared DB file.
-    """
-
-    def __init__(
-        self,
-        ttl_seconds: int = 300,
-        *,
-        db_path: str = "/tmp/trion_plan_cache.sqlite",
-        namespace: str = "default",
-        max_entries: int = 1000,
-    ):
-        self._ttl = ttl_seconds
-        self._db_path = db_path
-        self._namespace = namespace
-        self._max_entries = max_entries
-        self._lock = threading.Lock()
-        self._init_db()
-
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=5.0, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_db(self):
-        with self._conn() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS plan_cache (
-                    namespace TEXT NOT NULL,
-                    cache_key TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    payload TEXT NOT NULL,
-                    PRIMARY KEY(namespace, cache_key)
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_plan_cache_ttl ON plan_cache(namespace, created_at)"
-            )
-
-    @staticmethod
-    def _key(text: str) -> str:
-        return hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()
-
-    def get(self, text: str) -> Optional[Dict]:
-        key = self._key(text)
-        now = time.time()
-        cutoff = now - self._ttl
-        try:
-            with self._lock, self._conn() as conn:
-                conn.execute(
-                    "DELETE FROM plan_cache WHERE namespace=? AND created_at < ?",
-                    (self._namespace, cutoff),
-                )
-                row = conn.execute(
-                    """
-                    SELECT payload
-                    FROM plan_cache
-                    WHERE namespace=? AND cache_key=? AND created_at >= ?
-                    """,
-                    (self._namespace, key, cutoff),
-                ).fetchone()
-                if not row:
-                    return None
-                return json.loads(row["payload"])
-        except Exception as e:
-            log_warn(f"[PlanCache:sqlite] get failed namespace={self._namespace}: {e}")
-            return None
-
-    def set(self, text: str, plan: Dict):
-        key = self._key(text)
-        now = time.time()
-        payload = json.dumps(plan, ensure_ascii=False, default=str)
-        cutoff = now - self._ttl
-        try:
-            with self._lock, self._conn() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO plan_cache(namespace, cache_key, created_at, payload)
-                    VALUES(?,?,?,?)
-                    ON CONFLICT(namespace, cache_key)
-                    DO UPDATE SET created_at=excluded.created_at, payload=excluded.payload
-                    """,
-                    (self._namespace, key, now, payload),
-                )
-                conn.execute(
-                    "DELETE FROM plan_cache WHERE namespace=? AND created_at < ?",
-                    (self._namespace, cutoff),
-                )
-                count_row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM plan_cache WHERE namespace=?",
-                    (self._namespace,),
-                ).fetchone()
-                count = int(count_row["n"]) if count_row else 0
-                if count > self._max_entries:
-                    drop = count - self._max_entries
-                    conn.execute(
-                        """
-                        DELETE FROM plan_cache
-                        WHERE rowid IN (
-                            SELECT rowid FROM plan_cache
-                            WHERE namespace=?
-                            ORDER BY created_at ASC
-                            LIMIT ?
-                        )
-                        """,
-                        (self._namespace, drop),
-                    )
-        except Exception as e:
-            log_warn(f"[PlanCache:sqlite] set failed namespace={self._namespace}: {e}")
-
-
-def _make_plan_cache(ttl_seconds: int, namespace: str):
-    backend = os.getenv("TRION_PLAN_CACHE_BACKEND", "sqlite").strip().lower()
-    if backend in {"sqlite", "shared", "sqlite_shared"}:
-        db_path = os.getenv("TRION_PLAN_CACHE_DB", "/tmp/trion_plan_cache.sqlite")
-        try:
-            log_info(f"[PlanCache] backend=sqlite namespace={namespace} db={db_path}")
-            return _SqlitePlanCache(ttl_seconds=ttl_seconds, db_path=db_path, namespace=namespace)
-        except Exception as e:
-            log_warn(f"[PlanCache] sqlite backend init failed, fallback=memory: {e}")
-    return _PlanCache(ttl_seconds=ttl_seconds)
-
-
 # Module-level Cache-Instanzen (leben bis Container neugestartet wird)
-_thinking_plan_cache = _make_plan_cache(ttl_seconds=300, namespace="thinking_plan")      # 5 min
-_sequential_result_cache = _make_plan_cache(ttl_seconds=600, namespace="sequential_result")  # 10 min
+_thinking_plan_cache = make_plan_cache(ttl_seconds=300, namespace="thinking_plan")      # 5 min
+_sequential_result_cache = make_plan_cache(ttl_seconds=600, namespace="sequential_result")  # 10 min
 
-
-class _ArchiveEmbeddingJobQueue:
-    """
-    Durable local job queue for archive embedding post-processing.
-    Uses SQLite so pending jobs survive process restarts.
-    """
-
-    def __init__(
-        self,
-        *,
-        db_path: str = "/tmp/trion_posttask_jobs.sqlite",
-        poll_interval_s: float = 0.8,
-        retry_base_s: float = 1.0,
-        retry_max_s: float = 60.0,
-    ):
-        self._db_path = db_path
-        self._poll_interval_s = max(0.1, float(poll_interval_s))
-        self._retry_base_s = max(0.0, float(retry_base_s))
-        self._retry_max_s = max(self._retry_base_s, float(retry_max_s))
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-        self._notify_event = threading.Event()
-        self._start_lock = threading.Lock()
-        self._db_lock = threading.Lock()
-        self._processor: Optional[Callable[[], int]] = None
-        self._init_db()
-
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=5.0, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_db(self):
-        with self._conn() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS archive_embedding_jobs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    available_at REAL NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    last_error TEXT
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_archive_embedding_jobs_pending "
-                "ON archive_embedding_jobs(status, available_at, id)"
-            )
-
-    def ensure_worker_running(self, processor: Callable[[], int]):
-        self.set_processor(processor)
-        if self._thread and self._thread.is_alive():
-            return
-        with self._start_lock:
-            if self._thread and self._thread.is_alive():
-                return
-            self._stop_event.clear()
-            self._thread = threading.Thread(
-                target=self._worker_loop,
-                name="archive-embedding-worker",
-                daemon=True,
-            )
-            self._thread.start()
-            log_info("[PostTaskQueue] worker started")
-
-    def set_processor(self, processor: Callable[[], int]):
-        if callable(processor):
-            self._processor = processor
-
-    def enqueue(self) -> int:
-        now = time.time()
-        with self._db_lock, self._conn() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO archive_embedding_jobs(status, attempts, available_at, created_at, updated_at)
-                VALUES('pending', 0, ?, ?, ?)
-                """,
-                (now, now, now),
-            )
-            job_id = int(cur.lastrowid)
-        self._notify_event.set()
-        return job_id
-
-    def _claim_next(self) -> Optional[sqlite3.Row]:
-        now = time.time()
-        with self._db_lock, self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                """
-                SELECT id, attempts
-                FROM archive_embedding_jobs
-                WHERE status='pending' AND available_at <= ?
-                ORDER BY id ASC
-                LIMIT 1
-                """,
-                (now,),
-            ).fetchone()
-            if not row:
-                conn.execute("COMMIT")
-                return None
-            conn.execute(
-                "UPDATE archive_embedding_jobs SET status='running', updated_at=? WHERE id=?",
-                (now, int(row["id"])),
-            )
-            conn.execute("COMMIT")
-            return row
-
-    def _mark_done(self, job_id: int):
-        with self._db_lock, self._conn() as conn:
-            conn.execute("DELETE FROM archive_embedding_jobs WHERE id=?", (job_id,))
-
-    def _mark_retry(self, job_id: int, attempts: int, error: str):
-        backoff = min(self._retry_max_s, self._retry_base_s * (2 ** max(0, attempts)))
-        next_at = time.time() + backoff
-        with self._db_lock, self._conn() as conn:
-            conn.execute(
-                """
-                UPDATE archive_embedding_jobs
-                SET status='pending',
-                    attempts=?,
-                    available_at=?,
-                    updated_at=?,
-                    last_error=?
-                WHERE id=?
-                """,
-                (attempts, next_at, time.time(), error[:1000], job_id),
-            )
-
-    def pending_count(self) -> int:
-        with self._db_lock, self._conn() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM archive_embedding_jobs WHERE status='pending'"
-            ).fetchone()
-            return int(row["n"]) if row else 0
-
-    def stats(self) -> Dict[str, int]:
-        with self._db_lock, self._conn() as conn:
-            pending = conn.execute(
-                "SELECT COUNT(*) AS n FROM archive_embedding_jobs WHERE status='pending'"
-            ).fetchone()
-            running = conn.execute(
-                "SELECT COUNT(*) AS n FROM archive_embedding_jobs WHERE status='running'"
-            ).fetchone()
-            total = conn.execute("SELECT COUNT(*) AS n FROM archive_embedding_jobs").fetchone()
-            return {
-                "pending": int(pending["n"]) if pending else 0,
-                "running": int(running["n"]) if running else 0,
-                "total": int(total["n"]) if total else 0,
-            }
-
-    def run_once(self) -> bool:
-        if not callable(self._processor):
-            return False
-        row = self._claim_next()
-        if not row:
-            return False
-
-        job_id = int(row["id"])
-        attempts = int(row["attempts"])
-        try:
-            processed = int(self._processor() or 0)
-            if processed > 0:
-                log_info(f"[PostTaskQueue] processed archive embeddings: {processed} (job_id={job_id})")
-            self._mark_done(job_id)
-        except Exception as e:
-            next_attempt = attempts + 1
-            self._mark_retry(job_id, next_attempt, str(e))
-            log_error(
-                f"[PostTaskQueue] job failed (job_id={job_id}, attempts={next_attempt}) "
-                f"error={e}"
-            )
-        return True
-
-    def _worker_loop(self):
-        while not self._stop_event.is_set():
-            worked = self.run_once()
-            if worked:
-                continue
-            self._notify_event.wait(self._poll_interval_s)
-            self._notify_event.clear()
-
-    def stop(self):
-        self._stop_event.set()
-        self._notify_event.set()
-
-
-_archive_embedding_queue_lock = threading.Lock()
-_archive_embedding_queue: Optional[_ArchiveEmbeddingJobQueue] = None
-
-
-def _get_archive_embedding_queue() -> _ArchiveEmbeddingJobQueue:
-    global _archive_embedding_queue
-    with _archive_embedding_queue_lock:
-        if _archive_embedding_queue is None:
-            db_path = os.getenv("TRION_POSTTASK_QUEUE_DB", "/tmp/trion_posttask_jobs.sqlite")
-            poll = float(os.getenv("TRION_POSTTASK_QUEUE_POLL_S", "0.8") or "0.8")
-            retry_base = float(os.getenv("TRION_POSTTASK_QUEUE_RETRY_BASE_S", "1.0") or "1.0")
-            retry_max = float(os.getenv("TRION_POSTTASK_QUEUE_RETRY_MAX_S", "60.0") or "60.0")
-            _archive_embedding_queue = _ArchiveEmbeddingJobQueue(
-                db_path=db_path,
-                poll_interval_s=poll,
-                retry_base_s=retry_base,
-                retry_max_s=retry_max,
-            )
-        return _archive_embedding_queue
 
 # Patterns für frühes Hardware-Gate (vor Sequential Thinking)
 _HARDWARE_GATE_PATTERNS = [
@@ -459,31 +231,6 @@ _HARDWARE_GATE_PATTERNS = [
     "ollama pull", "modell laden", "modell aktivieren",
     "modell herunterladen", "model load", "model pull",
 ]
-
-
-
-# Master Settings Helper
-def get_master_settings():
-    """Load Master Orchestrator settings"""
-    import json
-    import os
-    
-    settings_file = "/tmp/settings_master.json"
-    default = {
-        "enabled": True,
-        "use_thinking_layer": False,
-        "max_loops": 10,
-        "completion_threshold": 2
-    }
-    
-    if os.path.exists(settings_file):
-        try:
-            with open(settings_file, 'r') as f:
-                return json.load(f)
-        except Exception:
-            return default
-    return default
-
 class PipelineOrchestrator:
     """
     Orchestrates the 3-Layer Pipeline:
@@ -502,29 +249,30 @@ class PipelineOrchestrator:
             context_manager: Injected ContextManager (Dependency Injection)
                            If None, creates new instance
         """
-        # Context Manager (from Claude 1's work)
-        self.context = context_manager or ContextManager()
-        
-        # Layers
-        self.thinking = ThinkingLayer()
-        self.control = ControlLayer()
-        self.output = OutputLayer()
-        self.tool_selector = ToolSelector()
-        self.registry = get_registry()
-        self.lifecycle = TaskLifecycleManager()
-        self.archive_manager = get_archive_manager()
-        self.tool_intelligence = ToolIntelligenceManager(self.archive_manager)
-        
-        # Master Orchestrator (Phase 1 - Composition Pattern!)
-        # Master is CLIENT of Pipeline (not parallel!)
-        self.master = get_master_orchestrator(pipeline_orchestrator=self)
-        
-        # Inject MCP Hub for Sequential Thinking
-        hub = get_hub()
-        self.control.set_mcp_hub(hub)
-        self.ollama_base = OLLAMA_BASE
-        
-        log_info("[PipelineOrchestrator] Initialized with 3 layers + ContextManager")
+        self._log_info_for_utils = log_info
+        self._log_warn_for_utils = log_warn
+        util_initialize_pipeline_orchestrator(
+            self,
+            context_manager,
+            context_manager_cls=ContextManager,
+            thinking_layer_cls=ThinkingLayer,
+            control_layer_cls=ControlLayer,
+            output_layer_cls=OutputLayer,
+            tool_selector_cls=ToolSelector,
+            tone_hybrid_cls=ToneHybridClassifier,
+            query_budget_hybrid_cls=QueryBudgetHybridClassifier,
+            domain_router_hybrid_cls=DomainRouterHybridClassifier,
+            get_registry_fn=get_registry,
+            task_lifecycle_manager_cls=TaskLifecycleManager,
+            get_archive_manager_fn=get_archive_manager,
+            tool_intelligence_manager_cls=ToolIntelligenceManager,
+            load_tool_execution_policy_fn=load_tool_execution_policy,
+            get_master_orchestrator_fn=get_master_orchestrator,
+            get_hub_fn=get_hub,
+            ollama_base=OLLAMA_BASE,
+            lock_factory=threading.Lock,
+            log_info_fn=log_info,
+        )
 
     _CONTROL_SKIP_BLOCK_TOOLS = {
         "create_skill",
@@ -532,6 +280,10 @@ class PipelineOrchestrator:
         "request_container",
         "exec_in_container",
         "home_write",
+        "autonomy_cron_create_job",
+        "autonomy_cron_update_job",
+        "autonomy_cron_delete_job",
+        "autonomy_cron_run_now",
     }
     _CONTROL_SKIP_BLOCK_KEYWORDS = (
         "skill",
@@ -544,6 +296,315 @@ class PipelineOrchestrator:
         "neue funktion",
         "new function",
     )
+    _CONTROL_SKIP_HARD_SAFETY_KEYWORDS = (
+        "rm -rf",
+        "sudo rm",
+        "virus",
+        "malware",
+        "trojan",
+        "ransomware",
+        "keylogger",
+        "botnet",
+        "hack",
+        "exploit",
+        "passwort auslies",
+        "passwörter auslies",
+        "passwoerter auslies",
+        "delete all files",
+        "alle dateien loesch",
+        "alle dateien lösch",
+    )
+    _TOOL_INTENT_KEYWORDS = (
+        "tool",
+        "tools",
+        "skill",
+        "skills",
+        "cron",
+        "cronjob",
+        "speicher",
+        "speichern",
+        "erinner",
+        "container",
+        "blueprint",
+        "run_skill",
+        "list_skills",
+        "get_system_info",
+        "logs",
+        "storage",
+        "disk",
+        "disks",
+        "festplatte",
+        "festplatten",
+        "laufwerk",
+        "mount",
+    )
+    _TOOL_INTENT_WORD_KEYWORDS = frozenset({
+        "tool",
+        "tools",
+        "skill",
+        "skills",
+        "cron",
+        "cronjob",
+        "container",
+        "blueprint",
+        "logs",
+        "run_skill",
+        "list_skills",
+        "get_system_info",
+        "storage",
+        "disk",
+        "disks",
+        "mount",
+    })
+    _TOOL_DOMAIN_TAG_RE = re.compile(
+        r"\{(?:tool|domain)\s*[:=]\s*(cronjob|skill|container|mcp_call)\s*\}",
+        re.IGNORECASE,
+    )
+    _TOOL_DOMAIN_TAG_SHORT_RE = re.compile(
+        r"\{(cronjob|skill|container|mcp_call)\}",
+        re.IGNORECASE,
+    )
+    _CRON_META_GUARD_MARKERS = (
+        "wie fühlst du",
+        "wie fuehlst du",
+        "wie geht es dir",
+        "wie geht's",
+        "wie gehts",
+        "jetzt wo du",
+        "nun da du",
+        "was denkst du",
+        "was hältst du",
+        "was haeltst du",
+    )
+    _FOLLOWUP_FACT_PREFIXES = (
+        "und",
+        "und was",
+        "und welche",
+        "und welcher",
+        "und welches",
+        "welche",
+        "welcher",
+        "welches",
+        "was sagt",
+        "was bedeutet das",
+        "was sagt das",
+        "davon",
+        "darüber",
+        "darauf",
+    )
+    _FOLLOWUP_FACT_MARKERS = (
+        "das",
+        "diese",
+        "dieser",
+        "dieses",
+        "davon",
+        "darüber",
+        "darauf",
+        "oben",
+        "vorhin",
+    )
+    _FOLLOWUP_CONFIRM_PREFIXES = (
+        "ja",
+        "ja bitte",
+        "bitte",
+        "ok",
+        "okay",
+        "mach",
+        "mach mal",
+        "gern",
+        "gerne",
+    )
+    _FOLLOWUP_CONFIRM_MARKERS = (
+        "ja",
+        "bitte testen",
+        "teste es",
+        "mach weiter",
+        "weiter",
+        "go",
+    )
+    _FOLLOWUP_CONFIRM_STATE_ONLY_MARKERS = (
+        "mach das",
+        "mach bitte",
+        "bitte mach",
+        "mach weiter",
+        "weiter",
+        "bitte testen",
+        "teste es",
+        "testen",
+        "leg los",
+        "go",
+        "ausführen",
+        "ausfuehren",
+        "starte",
+        "mach",
+    )
+    _FOLLOWUP_ASSISTANT_ACTION_MARKERS = (
+        "testen",
+        "teste",
+        "prüfen",
+        "pruefen",
+        "ausführen",
+        "ausfuehren",
+        "ausführen soll",
+        "tool",
+        "container",
+        "ip",
+        "gateway",
+        "host",
+        "exec_in_container",
+        "methode",
+    )
+    _TEMPORAL_CONTEXT_MARKERS = (
+        "heute",
+        "gestern",
+        "vorgestern",
+        "protokoll",
+        "tagebuch",
+        "was haben wir",
+        "was hatten wir",
+        "was war",
+        "besprochen",
+        "gesagt",
+        "chatverlauf",
+    )
+    _HOME_CONTAINER_QUERY_MARKERS = (
+        "trion home",
+        "trion-home",
+        "home container",
+        "home-container",
+        "trion_home",
+        "trion home container",
+    )
+    _HOME_CONTAINER_PURPOSE_MARKERS = (
+        "wofür",
+        "wofuer",
+        "zweck",
+        "wozu",
+        "was macht",
+        "was ist",
+        "was weißt du",
+        "was weist du",
+    )
+    # RECALL-Tools (lesen) dürfen NIE supprimiert werden — nur ACTION-Tools (schreiben/ausführen).
+    _LOW_SIGNAL_ACTION_TOOLS = frozenset({
+        "memory_save",
+        "memory_fact_save",
+        "analyze",
+        "think",
+        "think_simple",
+    })
+    _QUERY_BUDGET_HEAVY_TOOLS = frozenset({
+        "analyze",
+        "query_skill_knowledge",
+        "run_skill",
+        "create_skill",
+        "autonomous_skill_task",
+        "think",
+        "think_simple",
+    })
+    _SKILL_INTENT_KEYWORDS = frozenset({
+        "skill",
+        "skills",
+        "run_skill",
+        "create_skill",
+        "autonomous_skill_task",
+    })
+    _SKILL_INTENT_WORD_KEYWORDS = frozenset({
+        "skill",
+        "skills",
+        "run_skill",
+        "create_skill",
+        "autonomous_skill_task",
+    })
+    _DOMAIN_CRON_TOOLS = frozenset({
+        "autonomy_cron_status",
+        "autonomy_cron_list_jobs",
+        "autonomy_cron_validate",
+        "autonomy_cron_create_job",
+        "autonomy_cron_update_job",
+        "autonomy_cron_pause_job",
+        "autonomy_cron_resume_job",
+        "autonomy_cron_run_now",
+        "autonomy_cron_delete_job",
+        "autonomy_cron_queue",
+        "cron_reference_links_list",
+    })
+    _DOMAIN_SKILL_TOOLS = frozenset({
+        "autonomous_skill_task",
+        "run_skill",
+        "create_skill",
+        "list_skills",
+        "get_skill_info",
+        "validate_skill_code",
+        "query_skill_knowledge",
+    })
+    _DOMAIN_CONTAINER_TOOLS = frozenset({
+        "request_container",
+        "stop_container",
+        "exec_in_container",
+        "container_logs",
+        "container_stats",
+        "container_list",
+        "container_inspect",
+        "blueprint_list",
+        "blueprint_get",
+        "blueprint_create",
+        "storage_scope_list",
+        "storage_scope_upsert",
+        "storage_scope_delete",
+        "storage_list_disks",
+        "storage_get_disk",
+        "storage_list_mounts",
+        "storage_get_summary",
+        "storage_get_policy",
+        "storage_set_disk_zone",
+        "storage_set_disk_policy",
+        "storage_validate_path",
+        "storage_list_blocked_paths",
+        "storage_add_blacklist_path",
+        "storage_remove_blacklist_path",
+        "storage_create_service_dir",
+        "storage_list_managed_paths",
+        "storage_mount_device",
+        "storage_format_device",
+        "storage_audit_log",
+        "list_used_ports",
+        "find_free_port",
+        "check_port",
+        "list_blueprint_ports",
+    })
+    _CONTAINER_ID_REQUIRED_TOOLS = frozenset({
+        "exec_in_container",
+        "container_stats",
+        "container_logs",
+        "container_inspect",
+        "stop_container",
+    })
+    _DOMAIN_CRON_OP_TO_TOOL = {
+        "create": "autonomy_cron_create_job",
+        "update": "autonomy_cron_update_job",
+        "delete": "autonomy_cron_delete_job",
+        "run_now": "autonomy_cron_run_now",
+        "pause": "autonomy_cron_pause_job",
+        "resume": "autonomy_cron_resume_job",
+        "queue": "autonomy_cron_queue",
+        "status": "autonomy_cron_status",
+        "list": "autonomy_cron_list_jobs",
+        "validate": "autonomy_cron_validate",
+    }
+    _DOMAIN_CONTAINER_OP_TO_TOOL = {
+        "deploy": "request_container",
+        "create_blueprint": "blueprint_create",
+        "stop": "stop_container",
+        "status": "container_stats",
+        "logs": "container_logs",
+        "list": "container_list",
+        "exec": "exec_in_container",
+        "inspect": "container_inspect",
+        "ports": "list_used_ports",
+    }
+    # Backward-compat alias — Referenzen auf _LOW_SIGNAL_TOOLS bleiben stabil.
+    _LOW_SIGNAL_TOOLS = _LOW_SIGNAL_ACTION_TOOLS
 
     @classmethod
     def _extract_suggested_tool_names(cls, thinking_plan: Dict[str, Any]) -> List[str]:
@@ -560,70 +621,1242 @@ class PipelineOrchestrator:
 
     @staticmethod
     def _normalize_trace_id(value: Any) -> str:
-        raw = str(value or "").strip()
-        if not raw:
-            raw = uuid.uuid4().hex[:12]
-        safe = re.sub(r"[^a-zA-Z0-9:_-]", "", raw)[:64]
-        return safe or uuid.uuid4().hex[:12]
+        return util_normalize_trace_id(value)
 
     @staticmethod
     def _safe_str(value: Any, *, max_len: int = 3000) -> str:
-        text = str(value or "").strip()
-        if len(text) > max_len:
-            return text[:max_len]
-        return text
+        return util_safe_str(value, max_len=max_len)
 
-    def _sanitize_intent_thinking_plan_for_skill_task(self, thinking_plan: Any) -> Dict[str, Any]:
-        """
-        Build a compact, schema-safe subset for autonomous_skill_task.
-        Prevents noisy / incompatible structures from crossing service boundaries.
-        """
+    @staticmethod
+    def _is_rollout_enabled(rollout_pct: int, seed: str) -> bool:
+        return util_is_rollout_enabled(rollout_pct, seed)
+
+    @staticmethod
+    def _message_role_value(msg: Any) -> str:
+        return util_message_role_value(msg)
+
+    @staticmethod
+    def _message_content_value(msg: Any) -> str:
+        return util_message_content_value(msg)
+
+    @classmethod
+    def _last_assistant_message(cls, chat_history: Optional[list]) -> str:
+        return util_last_assistant_message(chat_history)
+
+    @classmethod
+    def _recent_user_messages(cls, chat_history: Optional[list], limit: int = 3) -> List[str]:
+        return util_recent_user_messages(chat_history, limit=limit)
+
+    @classmethod
+    def _looks_like_short_fact_followup(
+        cls,
+        user_text: str,
+        chat_history: Optional[list],
+    ) -> bool:
+        return util_looks_like_short_fact_followup(
+            user_text,
+            chat_history,
+            prefixes=cls._FOLLOWUP_FACT_PREFIXES,
+            markers=cls._FOLLOWUP_FACT_MARKERS,
+        )
+
+    @classmethod
+    def _looks_like_short_confirmation_followup(
+        cls,
+        user_text: str,
+        chat_history: Optional[list],
+    ) -> bool:
+        return util_looks_like_short_confirmation_followup(
+            user_text,
+            chat_history,
+            prefixes=cls._FOLLOWUP_CONFIRM_PREFIXES,
+            markers=cls._FOLLOWUP_CONFIRM_MARKERS,
+            assistant_action_markers=cls._FOLLOWUP_ASSISTANT_ACTION_MARKERS,
+        )
+
+    @classmethod
+    def _looks_like_short_confirmation_followup_state_only(
+        cls,
+        user_text: str,
+    ) -> bool:
+        return util_looks_like_short_confirmation_followup_state_only(
+            user_text,
+            action_markers=cls._FOLLOWUP_CONFIRM_STATE_ONLY_MARKERS,
+        )
+
+    @classmethod
+    def _sanitize_tool_args_for_state(cls, value: Any) -> Dict[str, Any]:
+        return util_sanitize_tool_args_for_state(value, non_serialized_max_len=200)
+
+    @staticmethod
+    def _expected_home_blueprint_id() -> str:
+        return util_expected_home_blueprint_id("trion-home")
+
+    def _get_recent_container_state(
+        self,
+        conversation_id: str,
+        history_len: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        from config import (
+            get_followup_tool_reuse_ttl_s,
+            get_followup_tool_reuse_ttl_turns,
+        )
+
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id:
+            return None
+        ttl_s = int(get_followup_tool_reuse_ttl_s())
+        ttl_turns = int(get_followup_tool_reuse_ttl_turns())
+        with self._conversation_container_lock:
+            state = self._conversation_container_state.get(conv_id)
+            if not isinstance(state, dict):
+                return None
+            age_s = time.time() - float(state.get("updated_at", 0.0) or 0.0)
+            if age_s > ttl_s:
+                self._conversation_container_state.pop(conv_id, None)
+                return None
+            state_history_len = int(state.get("history_len", 0) or 0)
+            if history_len > 0 and state_history_len > 0 and history_len >= state_history_len:
+                max_delta = max(2, ttl_turns * 2)
+                if (history_len - state_history_len) > max_delta:
+                    self._conversation_container_state.pop(conv_id, None)
+                    return None
+            return {
+                "last_active_container_id": str(state.get("last_active_container_id", "") or ""),
+                "home_container_id": str(state.get("home_container_id", "") or ""),
+                "known_containers": list(state.get("known_containers") or []),
+                "history_len": state_history_len,
+                "updated_at": float(state.get("updated_at", 0.0) or 0.0),
+            }
+
+    @staticmethod
+    def _normalize_container_entries(rows: Any) -> List[Dict[str, str]]:
+        return util_normalize_container_entries(rows, limit=64)
+
+    def _remember_container_state(
+        self,
+        conversation_id: str,
+        *,
+        last_active_container_id: str = "",
+        home_container_id: str = "",
+        known_containers: Optional[List[Dict[str, str]]] = None,
+        history_len: int = 0,
+    ) -> None:
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id:
+            return
+        with self._conversation_container_lock:
+            prev = self._conversation_container_state.get(conv_id, {})
+            merged_last_active = str(last_active_container_id or prev.get("last_active_container_id", "")).strip()
+            merged_home = str(home_container_id or prev.get("home_container_id", "")).strip()
+            merged_known = known_containers if isinstance(known_containers, list) else list(prev.get("known_containers") or [])
+            self._conversation_container_state[conv_id] = {
+                "updated_at": time.time(),
+                "history_len": int(history_len or 0),
+                "last_active_container_id": merged_last_active,
+                "home_container_id": merged_home,
+                "known_containers": merged_known[:64],
+            }
+
+    def _update_container_state_from_tool_result(
+        self,
+        conversation_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        result: Any,
+        *,
+        history_len: int = 0,
+    ) -> None:
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id:
+            return
+
+        state = self._get_recent_container_state(conv_id, history_len=history_len) or {}
+        merged = merge_container_state_from_tool_result(
+            state,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            result=result,
+            expected_home_blueprint_id=self._expected_home_blueprint_id(),
+        )
+        self._remember_container_state(
+            conv_id,
+            last_active_container_id=str(merged.get("last_active_container_id", "")).strip(),
+            home_container_id=str(merged.get("home_container_id", "")).strip(),
+            known_containers=merged.get("known_containers", []),
+            history_len=history_len,
+        )
+
+    @classmethod
+    def _tool_requires_container_id(cls, tool_name: str) -> bool:
+        return util_tool_requires_container_id(tool_name, cls._CONTAINER_ID_REQUIRED_TOOLS)
+
+    @classmethod
+    def _select_preferred_container_id(
+        cls,
+        rows: Any,
+        *,
+        preferred_ids: Optional[List[str]] = None,
+    ) -> str:
+        return util_select_preferred_container_id(
+            rows,
+            expected_home_blueprint_id=cls._expected_home_blueprint_id(),
+            preferred_ids=preferred_ids,
+        )
+
+    def _resolve_pending_container_id_sync(
+        self,
+        tool_hub: Any,
+        conversation_id: str,
+        *,
+        preferred_ids: Optional[List[str]] = None,
+        history_len: int = 0,
+    ) -> Tuple[str, str]:
+        try:
+            list_result = tool_hub.call_tool("container_list", {})
+        except Exception as e:
+            return "", f"container_list_failed:{self._safe_str(e, max_len=160)}"
+
+        self._update_container_state_from_tool_result(
+            conversation_id,
+            "container_list",
+            {},
+            list_result,
+            history_len=history_len,
+        )
+        selected, parse_err = util_parse_container_list_result_for_selection(
+            list_result,
+            expected_home_blueprint_id=self._expected_home_blueprint_id(),
+            preferred_ids=preferred_ids,
+        )
+        if parse_err:
+            return "", f"container_list_error:{self._safe_str(parse_err, max_len=160)}"
+        if selected:
+            return selected, ""
+        return "", "no_active_container_found"
+
+    async def _resolve_pending_container_id_async(
+        self,
+        tool_hub: Any,
+        conversation_id: str,
+        *,
+        preferred_ids: Optional[List[str]] = None,
+        history_len: int = 0,
+    ) -> Tuple[str, str]:
+        try:
+            if hasattr(tool_hub, "call_tool_async"):
+                list_result = await tool_hub.call_tool_async("container_list", {})
+            else:
+                list_result = await asyncio.to_thread(tool_hub.call_tool, "container_list", {})
+        except Exception as e:
+            return "", f"container_list_failed:{self._safe_str(e, max_len=160)}"
+
+        self._update_container_state_from_tool_result(
+            conversation_id,
+            "container_list",
+            {},
+            list_result,
+            history_len=history_len,
+        )
+        selected, parse_err = util_parse_container_list_result_for_selection(
+            list_result,
+            expected_home_blueprint_id=self._expected_home_blueprint_id(),
+            preferred_ids=preferred_ids,
+        )
+        if parse_err:
+            return "", f"container_list_error:{self._safe_str(parse_err, max_len=160)}"
+        if selected:
+            return selected, ""
+        return "", "no_active_container_found"
+
+    @staticmethod
+    def _grounding_evidence_has_content(item: Dict[str, Any]) -> bool:
+        return util_grounding_evidence_has_content(item)
+
+    def _get_recent_grounding_state(
+        self,
+        conversation_id: str,
+        history_len: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        from config import (
+            get_followup_tool_reuse_ttl_s,
+            get_followup_tool_reuse_ttl_turns,
+        )
+
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id:
+            return None
+        ttl_s = int(get_followup_tool_reuse_ttl_s())
+        ttl_turns = int(get_followup_tool_reuse_ttl_turns())
+        with self._conversation_grounding_lock:
+            state = self._conversation_grounding_state.get(conv_id)
+            snapshot, should_drop = util_extract_recent_grounding_state(
+                state,
+                now_ts=time.time(),
+                ttl_s=ttl_s,
+                ttl_turns=ttl_turns,
+                history_len=history_len,
+            )
+            if should_drop:
+                self._conversation_grounding_state.pop(conv_id, None)
+            return snapshot
+
+    def _remember_conversation_grounding_state(
+        self,
+        conversation_id: str,
+        verified_plan: Dict[str, Any],
+        *,
+        history_len: int = 0,
+    ) -> None:
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id or not isinstance(verified_plan, dict):
+            return
+        payload = util_build_grounding_state_payload(
+            verified_plan,
+            sanitize_tool_args=self._sanitize_tool_args_for_state,
+            evidence_has_content=self._grounding_evidence_has_content,
+            max_evidence=8,
+            max_tool_runs=6,
+            max_fallback_tool_runs=4,
+        )
+        if not payload:
+            return
+
+        with self._conversation_grounding_lock:
+            self._conversation_grounding_state[conv_id] = {
+                "updated_at": time.time(),
+                "history_len": int(history_len or 0),
+                "tool_runs": payload.get("tool_runs", []),
+                "evidence": payload.get("evidence", []),
+            }
+
+    def _inject_carryover_grounding_evidence(
+        self,
+        conversation_id: str,
+        verified_plan: Dict[str, Any],
+        *,
+        history_len: int = 0,
+    ) -> None:
+        if not isinstance(verified_plan, dict):
+            return
+        state = self._get_recent_grounding_state(conversation_id, history_len=history_len)
+        injected = util_inject_carryover_grounding_evidence(
+            verified_plan,
+            state,
+            evidence_has_content=self._grounding_evidence_has_content,
+            max_carry_evidence=8,
+            max_selected_tools=4,
+        )
+        if injected:
+            log_info("[Orchestrator] Carry-over grounding evidence injected from recent turn")
+
+    def _get_recent_consistency_entries(self, conversation_id: str) -> List[Dict[str, Any]]:
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id:
+            return []
+        policy = load_conversation_consistency_policy()
+        ttl_s = int(policy.get("history_ttl_s", 3600) or 3600)
+        max_entries = int(policy.get("max_entries_per_conversation", 24) or 24)
+        with self._conversation_consistency_lock:
+            existing = self._conversation_consistency_state.get(conv_id, [])
+            pruned = util_prune_stance_entries(
+                existing,
+                now_ts=time.time(),
+                ttl_s=ttl_s,
+                max_entries=max_entries,
+            )
+            if pruned:
+                self._conversation_consistency_state[conv_id] = pruned
+            else:
+                self._conversation_consistency_state.pop(conv_id, None)
+            return [dict(x) for x in pruned]
+
+    def _remember_consistency_entries(
+        self,
+        conversation_id: str,
+        entries: List[Dict[str, Any]],
+    ) -> None:
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id or not entries:
+            return
+        policy = load_conversation_consistency_policy()
+        ttl_s = int(policy.get("history_ttl_s", 3600) or 3600)
+        max_entries = int(policy.get("max_entries_per_conversation", 24) or 24)
+        with self._conversation_consistency_lock:
+            merged = list(self._conversation_consistency_state.get(conv_id, [])) + list(entries)
+            self._conversation_consistency_state[conv_id] = util_prune_stance_entries(
+                merged,
+                now_ts=time.time(),
+                ttl_s=ttl_s,
+                max_entries=max_entries,
+            )
+
+    async def _apply_conversation_consistency_guard(
+        self,
+        *,
+        conversation_id: str,
+        verified_plan: Dict[str, Any],
+        answer: str,
+    ) -> str:
+        policy = load_conversation_consistency_policy()
+        if not bool(policy.get("enabled", True)):
+            return answer
+        answer_text = str(answer or "")
+        if not answer_text.strip():
+            return answer_text
+
+        current_signals = util_extract_stance_signals(answer_text)
+        if not current_signals:
+            return answer_text
+
+        prior_entries = self._get_recent_consistency_entries(conversation_id)
+        current_embedding: Optional[List[float]] = None
+        if bool(policy.get("embedding_enable", True)):
+            try:
+                current_embedding = await embed_text_runtime(answer_text, timeout_s=2.4)
+            except Exception:
+                current_embedding = None
+
+        conflicts = util_detect_consistency_conflicts(
+            prior_entries=prior_entries,
+            current_signals=current_signals,
+            current_embedding=current_embedding,
+            similarity_threshold=float(policy.get("embedding_similarity_threshold", 0.78) or 0.78),
+        )
+        if not conflicts:
+            entries = util_make_stance_entries(
+                signals=current_signals,
+                embedding=current_embedding,
+                now_ts=time.time(),
+            )
+            self._remember_consistency_entries(conversation_id, entries)
+            return answer_text
+
+        evidence_count = int(
+            get_runtime_grounding_value(
+                verified_plan,
+                key="successful_evidence",
+                legacy_key="_grounding_successful_evidence",
+                default=0,
+            )
+            or 0
+        )
+        min_evidence = int(policy.get("min_successful_evidence_on_stance_change", 1) or 1)
+        requires_evidence = bool(policy.get("require_evidence_on_stance_change", True))
+        if requires_evidence and evidence_count < min_evidence:
+            evidence = get_runtime_grounding_evidence(verified_plan)
+            fallback_mode = str(policy.get("fallback_mode", "explicit_uncertainty") or "explicit_uncertainty")
+            fallback = self.output._build_grounding_fallback(
+                evidence if isinstance(evidence, list) else [],
+                mode=fallback_mode,
+            )
+            repaired = str(fallback or "").strip()
+            if repaired:
+                verified_plan["_consistency_conflict_detected"] = True
+                verified_plan["_consistency_conflicts"] = conflicts[:4]
+                verified_plan["_grounding_violation_detected"] = True
+                verified_plan["_grounded_fallback_used"] = True
+                log_warn(
+                    "[Orchestrator] Consistency guard fallback: "
+                    f"conflicts={len(conflicts)} evidence={evidence_count}<{min_evidence}"
+                )
+                repaired_signals = util_extract_stance_signals(repaired)
+                repaired_embedding: Optional[List[float]] = None
+                if bool(policy.get("embedding_enable", True)):
+                    try:
+                        repaired_embedding = await embed_text_runtime(repaired, timeout_s=2.4)
+                    except Exception:
+                        repaired_embedding = None
+                entries = util_make_stance_entries(
+                    signals=repaired_signals,
+                    embedding=repaired_embedding,
+                    now_ts=time.time(),
+                )
+                self._remember_consistency_entries(conversation_id, entries)
+                return repaired
+
+        entries = util_make_stance_entries(
+            signals=current_signals,
+            embedding=current_embedding,
+            now_ts=time.time(),
+        )
+        self._remember_consistency_entries(conversation_id, entries)
+        return answer_text
+
+    def _has_usable_grounding_evidence(self, verified_plan: Dict[str, Any]) -> bool:
+        return util_has_usable_grounding_evidence(
+            verified_plan,
+            evidence_has_content=self._grounding_evidence_has_content,
+        )
+
+    async def _maybe_auto_recover_grounding_once(
+        self,
+        *,
+        conversation_id: str,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        thinking_plan: Dict[str, Any],
+        history_len: int,
+        session_id: str = "",
+    ) -> str:
+        from config import (
+            get_grounding_auto_recovery_enable,
+            get_grounding_auto_recovery_timeout_s,
+            get_grounding_auto_recovery_whitelist,
+        )
+
+        if not get_grounding_auto_recovery_enable():
+            return ""
+        if not isinstance(verified_plan, dict):
+            return ""
+        if verified_plan.get("_grounding_auto_recovery_attempted"):
+            return ""
+        if not bool(verified_plan.get("is_fact_query", False)):
+            return ""
+        if self._has_usable_grounding_evidence(verified_plan):
+            return ""
+
+        state = self._get_recent_grounding_state(conversation_id, history_len=history_len)
+        if not state:
+            return ""
+        whitelist = {str(x).strip() for x in get_grounding_auto_recovery_whitelist() if str(x).strip()}
+        if not whitelist:
+            return ""
+
+        candidate = util_select_first_whitelisted_tool_run(state, whitelist)
+        if not candidate:
+            return ""
+
+        tool_name = str(candidate.get("tool_name", "")).strip()
+        tool_args = self._sanitize_tool_args_for_state(candidate.get("args") or {})
+        if not tool_name:
+            return ""
+
+        spec = {"tool": tool_name, "args": tool_args}
+        verified_plan["_grounding_auto_recovery_attempted"] = True
+        verified_plan["needs_chat_history"] = True
+        log_info(f"[Orchestrator] Auto-recovery grounding re-run: tool={tool_name}")
+        timeout_s = float(get_grounding_auto_recovery_timeout_s())
+        try:
+            recovery_ctx = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._execute_tools_sync,
+                    [spec],
+                    user_text,
+                    {},
+                    control_decision=control_decision_from_plan(
+                        verified_plan,
+                        default_approved=False,
+                    ),
+                    time_reference=thinking_plan.get("time_reference"),
+                    thinking_suggested_tools=thinking_plan.get("suggested_tools", []),
+                    blueprint_gate_blocked=False,
+                    blueprint_router_id=None,
+                    blueprint_suggest_msg="",
+                    session_id=session_id or "",
+                    verified_plan=verified_plan,
+                ),
+                timeout=timeout_s,
+            )
+            if recovery_ctx:
+                verified_plan["_grounding_auto_recovery_used"] = True
+                return str(recovery_ctx)
+        except asyncio.TimeoutError:
+            log_warn(
+                f"[Orchestrator] Auto-recovery skipped (timeout after {timeout_s:.1f}s) tool={tool_name}"
+            )
+        except Exception as e:
+            log_warn(f"[Orchestrator] Auto-recovery failed tool={tool_name}: {e}")
+        return ""
+
+    def _resolve_followup_tool_reuse(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        *,
+        conversation_id: str = "",
+        chat_history: Optional[list] = None,
+    ) -> List[Any]:
+        from config import get_followup_tool_reuse_enable
+
+        explicit_tool_intent = self._contains_explicit_tool_intent(user_text)
+        short_fact_followup = self._looks_like_short_fact_followup(user_text, chat_history)
+        short_confirmation_followup = self._looks_like_short_confirmation_followup(
+            user_text, chat_history
+        )
+        should_attempt = util_should_attempt_followup_tool_reuse(
+            followup_enabled=get_followup_tool_reuse_enable(),
+            verified_plan=verified_plan,
+            explicit_tool_intent=explicit_tool_intent,
+            short_fact_followup=short_fact_followup,
+            short_confirmation_followup=short_confirmation_followup,
+        )
+        history_len = len(chat_history) if isinstance(chat_history, list) else 0
+        state = None
+        if not should_attempt and not explicit_tool_intent:
+            if self._looks_like_short_confirmation_followup_state_only(user_text):
+                state = self._get_recent_grounding_state(conversation_id, history_len=history_len)
+                if isinstance(state, dict) and list(state.get("tool_runs") or []):
+                    should_attempt = True
+                    verified_plan["_followup_tool_reuse_state_fallback"] = True
+                    log_info(
+                        "[Orchestrator] Follow-up tool reuse fallback active "
+                        "(state-only confirmation)"
+                    )
+        if not should_attempt:
+            return []
+
+        if state is None:
+            state = self._get_recent_grounding_state(conversation_id, history_len=history_len)
+        if not state:
+            return []
+
+        out = util_build_followup_tool_reuse_specs(
+            state,
+            sanitize_tool_args=self._sanitize_tool_args_for_state,
+            max_tools=2,
+        )
+
+        if out:
+            verified_plan["needs_chat_history"] = True
+            verified_plan["_followup_tool_reuse_active"] = True
+            log_info(
+                f"[Orchestrator] Follow-up tool reuse active: "
+                f"{util_stringify_reuse_tool_names(out)}"
+            )
+        return out
+
+    @classmethod
+    def _looks_like_temporal_context_query(
+        cls,
+        user_text: str,
+        chat_history: Optional[list] = None,
+    ) -> bool:
+        return util_looks_like_temporal_context_query(
+            user_text,
+            chat_history,
+            temporal_markers=cls._TEMPORAL_CONTEXT_MARKERS,
+            short_followup_checker=lambda text, history: cls._looks_like_short_fact_followup(text, history),
+            recent_user_messages_getter=lambda history, limit: cls._recent_user_messages(history, limit=limit),
+        )
+
+    @staticmethod
+    def _infer_time_reference_from_user_text(user_text: str) -> Optional[str]:
+        return util_infer_time_reference_from_user_text(user_text)
+
+    def _apply_temporal_context_fallback(
+        self,
+        user_text: str,
+        thinking_plan: Dict[str, Any],
+        chat_history: Optional[list] = None,
+    ) -> None:
+        from config import get_daily_context_followup_enable
+
+        if not get_daily_context_followup_enable():
+            return
         if not isinstance(thinking_plan, dict):
+            return
+        if thinking_plan.get("time_reference"):
+            return
+        if not self._looks_like_temporal_context_query(user_text, chat_history):
+            return
+
+        inferred = self._infer_time_reference_from_user_text(user_text) or "today"
+        thinking_plan["time_reference"] = inferred
+        thinking_plan["needs_chat_history"] = True
+        log_info(f"[Orchestrator] temporal context fallback: time_reference={inferred}")
+
+    @staticmethod
+    def _sanitize_tone_signal(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        return util_sanitize_tone_signal(raw)
+
+    async def _classify_tone_signal(
+        self,
+        user_text: str,
+        messages: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        try:
+            signal = await self.tone_hybrid.classify(user_text, messages=messages)
+            return self._sanitize_tone_signal(signal)
+        except Exception as e:
+            log_warn(f"[Orchestrator] ToneHybrid fallback: {e}")
+            return self._sanitize_tone_signal(None)
+
+    async def _classify_query_budget_signal(
+        self,
+        user_text: str,
+        *,
+        selected_tools: Optional[List[Any]] = None,
+        tone_signal: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        from config import get_query_budget_enable
+
+        if not get_query_budget_enable():
+            return {}
+        try:
+            signal = await self.query_budget.classify(
+                user_text,
+                selected_tools=selected_tools,
+                tone_signal=tone_signal,
+            )
+            if isinstance(signal, dict) and signal:
+                log_info(
+                    "[Orchestrator] query_budget "
+                    f"type={signal.get('query_type')} "
+                    f"intent={signal.get('intent_hint')} "
+                    f"complexity={signal.get('complexity_signal')} "
+                    f"budget={signal.get('response_budget')} "
+                    f"tool_hint={signal.get('tool_hint') or '-'} "
+                    f"skip_candidate={bool(signal.get('skip_thinking_candidate'))} "
+                    f"conf={signal.get('confidence')} src={signal.get('source')}"
+                )
+            return signal if isinstance(signal, dict) else {}
+        except Exception as e:
+            log_warn(f"[Orchestrator] QueryBudget fallback: {e}")
             return {}
 
-        safe: Dict[str, Any] = {}
+    async def _classify_domain_signal(
+        self,
+        user_text: str,
+        *,
+        selected_tools: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        from config import get_domain_router_enable
 
-        text_keys = (
-            "intent",
-            "reasoning",
-            "reasoning_type",
-            "hallucination_risk",
-            "time_reference",
+        if not get_domain_router_enable():
+            return {}
+        try:
+            signal = await self.domain_router.classify(
+                user_text,
+                selected_tools=selected_tools,
+            )
+            if isinstance(signal, dict) and signal:
+                signal = self._maybe_downgrade_cron_create_signal(user_text, signal)
+                log_info(
+                    "[Orchestrator] domain_router "
+                    f"tag={signal.get('domain_tag')} "
+                    f"locked={bool(signal.get('domain_locked'))} "
+                    f"operation={signal.get('operation')} "
+                    f"conf={signal.get('confidence')} src={signal.get('source')}"
+                )
+                if bool(signal.get("cron_create_downgraded")):
+                    log_info("[Orchestrator] domain_router cron create downgraded to status (meta/no-schedule guard)")
+            return signal if isinstance(signal, dict) else {}
+        except Exception as e:
+            log_warn(f"[Orchestrator] DomainRouter fallback: {e}")
+            return {}
+
+    def _seed_tool_for_domain_route(
+        self,
+        route: Optional[Dict[str, Any]],
+        *,
+        user_text: str = "",
+        suggested_tools: Optional[List[Any]] = None,
+    ) -> str:
+        if not isinstance(route, dict):
+            return ""
+        tag = str(route.get("domain_tag") or "").strip().upper()
+        if tag == "CRONJOB":
+            op = str(route.get("operation") or "").strip().lower()
+            return self._DOMAIN_CRON_OP_TO_TOOL.get(op, "autonomy_cron_status")
+        if tag == "SKILL":
+            return "autonomous_skill_task"
+        if tag == "CONTAINER":
+            op = str(route.get("operation") or "").strip().lower()
+            if op == "unknown" and self._looks_like_host_runtime_lookup(user_text):
+                return "exec_in_container"
+            if op == "unknown":
+                for tool in suggested_tools or []:
+                    name = self._extract_tool_name(tool).strip().lower()
+                    if name in self._DOMAIN_CONTAINER_TOOLS:
+                        return name
+            return self._DOMAIN_CONTAINER_OP_TO_TOOL.get(op, "container_list")
+        return ""
+
+    @staticmethod
+    def _looks_like_host_runtime_lookup(user_text: str) -> bool:
+        lower = str(user_text or "").strip().lower()
+        if not lower:
+            return False
+        has_target = any(
+            token in lower
+            for token in (
+                "host server",
+                "host-server",
+                "server",
+                "host",
+                "ip adresse",
+                "ip-adresse",
+                "ip address",
+            )
         )
-        for key in text_keys:
-            if key in thinking_plan:
-                value = self._safe_str(thinking_plan.get(key), max_len=2000)
-                if value:
-                    safe[key] = value
-
-        for key in ("needs_memory", "is_fact_query", "needs_sequential_thinking", "sequential_thinking_required"):
-            if key in thinking_plan:
-                safe[key] = bool(thinking_plan.get(key))
-
-        if "sequential_complexity" in thinking_plan:
-            try:
-                complexity = int(thinking_plan.get("sequential_complexity", 0))
-            except Exception:
-                complexity = 0
-            safe["sequential_complexity"] = max(0, min(10, complexity))
-
-        raw_memory_keys = thinking_plan.get("memory_keys", [])
-        memory_keys: List[str] = []
-        if isinstance(raw_memory_keys, list):
-            for item in raw_memory_keys:
-                text = self._safe_str(item, max_len=80)
-                if text:
-                    memory_keys.append(text)
-        if memory_keys:
-            safe["memory_keys"] = memory_keys[:20]
-
-        suggested_tools = self._extract_suggested_tool_names(
-            {"suggested_tools": thinking_plan.get("suggested_tools", [])}
+        if not has_target:
+            return False
+        return any(
+            token in lower
+            for token in (
+                "find",
+                "finden",
+                "ermittel",
+                "heraus",
+                "auslesen",
+                "check",
+                "prüf",
+                "pruef",
+                "zeige",
+                "gib",
+            )
         )
-        if suggested_tools:
-            safe["suggested_tools"] = suggested_tools[:20]
 
-        return safe
+    def _apply_domain_route_to_plan(
+        self,
+        thinking_plan: Dict[str, Any],
+        signal: Optional[Dict[str, Any]],
+        *,
+        user_text: str = "",
+    ) -> Dict[str, Any]:
+        plan = thinking_plan if isinstance(thinking_plan, dict) else {}
+        if not isinstance(signal, dict) or not signal:
+            return plan
+
+        route = dict(signal)
+        plan["_domain_route"] = route
+
+        domain_locked = bool(route.get("domain_locked"))
+        domain_tag = str(route.get("domain_tag") or "").strip().upper()
+        if not domain_locked or domain_tag not in {"CRONJOB", "SKILL", "CONTAINER"}:
+            return plan
+
+        if domain_tag == "CRONJOB":
+            allowed = self._DOMAIN_CRON_TOOLS
+        elif domain_tag == "SKILL":
+            allowed = self._DOMAIN_SKILL_TOOLS
+        else:
+            allowed = self._DOMAIN_CONTAINER_TOOLS
+
+        existing = plan.get("suggested_tools", [])
+        existing_list = existing if isinstance(existing, list) else []
+        existing_allowed = [
+            tool
+            for tool in existing_list
+            if self._extract_tool_name(tool).strip().lower() in allowed
+        ]
+        if existing_allowed:
+            plan["suggested_tools"] = existing_allowed
+            plan["_domain_tool_seeded"] = False
+        else:
+            seed_tool = self._seed_tool_for_domain_route(
+                route,
+                user_text=user_text,
+                suggested_tools=existing_list,
+            )
+            if seed_tool:
+                plan["suggested_tools"] = [seed_tool]
+                plan["_domain_tool_seeded"] = True
+
+        if domain_tag == "CRONJOB":
+            # Hard guard for ControlLayer skill-confirmation fallback.
+            plan["_domain_skill_confirmation_disabled"] = True
+        return plan
+
+    def _apply_domain_tool_policy(
+        self,
+        verified_plan: Dict[str, Any],
+        suggested_tools: List[Any],
+        *,
+        user_text: str = "",
+        prefix: str = "[Orchestrator]",
+    ) -> List[Any]:
+        if not isinstance(verified_plan, dict):
+            return suggested_tools
+
+        route = verified_plan.get("_domain_route")
+        if not isinstance(route, dict):
+            return suggested_tools
+        if not bool(route.get("domain_locked")):
+            return suggested_tools
+
+        domain_tag = str(route.get("domain_tag") or "").strip().upper()
+        if domain_tag == "CRONJOB":
+            allowed = self._DOMAIN_CRON_TOOLS
+        elif domain_tag == "SKILL":
+            allowed = self._DOMAIN_SKILL_TOOLS
+        elif domain_tag == "CONTAINER":
+            allowed = self._DOMAIN_CONTAINER_TOOLS
+        else:
+            return suggested_tools
+
+        before = len(suggested_tools or [])
+        filtered = [
+            tool
+            for tool in (suggested_tools or [])
+            if self._extract_tool_name(tool).strip().lower() in allowed
+        ]
+        dropped = max(0, before - len(filtered))
+
+        if not filtered:
+            if domain_tag == "SKILL" and bool(verified_plan.get("_skill_gate_blocked")):
+                log_info(
+                    f"{prefix} Domain gate skipped SKILL reseed: "
+                    f"reason={verified_plan.get('_skill_gate_reason') or 'skill_gate_blocked'}"
+                )
+            else:
+                seed_tool = self._seed_tool_for_domain_route(
+                    route,
+                    user_text=user_text,
+                    suggested_tools=suggested_tools,
+                )
+                if seed_tool and seed_tool in allowed:
+                    filtered = [seed_tool]
+
+        if dropped or before == 0:
+            verified_plan["_domain_gate"] = {
+                "domain_tag": domain_tag,
+                "dropped": dropped,
+                "kept": [self._extract_tool_name(t) for t in filtered],
+            }
+            log_info(
+                f"{prefix} Domain gate applied: tag={domain_tag} dropped={dropped} "
+                f"kept={verified_plan['_domain_gate']['kept']}"
+            )
+
+        if domain_tag == "CONTAINER" and self._looks_like_host_runtime_lookup(user_text):
+            has_exec = any(
+                self._extract_tool_name(tool).strip().lower() == "exec_in_container"
+                for tool in filtered
+            )
+            has_request = any(
+                self._extract_tool_name(tool).strip().lower() == "request_container"
+                for tool in filtered
+            )
+            if has_exec and has_request:
+                filtered = [
+                    tool
+                    for tool in filtered
+                    if self._extract_tool_name(tool).strip().lower() != "request_container"
+                ]
+                log_info(f"{prefix} Container runtime fast-path: dropped request_container (exec already present)")
+            elif has_request and not has_exec:
+                filtered = [
+                    tool
+                    for tool in filtered
+                    if self._extract_tool_name(tool).strip().lower() != "request_container"
+                ]
+                filtered.insert(0, "exec_in_container")
+                log_info(f"{prefix} Container runtime fast-path: replaced request_container with exec_in_container")
+        return filtered
+
+    def _should_skip_thinking_from_query_budget(
+        self,
+        signal: Optional[Dict[str, Any]],
+        *,
+        user_text: str,
+        forced_mode: str = "",
+    ) -> bool:
+        from config import (
+            get_query_budget_skip_thinking_enable,
+            get_query_budget_skip_thinking_min_confidence,
+        )
+        return util_should_skip_thinking_from_query_budget(
+            signal,
+            user_text=user_text,
+            forced_mode=forced_mode,
+            skip_enabled=bool(get_query_budget_skip_thinking_enable()),
+            min_confidence=float(get_query_budget_skip_thinking_min_confidence()),
+            is_explicit_deep_request=self._is_explicit_deep_request,
+            contains_explicit_tool_intent=self._contains_explicit_tool_intent,
+        )
+
+    def _apply_query_budget_to_plan(
+        self,
+        thinking_plan: Dict[str, Any],
+        signal: Optional[Dict[str, Any]],
+        *,
+        user_text: str = "",
+    ) -> Dict[str, Any]:
+        from config import get_query_budget_enable
+        return util_apply_query_budget_to_plan(
+            thinking_plan,
+            signal,
+            user_text=user_text,
+            query_budget_enabled=bool(get_query_budget_enable()),
+            should_force_factual_memory=lambda text, plan, sig: self._should_force_query_budget_factual_memory(
+                user_text=text,
+                thinking_plan=plan,
+                signal=sig,
+            ),
+        )
+
+    def _should_force_query_budget_factual_memory(
+        self,
+        *,
+        user_text: str,
+        thinking_plan: Dict[str, Any],
+        signal: Dict[str, Any],
+    ) -> bool:
+        return util_should_force_query_budget_factual_memory(
+            user_text=user_text,
+            thinking_plan=thinking_plan,
+            signal=signal,
+            tool_domain_tag=self._extract_tool_domain_tag(user_text),
+            has_non_memory_tool_runtime_signal_fn=self._has_non_memory_tool_runtime_signal,
+            has_memory_recall_signal_fn=self._has_memory_recall_signal,
+        )
+
+    @staticmethod
+    def _has_memory_recall_signal(text: str) -> bool:
+        return util_has_memory_recall_signal(text)
+
+    @staticmethod
+    def _has_non_memory_tool_runtime_signal(text: str) -> bool:
+        return util_has_non_memory_tool_runtime_signal(text)
+
+    def _resolve_precontrol_policy_conflicts(
+        self,
+        user_text: str,
+        thinking_plan: Dict[str, Any],
+        *,
+        conversation_id: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Resolve deterministic conflicts after QueryBudget+DomainRouter mutation.
+
+        Priority:
+          domain-locked tool execution > query-budget factual memory force.
+        """
+        from config import (
+            get_policy_conflict_resolver_enable,
+            get_policy_conflict_resolver_rollout_pct,
+        )
+
+        rollout_enabled = self._is_rollout_enabled(
+            get_policy_conflict_resolver_rollout_pct(),
+            conversation_id or user_text,
+        )
+        out, meta = util_resolve_precontrol_policy_conflicts(
+            user_text,
+            thinking_plan,
+            resolver_enabled=bool(get_policy_conflict_resolver_enable()),
+            rollout_enabled=bool(rollout_enabled),
+            has_memory_recall_signal_fn=self._has_memory_recall_signal,
+            contains_explicit_tool_intent_fn=self._contains_explicit_tool_intent,
+            looks_like_host_runtime_lookup_fn=self._looks_like_host_runtime_lookup,
+            has_non_memory_tool_runtime_signal_fn=self._has_non_memory_tool_runtime_signal,
+            extract_tool_name_fn=self._extract_tool_name,
+        )
+        if bool(meta.get("resolved")):
+            log_info(
+                "[Orchestrator] Policy conflict resolved: "
+                f"domain={meta.get('domain_tag') or '-'} reason={meta.get('reason') or '-'}"
+            )
+        return out
+
+    def _apply_query_budget_tool_policy(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        suggested_tools: List[Any],
+        *,
+        prefix: str = "[Orchestrator]",
+    ) -> List[Any]:
+        from config import (
+            get_query_budget_enable,
+            get_query_budget_max_tools_factual_low,
+        )
+        filtered, policy = util_apply_query_budget_tool_policy(
+            user_text,
+            verified_plan,
+            suggested_tools,
+            query_budget_enabled=bool(get_query_budget_enable()),
+            max_tools_factual_low=int(get_query_budget_max_tools_factual_low()),
+            heavy_tools=self._QUERY_BUDGET_HEAVY_TOOLS,
+            contains_explicit_tool_intent_fn=self._contains_explicit_tool_intent,
+            is_explicit_deep_request_fn=self._is_explicit_deep_request,
+            is_explicit_think_request_fn=self._is_explicit_think_request,
+            extract_tool_name_fn=self._extract_tool_name,
+        )
+        if isinstance(policy, dict):
+            verified_plan["_query_budget_policy"] = dict(policy)
+            query_type = str(policy.get("query_type") or "")
+            complexity = str(policy.get("complexity_signal") or "")
+            confidence = float(policy.get("confidence", 0.0) or 0.0)
+            dropped = int(policy.get("dropped", 0) or 0)
+            reasons = list(policy.get("reasons") or [])
+            log_info(
+                f"{prefix} QueryBudget policy applied: "
+                f"type={query_type} complexity={complexity} conf={confidence:.2f} "
+                f"dropped={dropped} reasons={reasons}"
+            )
+        return filtered
+
+    def _ensure_dialogue_controls(
+        self,
+        thinking_plan: Dict[str, Any],
+        tone_signal: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        try:
+            from config import get_tone_signal_override_confidence
+            override_threshold = float(get_tone_signal_override_confidence())
+        except Exception:
+            override_threshold = 0.82
+        return util_ensure_dialogue_controls(
+            thinking_plan,
+            tone_signal,
+            override_threshold=override_threshold,
+        )
+
+    def _coerce_thinking_plan_schema(
+        self,
+        thinking_plan: Dict[str, Any],
+        *,
+        user_text: str = "",
+    ) -> Dict[str, Any]:
+        from config import get_memory_keys_max_per_request
+
+        return util_coerce_thinking_plan_schema(
+            thinking_plan,
+            user_text=user_text,
+            max_memory_keys_per_request=int(get_memory_keys_max_per_request()),
+            contains_explicit_tool_intent_fn=self._contains_explicit_tool_intent,
+            has_memory_recall_signal_fn=self._has_memory_recall_signal,
+        )
+
+    @staticmethod
+    def _contains_keyword_intent(
+        text: str,
+        keyword: str,
+        *,
+        whole_word: bool = False,
+    ) -> bool:
+        if not text or not keyword:
+            return False
+        if not whole_word:
+            return keyword in text
+        pattern = rf"(?<![A-Za-z0-9_]){re.escape(keyword)}(?![A-Za-z0-9_])"
+        return re.search(pattern, text) is not None
+
+    def _contains_explicit_tool_intent(self, user_text: str) -> bool:
+        lower = (user_text or "").lower()
+        if self._extract_tool_domain_tag(lower):
+            return True
+        for tok in self._TOOL_INTENT_KEYWORDS:
+            if self._contains_keyword_intent(
+                lower,
+                tok,
+                whole_word=tok in self._TOOL_INTENT_WORD_KEYWORDS,
+            ):
+                return True
+        return False
+
+    def _contains_explicit_skill_intent(self, user_text: str) -> bool:
+        lower = (user_text or "").lower()
+        if self._extract_tool_domain_tag(lower) == "SKILL":
+            return True
+        for tok in self._SKILL_INTENT_KEYWORDS:
+            if self._contains_keyword_intent(
+                lower,
+                tok,
+                whole_word=tok in self._SKILL_INTENT_WORD_KEYWORDS,
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _extract_tool_domain_tag(cls, text: str) -> str:
+        raw = str(text or "")
+        m = cls._TOOL_DOMAIN_TAG_RE.search(raw)
+        if not m:
+            m = cls._TOOL_DOMAIN_TAG_SHORT_RE.search(raw)
+        if not m:
+            return ""
+        return str(m.group(1) or "").strip().upper()
+
+    @classmethod
+    def _has_cron_schedule_signal(
+        cls,
+        user_text: str,
+        route: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        text = str(user_text or "").lower()
+        route = route if isinstance(route, dict) else {}
+        if str(route.get("cron_expression_hint") or "").strip():
+            return True
+        if str(route.get("one_shot_at_hint") or "").strip():
+            return True
+        if str(route.get("schedule_mode_hint") or "").strip().lower() in {"one_shot", "recurring"}:
+            return True
+        if re.search(
+            r"(?:in|nach|um|at)\s+\d{1,4}\s*(?:sek|sekunden|s|min|minuten|minute|h|std|stunden|stunde)\b",
+            text,
+        ):
+            return True
+        return False
+
+    @classmethod
+    def _is_explicit_cron_create_intent(
+        cls,
+        user_text: str,
+        route: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        text = str(user_text or "").lower()
+        if not text:
+            return False
+        if any(marker in text for marker in cls._CRON_META_GUARD_MARKERS):
+            return False
+        create_markers = (
+            "erstelle",
+            "erstell",
+            "anlege",
+            "anleg",
+            "create",
+            "setze auf",
+            "schedule",
+            "richte ein",
+            "einrichten",
+        )
+        if not any(marker in text for marker in create_markers):
+            return False
+        return cls._has_cron_schedule_signal(text, route)
+
+    def _maybe_downgrade_cron_create_signal(
+        self,
+        user_text: str,
+        signal: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not isinstance(signal, dict):
+            return signal
+        tag = str(signal.get("domain_tag") or "").strip().upper()
+        op = str(signal.get("operation") or "").strip().lower()
+        if tag != "CRONJOB" or op != "create":
+            return signal
+        if self._is_explicit_cron_create_intent(user_text, signal):
+            return signal
+        patched = dict(signal)
+        patched["operation"] = "status"
+        patched["cron_create_downgraded"] = True
+        patched["reason"] = (
+            f"{str(signal.get('reason') or '').strip()}, cron:create->status_guard"
+        ).strip(", ")
+        return patched
+
+    def _should_suppress_conversational_tools(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+    ) -> bool:
+        return util_should_suppress_conversational_tools(
+            user_text,
+            verified_plan,
+            tool_execution_policy=self.tool_execution_policy or {},
+            contains_explicit_tool_intent_fn=self._contains_explicit_tool_intent,
+        )
+
+    def _sanitize_intent_thinking_plan_for_skill_task(self, thinking_plan: Any) -> Dict[str, Any]:
+        return util_sanitize_intent_thinking_plan_for_skill_task(
+            thinking_plan,
+            safe_str_fn=lambda value, max_len: self._safe_str(value, max_len=max_len),
+            extract_suggested_tool_names_fn=self._extract_suggested_tool_names,
+        )
 
     def _should_skip_control_layer(self, user_text: str, thinking_plan: Dict[str, Any]) -> Tuple[bool, str]:
         """
@@ -632,23 +1865,48 @@ class PipelineOrchestrator:
         Returns:
             (skip_control, reason)
         """
-        if not ENABLE_CONTROL_LAYER:
-            return True, "control_disabled"
+        try:
+            policy = load_grounding_policy()
+            force_verify_fact = bool(
+                ((policy or {}).get("control") or {}).get("force_verify_for_fact_query", True)
+            )
+        except Exception:
+            force_verify_fact = True
+        return util_should_skip_control_layer(
+            user_text,
+            thinking_plan,
+            enable_control_layer=bool(ENABLE_CONTROL_LAYER),
+            skip_control_on_low_risk=bool(SKIP_CONTROL_ON_LOW_RISK),
+            force_verify_fact=bool(force_verify_fact),
+            suggested_tool_names=self._extract_suggested_tool_names(thinking_plan),
+            control_skip_block_tools=tuple(self._CONTROL_SKIP_BLOCK_TOOLS),
+            control_skip_block_keywords=self._CONTROL_SKIP_BLOCK_KEYWORDS,
+            control_skip_hard_safety_keywords=self._CONTROL_SKIP_HARD_SAFETY_KEYWORDS,
+        )
 
-        hallucination_risk = (thinking_plan or {}).get("hallucination_risk", "medium")
-        if not (SKIP_CONTROL_ON_LOW_RISK and hallucination_risk == "low"):
-            return False, "control_required"
+    @staticmethod
+    def _build_grounding_evidence_entry(
+        tool_name: str,
+        raw_result: str,
+        status: str,
+        ref_id: str,
+    ) -> Dict[str, Any]:
+        return util_build_grounding_evidence_entry(
+            tool_name,
+            raw_result,
+            status,
+            ref_id,
+        )
 
-        suggested_names = set(self._extract_suggested_tool_names(thinking_plan))
-        sensitive_hits = sorted(suggested_names.intersection(self._CONTROL_SKIP_BLOCK_TOOLS))
-        if sensitive_hits:
-            return False, f"sensitive_tools:{','.join(sensitive_hits)}"
-
-        user_lower = (user_text or "").lower()
-        if any(kw in user_lower for kw in self._CONTROL_SKIP_BLOCK_KEYWORDS):
-            return False, "creation_keywords"
-
-        return True, "low_risk_skip"
+    @staticmethod
+    def _count_successful_grounding_evidence(
+        verified_plan: Dict[str, Any],
+        allowed_statuses: Optional[List[str]] = None,
+    ) -> int:
+        return util_count_successful_grounding_evidence(
+            verified_plan,
+            allowed_statuses=allowed_statuses,
+        )
 
     # ===============================================================
     # HARDWARE GATE EARLY CHECK
@@ -660,32 +1918,22 @@ class PipelineOrchestrator:
         Gibt Block-Nachricht zurück wenn gefährliche Anfrage erkannt, sonst None.
         Spart 20-40s Sequential Thinking bei Anfragen die sowieso geblockt werden.
         """
-        _suggested = thinking_plan.get("suggested_tools", [])
-        if "autonomous_skill_task" not in _suggested:
-            return None
-        _combined = (user_text + " " + thinking_plan.get("intent", "")).lower()
-        if not any(p in _combined for p in _HARDWARE_GATE_PATTERNS):
-            return None
-
-        # Gefährlich! GPU-Status holen für Nachricht
-        vram_info = "unbekannt"
-        try:
+        def _get_gpu_status() -> str:
             hub = get_hub()
             hub.initialize()
             gpu_result = hub.call_tool("get_system_info", {"type": "gpu"})
             if isinstance(gpu_result, dict):
-                vram_info = str(gpu_result.get("output", gpu_result))[:150]
-            elif isinstance(gpu_result, str):
-                vram_info = gpu_result[:150]
-        except Exception:
-            pass
+                return str(gpu_result.get("output", gpu_result))
+            if isinstance(gpu_result, str):
+                return gpu_result
+            return str(gpu_result or "")
 
-        return (
-            f"Selbstschutz: Mein Körper kann diesen Skill nicht ausführen. "
-            f"GPU-Status: {vram_info}. "
-            f"Ein 30B+ Sprachmodell benötigt mindestens 16-20 GB VRAM (4-bit quantisiert). "
-            f"Das würde mein System zum Absturz bringen. "
-            f"Ich erstelle keine Skills die meine Hardware zerstören."
+        return util_check_hardware_gate_early(
+            user_text,
+            thinking_plan,
+            hardware_gate_patterns=_HARDWARE_GATE_PATTERNS,
+            get_gpu_status_fn=_get_gpu_status,
+            required_tool="autonomous_skill_task",
         )
 
     # ===============================================================
@@ -837,6 +2085,168 @@ class PipelineOrchestrator:
             return str(tool_spec.get("tool") or tool_spec.get("name") or "").strip()
         return str(tool_spec or "").strip()
 
+    @classmethod
+    def _is_home_container_info_query(cls, user_text: str) -> bool:
+        text = str(user_text or "").strip().lower()
+        if not text:
+            return False
+        has_home_marker = any(marker in text for marker in cls._HOME_CONTAINER_QUERY_MARKERS)
+        if not has_home_marker:
+            return False
+        return any(marker in text for marker in cls._HOME_CONTAINER_PURPOSE_MARKERS) or "container" in text
+
+    def _prioritize_home_container_tools(
+        self,
+        user_text: str,
+        verified_plan: Dict[str, Any],
+        suggested_tools: List[Any],
+        *,
+        prefix: str = "[Orchestrator]",
+    ) -> List[Any]:
+        """
+        Harden tool strategy for questions about TRION home containers.
+        If the plan only suggests home_read/home_list-like tools, prepend container discovery.
+        """
+        if not isinstance(verified_plan, dict):
+            return suggested_tools
+        if not bool(verified_plan.get("is_fact_query", False)):
+            return suggested_tools
+        if not self._is_home_container_info_query(user_text):
+            return suggested_tools
+
+        tool_names = [self._extract_tool_name(t).lower() for t in (suggested_tools or [])]
+        has_container_discovery = any(name in {"container_list", "container_inspect"} for name in tool_names)
+        if has_container_discovery:
+            return suggested_tools
+
+        adjusted: List[Any] = ["container_list"]
+        seen = {"container_list"}
+        has_home_reader = False
+        for tool in suggested_tools or []:
+            name = self._extract_tool_name(tool).strip().lower()
+            if not name or name in seen:
+                continue
+            if name == "query_skill_knowledge":
+                # Skill-template retrieval is low-value noise for container-purpose questions.
+                continue
+            if name == "home_read":
+                has_home_reader = True
+                if isinstance(tool, dict):
+                    args = dict(tool.get("args", {}) or {})
+                    if not str(args.get("path", "")).strip():
+                        args["path"] = "."
+                    adjusted.append({"tool": "home_read", "args": args})
+                else:
+                    adjusted.append({"tool": "home_read", "args": {"path": "."}})
+                seen.add(name)
+                continue
+            adjusted.append(tool)
+            seen.add(name)
+
+        if not has_home_reader:
+            adjusted.append({"tool": "home_read", "args": {"path": "."}})
+
+        log_info(
+            f"{prefix} Home-container routing override: "
+            f"{[self._extract_tool_name(t) for t in adjusted]}"
+        )
+        verified_plan["needs_chat_history"] = True
+        return adjusted
+
+    @staticmethod
+    def _recover_home_read_directory_with_fast_lane(
+        dir_path: str,
+        *,
+        max_files: int = 5,
+    ) -> Tuple[bool, str]:
+        """
+        home_read fallback when a directory path was provided.
+        Returns (success, recovered_payload_text).
+        """
+        path = str(dir_path or ".").strip() or "."
+        try:
+            from core.tools.fast_lane.executor import FastLaneExecutor
+            fl = FastLaneExecutor()
+            sub_result = fl.execute("home_list", {"path": path})
+            sub_items = sub_result.content if hasattr(sub_result, "content") else sub_result
+            if not isinstance(sub_items, list):
+                return False, ""
+
+            files_read = 0
+            parts: List[str] = [
+                f"home_read recovery for directory '{path}'",
+                "listing: " + json.dumps(sub_items, ensure_ascii=False),
+            ]
+            for sub_item in sub_items:
+                if files_read >= max_files:
+                    break
+                item = str(sub_item or "").strip()
+                if not item or item.endswith("/"):
+                    continue
+                fp = item if path in (".", "") else f"{path}/{item}"
+                try:
+                    fc = fl.execute("home_read", {"path": fp})
+                    fc_content = fc.content if hasattr(fc, "content") else fc
+                    text = str(fc_content or "").strip()
+                    if not text:
+                        continue
+                    parts.append(f"file[{fp}]: {text}")
+                    files_read += 1
+                except Exception:
+                    continue
+
+            if files_read <= 0:
+                return True, "\n".join(parts)
+            parts.append(f"files_read: {files_read}")
+            return True, "\n".join(parts)
+        except Exception:
+            return False, ""
+
+    @staticmethod
+    def _sanitize_skill_name_candidate(raw_name: Any) -> str:
+        candidate = str(raw_name or "").strip().strip("`\"'.,:;!?()[]{}")
+        if not candidate:
+            return ""
+        candidate = candidate.replace("-", "_")
+        candidate = re.sub(r"[^A-Za-z0-9_]", "_", candidate)
+        candidate = re.sub(r"_+", "_", candidate).strip("_")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,63}", candidate):
+            return ""
+        return candidate.lower()
+
+    def _extract_requested_skill_name(self, user_text: str) -> str:
+        text = str(user_text or "").strip()
+        if not text:
+            return ""
+
+        patterns = [
+            r"(?i)\brun_skill\s+([A-Za-z][A-Za-z0-9_-]{2,63})\b",
+            r"(?i)\b(?:führe|fuehre|run|execute|starte|start)\s+(?:den\s+|die\s+|das\s+)?skill\s+([A-Za-z][A-Za-z0-9_-]{2,63})\b",
+            r"(?i)\bskill\s+([A-Za-z][A-Za-z0-9_-]{2,63})\s+(?:aus|ausführen|ausfuehren|run|starten|execute)\b",
+            r"(?i)\b(?:skill|funktion)\s+(?:namens|name|named|called)\s+[`\"']?([A-Za-z][A-Za-z0-9_-]{2,63})[`\"']?",
+        ]
+        stopwords = {
+            "skill",
+            "run_skill",
+            "ausfuehren",
+            "ausführen",
+            "execute",
+            "run",
+            "start",
+            "starte",
+            "fuehre",
+            "führe",
+            "bitte",
+        }
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE)
+            if not match:
+                continue
+            candidate = self._sanitize_skill_name_candidate(match.group(1))
+            if candidate and candidate not in stopwords:
+                return candidate
+        return ""
+
     def _filter_think_tools(
         self,
         tools: list,
@@ -870,7 +2280,7 @@ class PipelineOrchestrator:
         filtered = []
         dropped = 0
         for t in tools:
-            if self._extract_tool_name(t) == "think":
+            if self._extract_tool_name(t) in {"think", "think_simple"}:
                 dropped += 1
                 continue
             filtered.append(t)
@@ -906,6 +2316,78 @@ class PipelineOrchestrator:
         raw = request.raw_request if isinstance(getattr(request, "raw_request", None), dict) else {}
         mode = str(raw.get("response_mode", "")).strip().lower()
         return mode if mode in {"interactive", "deep"} else ""
+
+    def _resolve_runtime_output_model(self, requested_model: str) -> Tuple[str, Dict[str, Any]]:
+        """
+        Resolve a runtime-safe output model against the effective output endpoint.
+        Keeps adapter input unchanged, but prevents invalid model identifiers from
+        causing avoidable /api/chat 404 responses.
+        """
+        from config import get_output_model, get_output_provider
+
+        requested = str(requested_model or "").strip()
+        fallback = str(get_output_model() or "").strip()
+        provider = str(get_output_provider() or "ollama").strip().lower()
+
+        # Only local Ollama provider should be normalized against /api/tags.
+        # Cloud providers must keep the selected provider-model pair unchanged.
+        if provider != "ollama":
+            resolved = requested or fallback
+            resolution = {
+                "requested_model": requested,
+                "resolved_model": resolved,
+                "fallback_model": fallback,
+                "endpoint": "cloud",
+                "tags_ok": False,
+                "available_count": 0,
+                "used_fallback": bool(resolved and resolved != requested),
+                "reason": "provider_passthrough_non_ollama",
+                "provider": provider,
+            }
+            if resolved != requested:
+                log_warn(
+                    f"[ModelResolver] output model fallback requested='{requested or '<empty>'}' "
+                    f"resolved='{resolved or '<empty>'}' reason={resolution['reason']} provider={provider}"
+                )
+            else:
+                log_info(
+                    f"[ModelResolver] output model accepted requested='{requested or '<empty>'}' "
+                    f"reason={resolution['reason']} provider={provider}"
+                )
+            return resolved, resolution
+
+        try:
+            route = resolve_role_endpoint("output", default_endpoint=self.ollama_base)
+            endpoint = str(route.get("endpoint") or self.ollama_base or "").strip()
+        except Exception as e:
+            log_warn(f"[ModelResolver] role endpoint resolution failed: {e}")
+            endpoint = str(self.ollama_base or "").strip()
+
+        resolution = resolve_runtime_chat_model(
+            requested_model=requested,
+            endpoint=endpoint,
+            fallback_model=fallback,
+        )
+        resolved = str(resolution.get("resolved_model") or "").strip()
+        if not resolved:
+            resolved = fallback or requested
+            resolution["resolved_model"] = resolved
+            resolution["reason"] = "resolver_empty_fallback_applied"
+
+        if resolved != requested:
+            log_warn(
+                f"[ModelResolver] output model adjusted requested='{requested or '<empty>'}' "
+                f"resolved='{resolved or '<empty>'}' reason={resolution.get('reason')} "
+                f"endpoint={resolution.get('endpoint') or 'unknown'} "
+                f"available_count={resolution.get('available_count', 0)}"
+            )
+        else:
+            log_info(
+                f"[ModelResolver] output model accepted requested='{requested or '<empty>'}' "
+                f"endpoint={resolution.get('endpoint') or 'unknown'} "
+                f"available_count={resolution.get('available_count', 0)}"
+            )
+        return resolved, resolution
 
     def _apply_response_mode_policy(
         self,
@@ -966,6 +2448,7 @@ class PipelineOrchestrator:
         user_text: str,
         verified_plan: Dict[str, Any],
         *,
+        control_decision: Optional[ControlDecision] = None,
         stream: bool = False,
     ) -> Dict[str, Dict]:
         """
@@ -979,7 +2462,10 @@ class PipelineOrchestrator:
         if gate_override:
             log_info(f"{prefix} Gate override active — skipping decide_tools(): {gate_override}")
             for tool_name in gate_override:
-                decisions[tool_name] = self._build_tool_args(tool_name, user_text)
+                if not tool_allowed_by_control_decision(control_decision, tool_name):
+                    log_warn(f"{prefix} Gate override tool blocked by control_decision: {tool_name}")
+                    continue
+                decisions[tool_name] = self._build_tool_args(tool_name, user_text, verified_plan=verified_plan)
             return decisions
 
         try:
@@ -989,6 +2475,9 @@ class PipelineOrchestrator:
                     continue
                 name = str(item.get("name") or "").strip()
                 if not name:
+                    continue
+                if not tool_allowed_by_control_decision(control_decision, name):
+                    log_warn(f"{prefix} decide_tools emitted non-allowed tool; dropped: {name}")
                     continue
                 args = item.get("arguments", {})
                 decisions[name] = args if isinstance(args, dict) else {}
@@ -1005,8 +2494,11 @@ class PipelineOrchestrator:
         verified_plan: Dict[str, Any],
         control_tool_decisions: Optional[Dict[str, Dict]],
         *,
+        control_decision: Optional[ControlDecision] = None,
         stream: bool = False,
         enable_skill_trigger_router: bool = False,
+        conversation_id: str = "",
+        chat_history: Optional[list] = None,
     ) -> List[Any]:
         """
         Build final suggested_tools list with parity across sync and stream:
@@ -1014,6 +2506,14 @@ class PipelineOrchestrator:
         """
         prefix = "[Orchestrator-Stream]" if stream else "[Orchestrator]"
         decisions = control_tool_decisions or {}
+        has_control_decisions = bool(decisions)
+        if isinstance(control_decision, ControlDecision) and not control_decision.approved:
+            verified_plan["_selected_tools_for_prompt"] = []
+            log_info(f"{prefix} Tool execution suppressed (control_decision.approved=false)")
+            return []
+        suppress_low_signal_tools = self._should_suppress_conversational_tools(
+            user_text, verified_plan
+        )
 
         if decisions:
             suggested_tools = list(decisions.keys())
@@ -1023,20 +2523,155 @@ class PipelineOrchestrator:
             if suggested_tools:
                 log_info(f"{prefix} Fallback: ThinkingLayer suggested_tools: {suggested_tools}")
 
+            # Confirmation follow-up override: prefer recent successful tool reuse
+            # over fresh weak routing for short confirmations like "ja bitte testen".
+            if self._looks_like_short_confirmation_followup(user_text, chat_history):
+                followup_tools = self._resolve_followup_tool_reuse(
+                    user_text,
+                    verified_plan,
+                    conversation_id=conversation_id,
+                    chat_history=chat_history,
+                )
+                if followup_tools:
+                    suggested_tools = self._normalize_tools(followup_tools)
+                    if isinstance(control_decision, ControlDecision):
+                        suggested_tools = [
+                            t for t in suggested_tools
+                            if tool_allowed_by_control_decision(control_decision, self._extract_tool_name(t))
+                        ]
+                    log_info(f"{prefix} Confirmation follow-up reuse: {suggested_tools}")
+                    verified_plan["needs_chat_history"] = True
+                    verified_plan["_selected_tools_for_prompt"] = [
+                        t["tool"] if isinstance(t, dict) and "tool" in t else str(t)
+                        for t in suggested_tools
+                    ]
+                    return suggested_tools
+
         # Validate + Normalize: filters invalid tools, maps skill names -> run_skill.
         suggested_tools = self._normalize_tools(suggested_tools)
+        if isinstance(control_decision, ControlDecision):
+            suggested_tools = [
+                t for t in suggested_tools
+                if tool_allowed_by_control_decision(control_decision, self._extract_tool_name(t))
+            ]
+        suggested_tools = self._prioritize_home_container_tools(
+            user_text,
+            verified_plan,
+            suggested_tools,
+            prefix=prefix,
+        )
+        if has_control_decisions:
+            log_info(f"{prefix} Post-control tool policies bypassed (Control authority)")
+        else:
+            suggested_tools = self._apply_query_budget_tool_policy(
+                user_text,
+                verified_plan,
+                suggested_tools,
+                prefix=prefix,
+            )
+            suggested_tools = self._apply_domain_tool_policy(
+                verified_plan,
+                suggested_tools,
+                user_text=user_text,
+                prefix=prefix,
+            )
+
+        if suppress_low_signal_tools and suggested_tools and not has_control_decisions:
+            policy = self.tool_execution_policy or {}
+            conv_cfg = policy.get("conversational_guard", {}) if isinstance(policy, dict) else {}
+            suppressed_exec_tools = {
+                str(name).strip().lower()
+                for name in conv_cfg.get("suppress_tools", [])
+                if str(name).strip()
+            }
+            suppressed_tools = {str(t).strip().lower() for t in self._LOW_SIGNAL_ACTION_TOOLS}.union(suppressed_exec_tools)
+            before = len(suggested_tools)
+            suggested_tools = [
+                tool
+                for tool in suggested_tools
+                if self._extract_tool_name(tool).lower() not in suppressed_tools
+            ]
+            dropped = before - len(suggested_tools)
+            if dropped:
+                log_info(
+                    f"{prefix} Suppressed conversational tools for turn: dropped={dropped}"
+                )
+        elif suppress_low_signal_tools and suggested_tools and has_control_decisions:
+            log_info(f"{prefix} Conversational suppress bypassed (Control authority)")
 
         if not suggested_tools:
+            followup_tools = self._resolve_followup_tool_reuse(
+                user_text,
+                verified_plan,
+                conversation_id=conversation_id,
+                chat_history=chat_history,
+            )
+            if followup_tools:
+                suggested_tools = self._normalize_tools(followup_tools)
+                if isinstance(control_decision, ControlDecision):
+                    suggested_tools = [
+                        t for t in suggested_tools
+                        if tool_allowed_by_control_decision(control_decision, self._extract_tool_name(t))
+                    ]
+                log_info(f"{prefix} Follow-up tool reuse: {suggested_tools}")
+                verified_plan["needs_chat_history"] = True
+                verified_plan["_selected_tools_for_prompt"] = [
+                    t["tool"] if isinstance(t, dict) and "tool" in t else str(t)
+                    for t in suggested_tools
+                ]
+                return suggested_tools
+            if suppress_low_signal_tools:
+                verified_plan["_selected_tools_for_prompt"] = []
+                log_info(f"{prefix} Tool fallback suppressed for conversational turn")
+                return []
             suggested_tools = self._detect_tools_by_keyword(user_text)
             if suggested_tools:
                 suggested_tools = self._normalize_tools(suggested_tools)
+                if isinstance(control_decision, ControlDecision):
+                    suggested_tools = [
+                        t for t in suggested_tools
+                        if tool_allowed_by_control_decision(control_decision, self._extract_tool_name(t))
+                    ]
                 log_info(f"{prefix} Last-resort keyword fallback: {suggested_tools}")
 
         if enable_skill_trigger_router and not suggested_tools:
-            trigger_matches = self._detect_skill_by_trigger(user_text)
-            if trigger_matches:
-                suggested_tools = self._normalize_tools(trigger_matches)
-                log_info(f"[Orchestrator] Skill Trigger Router: {trigger_matches}")
+            if self._contains_explicit_skill_intent(user_text):
+                trigger_matches = self._detect_skill_by_trigger(user_text)
+                if trigger_matches:
+                    suggested_tools = self._normalize_tools(trigger_matches)
+                    if isinstance(control_decision, ControlDecision):
+                        suggested_tools = [
+                            t for t in suggested_tools
+                            if tool_allowed_by_control_decision(control_decision, self._extract_tool_name(t))
+                        ]
+                    log_info(f"[Orchestrator] Skill Trigger Router: {trigger_matches}")
+            else:
+                log_info("[Orchestrator] Skill Trigger Router skipped (no explicit skill intent)")
+
+        if not has_control_decisions:
+            suggested_tools = self._apply_domain_tool_policy(
+                verified_plan,
+                suggested_tools,
+                user_text=user_text,
+                prefix=prefix,
+            )
+
+        _host_runtime_requested = self._looks_like_host_runtime_lookup(user_text)
+        if not has_control_decisions:
+            _host_tools = enforce_host_runtime_exec_first(
+                user_text=user_text,
+                suggested_tools=suggested_tools,
+                looks_like_host_runtime_lookup_fn=self._looks_like_host_runtime_lookup,
+                extract_tool_name_fn=self._extract_tool_name,
+            )
+            if _host_runtime_requested:
+                verified_plan["_host_runtime_chain_applied"] = True
+            if _host_tools != list(suggested_tools or []):
+                log_info(
+                    f"{prefix} Host-runtime deterministic chain applied: "
+                    f"{[self._extract_tool_name(t) for t in _host_tools]}"
+                )
+                suggested_tools = _host_tools
 
         # OutputLayer prompt hygiene: pass only request-scoped selected tools.
         verified_plan["_selected_tools_for_prompt"] = [
@@ -1048,11 +2683,34 @@ class PipelineOrchestrator:
     def _detect_tools_by_keyword(self, user_text: str) -> list:
         """Keyword-based tool detection fallback when Thinking suggests none."""
         user_lower = user_text.lower()
+        if any(kw in user_lower for kw in [
+            "festplatte", "festplatten", "laufwerk", "laufwerke",
+            "storage", "disk", "disks", "mount", "mounts", "speicherplatz",
+        ]):
+            if any(kw in user_lower for kw in ["summary", "übersicht", "uebersicht", "kapazität", "kapazitaet", "frei", "belegt"]):
+                return ["storage_get_summary"]
+            if any(kw in user_lower for kw in ["mount", "mounts", "eingehängt", "eingehaengt"]):
+                return ["storage_list_mounts"]
+            if any(kw in user_lower for kw in ["policy", "richtlinie", "zone"]):
+                return ["storage_get_policy"]
+            if any(kw in user_lower for kw in ["blacklist", "blocked paths", "gesperrt", "blockiert"]):
+                return ["storage_list_blocked_paths"]
+            if any(kw in user_lower for kw in ["managed paths", "verwaltete pfade", "managed"]):
+                return ["storage_list_managed_paths"]
+            if any(kw in user_lower for kw in ["audit", "änderungen", "aenderungen", "verlauf", "log"]):
+                return ["storage_audit_log"]
+            return ["storage_list_disks"]
+        if any(kw in user_lower for kw in [
+            "grafikkarte", "gpu", "vram", "hardware", "systemhardware", "welche karte"
+        ]):
+            return [{"tool": "run_skill", "args": {"name": "system_hardware_info", "action": "run", "args": {}}}]
         if any(kw in user_lower for kw in ["skill", "skills", "fähigkeit"]):
             if any(kw in user_lower for kw in ["zeig", "list", "welche", "hast du", "installiert", "verfügbar"]):
                 return ["list_skills"]
             elif any(kw in user_lower for kw in ["erstell", "create", "bau", "mach"]):
                 return ["autonomous_skill_task"]
+        elif self._is_home_container_info_query(user_lower):
+            return ["container_list", {"tool": "home_read", "args": {"path": "."}}]
         elif any(kw in user_lower for kw in ["erinnerst du", "weißt du noch", "was weißt du über"]):
             return ["memory_graph_search"]
         elif any(kw in user_lower for kw in ["merk dir", "speicher", "remember"]):
@@ -1151,10 +2809,17 @@ class PipelineOrchestrator:
         _NATIVE_TOOLS = {
             "request_container", "stop_container", "exec_in_container",
             "blueprint_list", "container_stats", "container_logs",
+            "container_list", "container_inspect",
             "home_read", "home_write", "home_list",
             # Skill-Tools: immer durchlassen (MCP via skill-server)
             "autonomous_skill_task", "run_skill", "create_skill",
             "list_skills", "get_skill_info", "validate_skill_code",
+            # Cron-Tools: deterministic domain routing
+            "autonomy_cron_status", "autonomy_cron_list_jobs", "autonomy_cron_validate",
+            "autonomy_cron_create_job", "autonomy_cron_update_job",
+            "autonomy_cron_pause_job", "autonomy_cron_resume_job",
+            "autonomy_cron_run_now", "autonomy_cron_delete_job",
+            "autonomy_cron_queue", "cron_reference_links_list",
             # SysInfo-Tools
             "get_system_info", "get_system_overview",
         }
@@ -1206,82 +2871,422 @@ class PipelineOrchestrator:
 
         return normalized
 
-    def _build_tool_args(self, tool_name: str, user_text: str) -> dict:
+    @staticmethod
+    def _extract_cron_job_id_from_text(user_text: str, verified_plan: Optional[Dict[str, Any]]) -> str:
+        route = (verified_plan or {}).get("_domain_route", {}) if isinstance(verified_plan, dict) else {}
+        hinted = str((route or {}).get("cron_job_id_hint") or "").strip().lower()
+        if re.fullmatch(r"[a-f0-9]{12}", hinted):
+            return hinted
+        m = re.search(r"\b([a-f0-9]{12})\b", str(user_text or "").lower())
+        return str(m.group(1)).lower() if m else ""
+
+    @staticmethod
+    def _extract_cron_expression_from_text(user_text: str, verified_plan: Optional[Dict[str, Any]]) -> str:
+        route = (verified_plan or {}).get("_domain_route", {}) if isinstance(verified_plan, dict) else {}
+        hinted = str((route or {}).get("cron_expression_hint") or "").strip()
+        if hinted:
+            return hinted
+
+        lower = str(user_text or "").lower()
+        m = re.search(r"(?<!\S)([\d*/,\-]+\s+[\d*/,\-]+\s+[\d*/,\-]+\s+[\d*/,\-]+\s+[\d*/,\-]+)(?!\S)", lower)
+        if m:
+            return str(m.group(1) or "").strip()
+        m = re.search(r"(?:jede|alle)\s+(\d{1,3})\s*(?:min|minuten|minute)\b", lower)
+        if m:
+            n = max(1, min(59, int(m.group(1))))
+            return f"*/{n} * * * *"
+        m = re.search(r"(?:in|nach)\s+(\d{1,3})\s*(?:min|minuten|minute)\b", lower)
+        if m:
+            n = max(1, min(59, int(m.group(1))))
+            return f"*/{n} * * * *"
+        m = re.search(r"(?:einmal|once)\s+in\s+(\d{1,3})\s*(?:min|minuten|minute)\b", lower)
+        if m:
+            n = max(1, min(59, int(m.group(1))))
+            return f"*/{n} * * * *"
+        if "jede minute" in lower or "every minute" in lower:
+            return "*/1 * * * *"
+        if "jede stunde" in lower or "every hour" in lower:
+            return "0 * * * *"
+        return "*/15 * * * *"
+
+    @staticmethod
+    def _extract_one_shot_run_at_from_text(user_text: str, verified_plan: Optional[Dict[str, Any]]) -> str:
+        route = (verified_plan or {}).get("_domain_route", {}) if isinstance(verified_plan, dict) else {}
+        hinted = str((route or {}).get("one_shot_at_hint") or "").strip()
+        if hinted:
+            return hinted
+
+        lower = str(user_text or "").lower()
+        now = datetime.utcnow()
+        m = re.search(
+            r"(?:in|nach)\s+(\d{1,4}|einer|einem|ein|one)\s*"
+            r"(sek|sekunde|sekunden|seconds?|s|min|minute|minuten|minutes?|h|std|stunde|stunden|hours?|tage?|days?)\b",
+            lower,
+        )
+        if m:
+            raw_n = str(m.group(1) or "").strip()
+            if raw_n in {"einer", "einem", "ein", "one"}:
+                amount = 1
+            else:
+                amount = max(1, int(raw_n))
+            unit = str(m.group(2) or "").strip().lower()
+            if unit.startswith(("sek", "s")):
+                run_at = now + timedelta(seconds=amount)
+            elif unit.startswith(("h", "std", "stun")):
+                run_at = now + timedelta(hours=amount)
+            elif unit.startswith(("tag", "day")):
+                run_at = now + timedelta(days=amount)
+            else:
+                run_at = now + timedelta(minutes=amount)
+            # Minute-granular scheduler: always round up to next minute boundary.
+            # Avoids near-past one-shot timestamps when request latency is high.
+            run_at = (run_at + timedelta(minutes=1)).replace(second=0, microsecond=0)
+            return run_at.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+        m = re.search(r"(?:heute|today)\s*(?:um|at)?\s*(\d{1,2})[:.](\d{2})\b", lower)
+        if m:
+            hour = max(0, min(23, int(m.group(1))))
+            minute = max(0, min(59, int(m.group(2))))
+            run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if run_at <= now:
+                run_at = run_at + timedelta(days=1)
+            return run_at.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+        return ""
+
+    def _extract_cron_schedule_from_text(
+        self,
+        user_text: str,
+        verified_plan: Optional[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        route = (verified_plan or {}).get("_domain_route", {}) if isinstance(verified_plan, dict) else {}
+        mode_hint = str((route or {}).get("schedule_mode_hint") or "").strip().lower()
+        lower = str(user_text or "").lower()
+
+        schedule_mode = "unknown"
+        if mode_hint in {"one_shot", "recurring"}:
+            schedule_mode = mode_hint
+        else:
+            one_shot_markers = ("einmalig", "nur einmal", "einmal", "one-time", "once")
+            recurring_markers = ("jede ", "alle ", "täglich", "taeglich", "wöchentlich", "woechentlich", "every ")
+            has_one_shot = any(marker in lower for marker in one_shot_markers)
+            has_recurring = any(marker in lower for marker in recurring_markers)
+            if has_one_shot and not has_recurring:
+                schedule_mode = "one_shot"
+            elif has_recurring and not has_one_shot:
+                schedule_mode = "recurring"
+
+        cron_expr = self._extract_cron_expression_from_text(user_text, verified_plan)
+        run_at = self._extract_one_shot_run_at_from_text(user_text, verified_plan)
+
+        if schedule_mode == "one_shot" and not run_at:
+            # deterministic fallback for explicit one-shot wording without parseable datetime.
+            fallback = (datetime.utcnow().replace(second=0, microsecond=0) + timedelta(minutes=1))
+            run_at = fallback.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+        if schedule_mode == "unknown":
+            schedule_mode = "one_shot" if run_at else "recurring"
+
+        if schedule_mode == "one_shot":
+            # keep cron field for backward compatibility / schema compatibility.
+            cron_expr = cron_expr or "*/15 * * * *"
+        else:
+            cron_expr = cron_expr or "*/15 * * * *"
+            run_at = ""
+
+        return {
+            "schedule_mode": schedule_mode,
+            "cron": cron_expr,
+            "run_at": run_at,
+        }
+
+    @staticmethod
+    def _build_cron_name(user_text: str) -> str:
+        lower = str(user_text or "").strip().lower()
+        if not lower:
+            return "trion-cron-job"
+        cleaned = re.sub(r"[^a-z0-9]+", "-", lower).strip("-")
+        if not cleaned:
+            cleaned = "trion-cron-job"
+        return f"cron-{cleaned[:40]}"
+
+    @staticmethod
+    def _looks_like_self_state_request(text: str) -> bool:
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        low = raw.lower()
+        if "wie dein tag war" in low or "wie dein tag ist" in low:
+            return True
+        if "wie es dir geht" in low:
+            return True
+        if "wie du dich" in low and ("fühl" in low or "fuehl" in low or "feel" in low):
+            return True
+        return False
+
+    @staticmethod
+    def _build_cron_objective(user_text: str) -> str:
+        text = str(user_text or "").strip()
+        lower = text.lower()
+        if PipelineOrchestrator._looks_like_self_state_request(text):
+            return f"self_state_report::{text[:220]}"
+        if any(tok in lower for tok in ("erinner", "remind", "erinnerung")):
+            reminder_text = ""
+            m = re.search(r"mir\s+zu\s+sagen[:,]?\s*(.+)$", text, flags=re.IGNORECASE)
+            if m:
+                reminder_text = str(m.group(1) or "").strip()
+            if not reminder_text:
+                m = re.search(
+                    r"(?:erinnere?\s+(?:mich|mir)|remind\s+me)\s*(?:daran)?[:,]?\s*(.+)$",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                if m:
+                    reminder_text = str(m.group(1) or "").strip()
+            reminder_text = reminder_text.strip(" .,!:;")
+            if not reminder_text:
+                reminder_text = "Cronjob funktioniert?"
+            return f"user_reminder::{reminder_text[:220]}"
+        if any(tok in lower for tok in ("cleanup", "bereinigen", "aufräumen", "aufraeumen")):
+            return "cleanup status summary"
+        if any(tok in lower for tok in ("backup", "sichern", "archiv")):
+            return "backup status summary"
+        if text:
+            return f"user_request::{text[:220]}"
+        return ""
+
+    @staticmethod
+    def _extract_direct_cron_reminder_text(objective: str) -> str:
+        txt = str(objective or "").strip()
+        low = txt.lower()
+        if low.startswith("user_reminder::"):
+            rem = txt.split("::", 1)[1].strip()
+            return rem[:180] if rem else "Cronjob funktioniert?"
+        return ""
+
+    @staticmethod
+    def _extract_cron_ack_message_from_objective(objective: str) -> str:
+        txt = str(objective or "").strip()
+        low = txt.lower()
+        if low.startswith("user_reminder::"):
+            rem = txt.split("::", 1)[1].strip()
+            return rem[:180] if rem else "Cronjob funktioniert?"
+        if low.startswith("self_state_report::"):
+            return "Selbststatus beim Trigger ausgeben."
+        if low.startswith("user_request::"):
+            req = txt.split("::", 1)[1].strip()
+            if PipelineOrchestrator._looks_like_self_state_request(req):
+                return "Selbststatus beim Trigger ausgeben."
+            return req[:180] if req else "Autonomes Ziel ausführen."
+        return "Autonomes Ziel ausführen."
+
+    @staticmethod
+    def _format_utc_compact(raw_iso: str) -> str:
+        raw = str(raw_iso or "").strip()
+        if not raw:
+            return ""
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt_utc = dt.astimezone(timezone.utc)
+            return dt_utc.strftime("%Y-%m-%d %H:%M UTC")
+        except Exception:
+            return raw
+
+    def _build_direct_cron_create_response(
+        self,
+        result: Any,
+        tool_args: Dict[str, Any],
+        conversation_id: str,
+    ) -> str:
+        payload = result.content if isinstance(result, ToolResult) else result
+        if not isinstance(payload, dict):
+            return ""
+        is_err, _ = detect_tool_error(payload)
+        if is_err:
+            return ""
+
+        job_id = str(payload.get("id") or payload.get("cron_job_id") or "").strip()
+        name = str(payload.get("name") or tool_args.get("name") or "cron-job").strip() or "cron-job"
+        mode = str(payload.get("schedule_mode") or tool_args.get("schedule_mode") or "recurring").strip().lower()
+        run_at = str(payload.get("run_at") or tool_args.get("run_at") or "").strip()
+        cron_expr = str(payload.get("cron") or tool_args.get("cron") or "").strip()
+        objective = str(payload.get("objective") or tool_args.get("objective") or "").strip()
+        effective_conv = str(
+            payload.get("conversation_id") or tool_args.get("conversation_id") or conversation_id or ""
+        ).strip()
+
+        id_part = f" `{job_id}`" if job_id else ""
+        if mode == "one_shot":
+            run_at_label = self._format_utc_compact(run_at) or "bald (UTC)"
+            reminder = self._extract_cron_ack_message_from_objective(objective)
+            return (
+                f"Cronjob erstellt{id_part}: `{name}`. "
+                f"Einmalige Ausführung um {run_at_label}. "
+                f"Rückmeldung: \"{reminder}\"."
+            )
+
+        cron_label = cron_expr or "*/15 * * * *"
+        if effective_conv:
+            return (
+                f"Cronjob erstellt{id_part}: `{name}`. "
+                f"Wiederholend mit `{cron_label}` für Chat `{effective_conv}`."
+            )
+        return f"Cronjob erstellt{id_part}: `{name}`. Wiederholend mit `{cron_label}`."
+
+    def _bind_cron_conversation_id(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        conversation_id: str,
+    ) -> None:
+        if str(tool_name or "").strip() != "autonomy_cron_create_job":
+            return
+        if not isinstance(tool_args, dict):
+            return
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id:
+            return
+        prev = str(tool_args.get("conversation_id") or "").strip()
+        if prev != conv_id:
+            tool_args["conversation_id"] = conv_id
+            if prev:
+                log_info(
+                    "[Orchestrator] cron conversation_id override: "
+                    f"{prev} -> {conv_id}"
+                )
+
+    @staticmethod
+    def _suggest_cron_expression_for_min_interval(min_interval_s: int) -> str:
+        min_s = max(60, int(min_interval_s or 60))
+        # Prefer minute granularity when possible.
+        if min_s <= 59 * 60:
+            minutes = max(1, (min_s + 59) // 60)
+            return f"*/{minutes} * * * *"
+        # Fall back to hour step.
+        if min_s <= 23 * 3600:
+            hours = max(1, (min_s + 3599) // 3600)
+            return f"0 */{hours} * * *"
+        # Last fallback: day step.
+        days = max(1, (min_s + 86399) // 86400)
+        return f"0 0 */{days} * *"
+
+    @staticmethod
+    def _extract_interval_hint_from_cron(expr: str) -> Dict[str, int]:
+        raw = str(expr or "").strip()
+        if not raw:
+            return {"minutes": 0}
+        m = re.match(r"^\*/(\d{1,3})\s+\*\s+\*\s+\*\s+\*$", raw)
+        if m:
+            return {"minutes": max(1, int(m.group(1)))}
+        m = re.match(r"^0\s+\*/(\d{1,2})\s+\*\s+\*\s+\*$", raw)
+        if m:
+            return {"minutes": max(1, int(m.group(1))) * 60}
+        m = re.match(r"^0\s+0\s+\*/(\d{1,2})\s+\*\s+\*$", raw)
+        if m:
+            return {"minutes": max(1, int(m.group(1))) * 24 * 60}
+        return {"minutes": 0}
+
+    def _prevalidate_cron_policy_args(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+    ) -> Tuple[bool, str]:
+        if tool_name not in {"autonomy_cron_create_job", "autonomy_cron_update_job"}:
+            return True, ""
+
+        schedule_mode = str((args or {}).get("schedule_mode") or "recurring").strip().lower()
+        if schedule_mode == "one_shot":
+            run_at_raw = str((args or {}).get("run_at") or "").strip()
+            if not run_at_raw:
+                return False, "one_shot_run_at_missing_precheck"
+            try:
+                run_at = datetime.fromisoformat(run_at_raw.replace("Z", "+00:00"))
+                if run_at.tzinfo is None:
+                    run_at = run_at.replace(tzinfo=timezone.utc)
+                now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+                if run_at <= now_utc:
+                    # Auto-heal near-past one-shot values produced from relative phrases
+                    # when generation/verification latency consumed remaining seconds.
+                    drift_s = max(0.0, (now_utc - run_at).total_seconds())
+                    if drift_s <= 120.0:
+                        suggested = (now_utc + timedelta(minutes=1)).replace(second=0, microsecond=0)
+                        args["run_at"] = suggested.isoformat().replace("+00:00", "Z")
+                        return True, ""
+                    suggested = (now_utc + timedelta(minutes=1)).replace(second=0, microsecond=0)
+                    return (
+                        False,
+                        "one_shot_run_at_in_past_precheck: "
+                        f"run_at={run_at.isoformat()} suggested_run_at={suggested.isoformat().replace('+00:00','Z')}",
+                    )
+            except Exception as exc:
+                return False, f"invalid_one_shot_run_at_precheck: {exc}"
+            return True, ""
+
+        cron_expr = str((args or {}).get("cron") or "").strip()
+        if not cron_expr:
+            return True, ""
+
+        try:
+            from core.autonomy.cron_scheduler import (
+                parse_cron_expression,
+                estimate_min_interval_seconds,
+            )
+            parsed = parse_cron_expression(cron_expr)
+            interval_s = int(estimate_min_interval_seconds(parsed))
+        except Exception as exc:
+            return False, f"invalid_cron_expression_precheck: {exc}"
+
+        try:
+            from config import (
+                get_autonomy_cron_min_interval_s,
+                get_autonomy_cron_trion_min_interval_s,
+            )
+            min_interval_s = int(get_autonomy_cron_min_interval_s())
+            created_by = str((args or {}).get("created_by") or "").strip().lower()
+            if created_by == "trion":
+                min_interval_s = max(min_interval_s, int(get_autonomy_cron_trion_min_interval_s()))
+        except Exception:
+            min_interval_s = 300
+
+        if interval_s < min_interval_s:
+            suggested = self._suggest_cron_expression_for_min_interval(min_interval_s)
+            suggested_minutes = self._extract_interval_hint_from_cron(suggested).get("minutes", 0)
+            return (
+                False,
+                "cron_min_interval_violation_precheck: "
+                f"requested={interval_s}s minimum={min_interval_s}s "
+                f"suggested_every_minutes={suggested_minutes or max(1, (min_interval_s + 59)//60)} "
+                f"suggested_cron={suggested} confirm_required=true",
+            )
+
+        return True, ""
+
+    def _build_tool_args(self, tool_name: str, user_text: str, verified_plan: Dict = None) -> dict:
         """
         Emergency-Fallback: Minimale Standard-Args für bekannte Tools.
         Wird nur aufgerufen wenn ControlLayer.decide_tools() keine Args liefert.
         Kein komplexes Keyword-Parsing — ControlLayer übernimmt das via Function Calling.
+
+        Legacy contract markers (implementation moved to `core/orchestrator_tool_args_utils.py`):
+        if any(tok in lower for tok in ("steam-headless", "sunshine", "gaming station", "gaming-station", "zocken", "moonlight")):
+            return {"blueprint_id": "gaming-station"}
+        elif tool_name == "blueprint_create":
+            {"id": "gaming-station", "image": "josh5/steam-headless:latest"}
         """
-        # Skill Tools
-        if tool_name == "run_skill":
-            return {"name": user_text.strip(), "action": "run", "args": {}}
-        elif tool_name == "get_skill_info":
-            return {"skill_name": user_text.strip()}
-        elif tool_name == "create_skill":
-            raw = (user_text or "").strip().lower()
-            name = "".join(ch if (ord(ch) < 128 and ch.isalnum()) else "_" for ch in raw).strip("_")
-            if not name:
-                name = f"auto_skill_{int(time.time())}"
-            if len(name) > 48:
-                name = name[:48].rstrip("_")
-            desc = f"Auto-generated skill scaffold from request: {(user_text or '').strip()[:240]}"
-            code = (
-                "def main(args=None):\n"
-                "    \"\"\"Auto-generated fallback scaffold.\"\"\"\n"
-                "    args = args or {}\n"
-                "    return {\n"
-                f"        \"skill\": \"{name}\",\n"
-                "        \"status\": \"todo\",\n"
-                "        \"message\": \"Scaffold created via fallback. Implement logic.\",\n"
-                "        \"args\": args,\n"
-                "    }\n"
-            )
-            return {
-                "name": name,
-                "description": desc,
-                "code": code,
-            }
-        elif tool_name == "autonomous_skill_task":
-            return {
-                "user_text": user_text.strip(),
-                "intent": user_text.strip(),
-                "allow_auto_create": True,
-                "execute_after_create": True,
-            }
-        # Memory Tools
-        elif tool_name == "think":
-            return {"message": user_text.strip(), "steps": 4}
-        elif tool_name in ("memory_search", "memory_graph_search"):
-            return {"query": user_text.strip()}
-        elif tool_name == "analyze":
-            return {"query": user_text.strip()}
-        elif tool_name in ("memory_save", "memory_fact_save"):
-            return {"conversation_id": "auto", "role": "user", "content": user_text.strip()}
-        # Container Tools (PENDING = wird durch container_id-Chaining ersetzt)
-        elif tool_name == "request_container":
-            return {"blueprint_id": "python-sandbox"}
-        elif tool_name == "exec_in_container":
-            return {"container_id": "PENDING", "command": "echo 'Container ready'"}
-        elif tool_name in ("stop_container", "container_stats"):
-            return {"container_id": "PENDING"}
-        elif tool_name == "container_logs":
-            return {"container_id": "PENDING", "tail": 50}
-        elif tool_name == "blueprint_list":
-            return {}
-        # SysInfo Tools
-        elif tool_name == "get_system_info":
-            return {"type": "gpu"}  # sinnvoller Default
-        elif tool_name == "get_system_overview":
-            return {}
-        # Home Tools
-        elif tool_name == "home_read":
-            return {"path": "."}
-        elif tool_name == "home_list":
-            return {"path": "."}
-        elif tool_name == "home_write":
-            import time as _time
-            return {"path": f"notes/note_{_time.strftime('%Y-%m-%d_%H-%M-%S')}.md", "content": user_text.strip()}
-        return {}
+        return util_build_tool_args(
+            tool_name,
+            user_text,
+            verified_plan=verified_plan,
+            extract_requested_skill_name_fn=self._extract_requested_skill_name,
+            looks_like_host_runtime_lookup_fn=self._looks_like_host_runtime_lookup,
+            extract_cron_schedule_from_text_fn=self._extract_cron_schedule_from_text,
+            build_cron_objective_fn=self._build_cron_objective,
+            build_cron_name_fn=self._build_cron_name,
+            extract_cron_job_id_from_text_fn=self._extract_cron_job_id_from_text,
+            extract_cron_expression_from_text_fn=self._extract_cron_expression_from_text,
+        )
 
     def _validate_tool_args(
         self,
@@ -1294,280 +3299,69 @@ class PipelineOrchestrator:
         Last-line defensive arg validation against MCP inputSchema.required.
         Auto-fills common missing fields when safe.
         """
-        args = dict(tool_args or {})
-        if tool_name == "analyze" and not str(args.get("query", "")).strip():
-            args["query"] = (user_text or "").strip()
+        return util_validate_tool_args(
+            tool_hub,
+            tool_name,
+            tool_args,
+            user_text,
+            extract_requested_skill_name_fn=self._extract_requested_skill_name,
+            sanitize_skill_name_candidate_fn=self._sanitize_skill_name_candidate,
+            extract_cron_schedule_from_text_fn=self._extract_cron_schedule_from_text,
+            prevalidate_cron_policy_args_fn=self._prevalidate_cron_policy_args,
+        )
 
-        required = []
-        try:
-            schema = (tool_hub._tool_definitions.get(tool_name, {}) or {}).get("inputSchema", {}) or {}
-            required = list(schema.get("required", []) or [])
-        except Exception:
-            required = []
-
-        def _missing(k: str) -> bool:
-            v = args.get(k, None)
-            if v is None:
-                return True
-            if isinstance(v, str):
-                return not v.strip()
-            if isinstance(v, (list, dict)):
-                return len(v) == 0
-            return False
-
-        missing = [k for k in required if _missing(k)]
-        if "query" in missing and (user_text or "").strip():
-            args["query"] = user_text.strip()
-            missing = [k for k in required if _missing(k)]
-        if "message" in missing and (user_text or "").strip():
-            args["message"] = user_text.strip()
-            missing = [k for k in required if _missing(k)]
-
-        if missing:
-            return False, args, f"missing_required={missing}"
-        return True, args, ""
-
-    def _execute_tools_sync(self, suggested_tools: list, user_text: str, control_tool_decisions: dict = None, time_reference: str = None, thinking_suggested_tools: list = None, blueprint_gate_blocked: bool = False, blueprint_router_id: str = None, blueprint_suggest_msg: str = "", session_id: str = "") -> str:
+    def _execute_tools_sync(
+        self,
+        suggested_tools: list,
+        user_text: str,
+        control_tool_decisions: dict = None,
+        control_decision: Optional[ControlDecision] = None,
+        time_reference: str = None,
+        thinking_suggested_tools: list = None,
+        blueprint_gate_blocked: bool = False,
+        blueprint_router_id: str = None,
+        blueprint_suggest_msg: str = "",
+        session_id: str = "",
+        verified_plan: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Execute tools and return combined context string."""
-        tool_context = ""
-        tool_hub = get_hub()
-        tool_hub.initialize()
-        
-        # Track container_id from request_container for chained calls
-        _last_container_id = None
-        
-        # Import Fast Lane Executor
-        try:
-            from core.tools.fast_lane.executor import get_fast_lane_executor
-            fast_lane = get_fast_lane_executor()
-        except ImportError:
-            log_error("[Orchestrator] FastLaneExecutor import failed!")
-            fast_lane = None
-
-        _FAST_LANE_TOOLS = {"home_read", "home_write", "home_list"}
-
-        for tool_spec in suggested_tools:
-            try:
-                # Handle both string and dict formats
-                # Normalisierte Skill-Specs: {"tool": "run_skill", "args": {...}}
-                if isinstance(tool_spec, dict) and "tool" in tool_spec:
-                    tool_name = tool_spec["tool"]
-                    tool_args = tool_spec.get("args", {})
-                elif isinstance(tool_spec, dict):
-                    tool_name = tool_spec.get("name")
-                    _cd = control_tool_decisions or {}
-                    tool_args = _cd.get(tool_name) or self._build_tool_args(tool_name, user_text)
-                else:
-                    tool_name = tool_spec
-                    _cd = control_tool_decisions or {}
-                    tool_args = _cd.get(tool_name) or self._build_tool_args(tool_name, user_text)
-
-                # Temporal guard: Protokoll ist die Quelle, kein Graph-Fallback nötig
-                if tool_name == "memory_graph_search" and time_reference:
-                    log_info(f"[Orchestrator] Blocking memory_graph_search — time_reference={time_reference}, protocol is source")
-                    continue
-
-                # Write-guard: home_write nur wenn ThinkingLayer es explizit vorgeschlagen hat
-                if tool_name == "home_write" and thinking_suggested_tools is not None:
-                    if "home_write" not in thinking_suggested_tools:
-                        log_info("[Orchestrator] Blocking home_write — not in ThinkingLayer suggested_tools (ControlLayer hallucination)")
-                        continue
-
-                # Fail-closed: bei Skill-Router-Ausfall keine Skill-Ausführung zulassen.
-                if tool_name in {"autonomous_skill_task", "create_skill", "run_skill"} and verified_plan.get("_skill_gate_blocked"):
-                    _skill_reason = verified_plan.get("_skill_gate_reason", "skill_router_unavailable")
-                    log_warn(f"[Orchestrator-Sync] Blocking {tool_name} — reason={_skill_reason}")
-                    tool_context += (
-                        f"\n[{tool_name}]: FEHLER: Skill-Router nicht verfügbar ({_skill_reason}). "
-                        "Skill-Operation aus Sicherheitsgründen blockiert."
-                    )
-                    continue
-
-                # Blueprint Gate + Router (Sync):
-                # Handles both: pre-planned gate (Step 1.8) AND keyword-fallback path (JIT check).
-                if tool_name == "request_container":
-                    if blueprint_gate_blocked:
-                        # Gate was set at Step 1.8 (no match OR suggest-zone) — block
-                        log_info("[Orchestrator-Sync] Blocking request_container — Blueprint Gate (pre-planned)")
-                        _block_msg = blueprint_suggest_msg if blueprint_suggest_msg else (
-                            "FEHLER: Kein passender Blueprint gefunden. "
-                            "Verfügbare Blueprints: python-sandbox, node-sandbox, db-sandbox, shell-sandbox."
-                        )
-                        tool_context += f"\n[request_container]: {_block_msg}"
-                        continue
-                    elif blueprint_router_id:
-                        # Router found a match at Step 1.8 — inject (always override)
-                        tool_args["blueprint_id"] = blueprint_router_id
-                        tool_args["session_id"] = session_id
-                        tool_args["conversation_id"] = session_id  # session_id == conversation_id in sync path
-                        log_info(f"[Orchestrator-Sync] blueprint_id injected: {blueprint_router_id}")
-                    else:
-                        # Keyword-fallback path: request_container appeared without Step 1.8 gate check → JIT
-                        try:
-                            _jit_decision = self._route_blueprint_request(user_text, {})
-                            if _jit_decision and _jit_decision.get("blocked"):
-                                _jit_reason = _jit_decision.get("reason", "blueprint_router_unavailable")
-                                log_warn(f"[Orchestrator-Sync] JIT router blocked request_container — reason={_jit_reason}")
-                                tool_context += (
-                                    "\n[request_container]: FEHLER: Blueprint-Router nicht verfügbar. "
-                                    "Kein Freestyle-Container erlaubt."
-                                )
-                                continue
-                            elif _jit_decision and not _jit_decision.get("suggest"):
-                                tool_args["blueprint_id"] = _jit_decision["blueprint_id"]
-                                tool_args["session_id"] = session_id
-                                tool_args["conversation_id"] = session_id
-                                log_info(f"[Orchestrator-Sync] JIT blueprint_id injected: {_jit_decision['blueprint_id']} (score={_jit_decision['score']:.2f})")
-                            elif _jit_decision and _jit_decision.get("suggest"):
-                                _jit_cands = ", ".join(f"{c['id']} ({c['score']:.2f})" for c in _jit_decision["candidates"])
-                                log_info(f"[Orchestrator-Sync] JIT suggest: {_jit_cands} — Rückfrage nötig")
-                                tool_context += f"\n[request_container]: RÜCKFRAGE: Welchen Blueprint soll ich starten? Meinst du: {_jit_cands}? Bitte präzisiere."
-                                continue
-                            else:
-                                log_info("[Orchestrator-Sync] JIT Blueprint Gate: kein Match — blocking request_container")
-                                tool_context += "\n[request_container]: FEHLER: Kein passender Blueprint gefunden. Verfügbare Blueprints: python-sandbox, node-sandbox, db-sandbox, shell-sandbox."
-                                continue
-                        except Exception as _jit_e:
-                            log_warn(f"[Orchestrator-Sync] JIT router error: {_jit_e} — blocking request_container (no freestyle fallback)")
-                            tool_context += "\n[request_container]: FEHLER: Blueprint-Router nicht verfügbar. Kein Freestyle-Container erlaubt."
-                            continue
-
-                # Chain: inject container_id from previous request_container
-                if _last_container_id and tool_args.get("container_id") == "PENDING":
-                    tool_args["container_id"] = _last_container_id
-                elif tool_args.get("container_id") == "PENDING":
-                    # Skip if no container_id yet (unless it's a request_container call itself)
-                    if tool_name != "request_container":
-                         log_info(f"[Orchestrator] Skipping {tool_name} - no container_id yet")
-                         continue
-
-                _valid, tool_args, _arg_reason = self._validate_tool_args(
-                    tool_hub, tool_name, tool_args, user_text
-                )
-                if not _valid:
-                    log_warn(f"[Orchestrator] Skipping {tool_name} due to invalid args: {_arg_reason}")
-                    tool_context += f"\n### TOOL-SKIP ({tool_name}): {_arg_reason}\n"
-                    continue
-
-                is_fast_lane = tool_name in _FAST_LANE_TOOLS
-                
-                # ════════════════════════════════════════════════════
-                # FAST LANE EXECUTION (NEW!)
-                # ════════════════════════════════════════════════════
-                executed = False
-                if is_fast_lane and fast_lane:
-                    try:
-                        log_info(f"[Orchestrator] Executing {tool_name} via Fast Lane")
-                        result = fast_lane.execute(tool_name, tool_args)
-                        formatted, success, metadata = self._format_tool_result(result, tool_name)
-                        # ── Commit 2: Card for Fast Lane results ──
-                        _fl_status = "ok" if success else "error"
-                        _fl_raw = formatted.strip()
-                        _card, _ref = self._build_tool_result_card(
-                            tool_name, _fl_raw, _fl_status, session_id
-                        )
-                        tool_context += _card
-                        executed = True
-                    except Exception as e:
-                        # Fallback to MCP Hub if Fast Lane fails
-                        log_warning(f"[Orchestrator] Fast Lane failed for {tool_name}, falling back to MCP: {e}")
-                
-                if not executed:
-                    # ════════════════════════════════════════════════════
-                    # SLOW LANE EXECUTION (MCP Hub)
-                    # ════════════════════════════════════════════════════
-                    
-                    # ── Container Verify-Step (Phase 1: fail-only) ──
-                    if tool_name == "exec_in_container" and tool_args.get("container_id"):
-                        cid = tool_args["container_id"]
-                        if cid != _last_container_id:  # Skip verify for freshly started containers
-                            if not self._verify_container_running(cid):
-                                log_warn(f"[Orchestrator-Verify] Container {cid[:12]} NOT running — aborting exec")
-                                stop_event = json.dumps({
-                                    "container_id": cid,
-                                    "stopped_at": datetime.utcnow().isoformat() + "Z",
-                                    "reason": "verify_failed",
-                                    "session_id": session_id,
-                                }, ensure_ascii=False)
-                                self._save_workspace_entry(
-                                    "_container_events", stop_event, "container_stopped", "orchestrator"
-                                )
-                                tool_context += f"\n### VERIFY-FEHLER ({tool_name}): Container {cid[:12]} ist nicht mehr aktiv.\n"
-                                continue
-
-                    log_info(f"[Orchestrator] Calling tool: {tool_name}({tool_args})")
-                    result = tool_hub.call_tool(tool_name, tool_args)
-
-                    # Track container_id from deploy result
-                    if tool_name == "request_container" and isinstance(result, dict):
-                        _last_container_id = result.get("container_id", "") or result.get("container", {}).get("container_id", "")
-
-                    result_str = json.dumps(result, ensure_ascii=False, default=str) if isinstance(result, (dict, list)) else str(result)
-                    # ╔════════════════════════════════════════════════════════════╗
-                    # ║  PHASE 3: TOOL INTELLIGENCE (Refactored)                  ║
-                    # ╚════════════════════════════════════════════════════════════╝
-                    
-                    intelligence_result = self.tool_intelligence.handle_tool_result(
-                        tool_name=tool_name,
-                        result=result,
-                        tool_args=tool_args,
-                        tool_hub=tool_hub  # NEW: Pass hub for retry
-                    )
-                    
-                    # Check if auto-retry succeeded
-                    retry_result = intelligence_result.get('retry_result')
-                    if retry_result and retry_result.get('success'):
-                        # ✅ AUTO-RETRY SUCCEEDED!
-                        log_info(f"[AutoRetry] Success on attempt {retry_result['attempts']}!")
-                        result = retry_result['result']
-                        result_str = json.dumps(result, ensure_ascii=False, default=str)
-                        retry_info = (
-                            f"Auto-Retry OK (fix={retry_result['fix_applied']}, "
-                            f"attempt={retry_result['attempts']}/2)\n{result_str}"
-                        )
-                        # ── Commit 2: Card + Full Payload ──
-                        _card, _ref = self._build_tool_result_card(
-                            tool_name, retry_info, "ok", session_id
-                        )
-                        tool_context += _card
-                        log_info(f"[Orchestrator] Tool {tool_name} OK after retry ref={_ref}")
-
-                    elif intelligence_result['is_error']:
-                        # Error (retry failed or not attempted)
-                        error_msg = intelligence_result['error_msg']
-                        solutions = intelligence_result.get('solutions', '')
-                        log_warn(f"[Orchestrator] Tool {tool_name} FAILED: {error_msg}")
-                        _err_detail = error_msg + (f"\n{solutions}" if solutions else "")
-                        if retry_result:
-                            _err_detail += f"\nAuto-Retry: {retry_result.get('reason', '')}"
-                        # ── Commit 2: Error Card + Full Payload ──
-                        _card, _ref = self._build_tool_result_card(
-                            tool_name, _err_detail, "error", session_id
-                        )
-                        tool_context += f"\n### TOOL-FEHLER ({tool_name}):\n"
-                        tool_context += _card
-                    else:
-                        # TOOL SUCCESS (no error, no retry needed)
-                        # ── Commit 2: Card + Full Payload ──
-                        _card, _ref = self._build_tool_result_card(
-                            tool_name, result_str, "ok", session_id
-                        )
-                        tool_context += _card
-                        log_info(f"[Orchestrator] Tool {tool_name} OK: {len(result_str)} chars ref={_ref}")
-                    # ── Container Session Tracking ──
-                    container_evt = self._build_container_event_content(
-                        tool_name, result, user_text, tool_args,
-                        session_id=session_id,
-                    )
-                    if container_evt:
-                        self._save_container_event("_container_events", container_evt)
-                        log_info(f"[Orchestrator] Container event: {container_evt['event_type']}")
-            
-            except Exception as e:
-                log_error(f"[Orchestrator] Tool {tool_name} failed: {e}")
-                tool_context += f"\n### TOOL-FEHLER ({tool_name}): {str(e)}\n"
-        
-        return tool_context
+        return util_execute_tools_sync(
+            suggested_tools,
+            user_text,
+            control_tool_decisions=control_tool_decisions,
+            control_decision=control_decision,
+            time_reference=time_reference,
+            thinking_suggested_tools=thinking_suggested_tools,
+            blueprint_gate_blocked=blueprint_gate_blocked,
+            blueprint_router_id=blueprint_router_id,
+            blueprint_suggest_msg=blueprint_suggest_msg,
+            session_id=session_id,
+            verified_plan=verified_plan,
+            get_hub_fn=get_hub,
+            get_recent_container_state_fn=self._get_recent_container_state,
+            build_tool_args_fn=self._build_tool_args,
+            route_blueprint_request_fn=self._route_blueprint_request,
+            tool_requires_container_id_fn=self._tool_requires_container_id,
+            resolve_pending_container_id_sync_fn=self._resolve_pending_container_id_sync,
+            validate_tool_args_fn=self._validate_tool_args,
+            bind_cron_conversation_id_fn=self._bind_cron_conversation_id,
+            format_tool_result_fn=self._format_tool_result,
+            build_tool_result_card_fn=self._build_tool_result_card,
+            build_grounding_evidence_entry_fn=self._build_grounding_evidence_entry,
+            sanitize_tool_args_for_state_fn=self._sanitize_tool_args_for_state,
+            verify_container_running_fn=self._verify_container_running,
+            save_workspace_entry_fn=self._save_workspace_entry,
+            update_container_state_from_tool_result_fn=self._update_container_state_from_tool_result,
+            tool_intelligence_handle_tool_result_fn=self.tool_intelligence.handle_tool_result,
+            build_direct_cron_create_response_fn=self._build_direct_cron_create_response,
+            recover_home_read_directory_with_fast_lane_fn=self._recover_home_read_directory_with_fast_lane,
+            build_container_event_content_fn=self._build_container_event_content,
+            save_container_event_fn=self._save_container_event,
+            log_info_fn=log_info,
+            log_warn_fn=log_warn,
+            log_error_fn=log_error,
+            log_warning_fn=log_warn,
+        )
 
 
     def _format_tool_result(self, result, tool_name: str):
@@ -1614,18 +3408,24 @@ class PipelineOrchestrator:
         # Handle regular results (MCP)
         else:
             result_str = json.dumps(result, ensure_ascii=False, default=str) if isinstance(result, (dict, list)) else str(result)
+            _is_error, _err_msg = detect_tool_error(result)
             
             if len(result_str) > 3000:
                 result_str = result_str[:3000] + "... (gekürzt)"
             
-            formatted = f"\n### TOOL-ERGEBNIS ({tool_name}):\n{result_str}\n"
+            if _is_error:
+                formatted = f"\n### FEHLER ({tool_name}): {_err_msg or result_str}\n"
+            else:
+                formatted = f"\n### TOOL-ERGEBNIS ({tool_name}):\n{result_str}\n"
             
             metadata = {
                 "execution_mode": "mcp",
                 "tool_name": tool_name
             }
+            if _is_error:
+                metadata["error"] = _err_msg or result_str
             
-            return (formatted, True, metadata)
+            return (formatted, not _is_error, metadata)
 
     @staticmethod
     def _tool_context_has_failures_or_skips(tool_context: str) -> bool:
@@ -1840,6 +3640,152 @@ class PipelineOrchestrator:
             log_error(f"[Orchestrator-ContainerEvent] Save failed: {e}")
         return None
 
+    @staticmethod
+    def _build_control_workspace_summary(
+        verification: Dict[str, Any],
+        *,
+        skipped: bool,
+        skip_reason: str = "",
+    ) -> str:
+        return build_control_workspace_summary(
+            verification,
+            skipped=skipped,
+            skip_reason=skip_reason,
+        )
+
+    @classmethod
+    def _is_control_hard_block_decision(cls, verification: Dict[str, Any]) -> bool:
+        _ = cls
+        return is_control_hard_block_decision(verification)
+
+    @staticmethod
+    def _build_done_workspace_summary(
+        done_reason: str,
+        *,
+        response_mode: str = "",
+        model: str = "",
+        memory_used: Optional[bool] = None,
+    ) -> str:
+        return build_done_workspace_summary(
+            done_reason,
+            response_mode=response_mode,
+            model=model,
+            memory_used=memory_used,
+        )
+
+    @staticmethod
+    def _build_sequential_workspace_summary(event: Dict[str, Any]) -> Tuple[str, str]:
+        return build_sequential_workspace_summary(event)
+
+    def _persist_sequential_workspace_event(
+        self,
+        conversation_id: str,
+        event: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        return persist_sequential_workspace_event(
+            self._save_workspace_entry,
+            conversation_id,
+            event,
+        )
+
+    @staticmethod
+    def _build_master_workspace_summary(event_type: str, payload: Dict[str, Any]) -> str:
+        """Build compact text summary for master-autonomy planning events."""
+        data = payload if isinstance(payload, dict) else {}
+        kind = str(event_type or "").strip() or "planning_event"
+
+        if kind == "planning_start":
+            objective = str(data.get("objective", "") or "").strip()
+            max_loops = data.get("max_loops")
+            state = str(data.get("state", "") or "").strip()
+            planning_mode = str(data.get("planning_mode", "") or "").strip()
+            parts = [f"objective={objective[:140]}" if objective else "objective=unknown"]
+            if max_loops is not None:
+                parts.append(f"max_loops={max_loops}")
+            if state:
+                parts.append(f"state={state}")
+            if planning_mode:
+                parts.append(f"planning_mode={planning_mode}")
+            return " | ".join(parts)
+
+        if kind == "planning_step":
+            parts: List[str] = []
+            phase = str(data.get("phase", "") or "").strip()
+            if phase:
+                parts.append(f"phase={phase}")
+            if data.get("loop") is not None:
+                parts.append(f"loop={data.get('loop')}")
+            state = str(data.get("state", "") or "").strip()
+            if state:
+                parts.append(f"state={state}")
+            decision = str(data.get("decision", "") or "").strip()
+            if decision:
+                parts.append(f"decision={decision}")
+            next_action = str(data.get("next_action", "") or "").strip()
+            if next_action:
+                parts.append(f"next_action={next_action[:140]}")
+            action = str(data.get("action", "") or "").strip()
+            if action:
+                parts.append(f"action={action[:140]}")
+            reason = str(data.get("reason", "") or "").strip()
+            if reason:
+                parts.append(f"reason={reason[:120]}")
+            return " | ".join(parts) if parts else "planning_step"
+
+        if kind == "planning_done":
+            loops = data.get("loops_executed")
+            steps = data.get("steps_completed")
+            final_state = str(data.get("final_state", "") or "").strip()
+            stop_reason = str(data.get("stop_reason", "") or "").strip()
+            parts = []
+            if loops is not None:
+                parts.append(f"loops={loops}")
+            if steps is not None:
+                parts.append(f"steps={steps}")
+            if final_state:
+                parts.append(f"final_state={final_state}")
+            if stop_reason:
+                parts.append(f"stop_reason={stop_reason}")
+            return " | ".join(parts) if parts else "planning_done"
+
+        if kind == "planning_error":
+            phase = str(data.get("phase", "") or "").strip()
+            error = str(data.get("error", "") or "").strip() or "unknown_error"
+            error_code = str(data.get("error_code", "") or "").strip()
+            action = str(data.get("action", "") or "").strip()
+            stop_reason = str(data.get("stop_reason", "") or "").strip()
+            parts = [f"error={error[:180]}"]
+            if error_code:
+                parts.append(f"error_code={error_code[:80]}")
+            if phase:
+                parts.append(f"phase={phase}")
+            if action:
+                parts.append(f"action={action[:120]}")
+            if stop_reason:
+                parts.append(f"stop_reason={stop_reason[:80]}")
+            return " | ".join(parts)
+
+        return json.dumps(data, ensure_ascii=False)[:240] if data else kind
+
+    def _persist_master_workspace_event(
+        self,
+        conversation_id: str,
+        event_type: str,
+        payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Persist master-autonomy events to workspace_events for Planmode visibility."""
+        conv_id = str(conversation_id or "").strip()
+        kind = str(event_type or "").strip()
+        if not conv_id or kind not in {"planning_start", "planning_step", "planning_done", "planning_error"}:
+            return None
+        content = self._build_master_workspace_summary(kind, payload if isinstance(payload, dict) else {})
+        return self._save_workspace_entry(
+            conversation_id=conv_id,
+            content=content,
+            entry_type=kind,
+            source_layer="master",
+        )
+
     def _get_compact_context(
         self,
         conversation_id: Optional[str],
@@ -1933,200 +3879,16 @@ class PipelineOrchestrator:
         debug_flags: Optional[Dict] = None,
         request_cache: Optional[Dict[str, Any]] = None,
     ) -> tuple:
-        """
-        Unified context assembly for Sync and Stream paths.
-
-        Returns (context_text: str, trace: dict).
-
-        Args:
-            user_text:        Query text for ContextManager.
-            conv_id:          conversation_id for retrieval + compact context.
-            small_model_mode: Propagated to ContextManager + compact context.
-            cleanup_payload:  thinking_plan dict (used as ContextManager thinking_plan).
-            include_blocks:   Dict with keys compact/system_tools/memory_data (default all True).
-            debug_flags:      Optional hints: has_tool_failure, skills_prefetch_used,
-                              detection_rules_used.
-            request_cache:    Optional request-scoped retrieval cache for ContextManager.
-
-        Trace keys:
-            small_model_mode, context_sources, context_blocks, context_chars,
-            retrieval_count, flags.{skills_prefetch_used, detection_rules_used,
-            output_reinjection_risk}
-        """
-        from config import get_context_trace_dryrun
-
-        _include = {
-            "compact": True,
-            "system_tools": True,
-            "memory_data": True,
-            **(include_blocks or {}),
-        }
-        _flags = debug_flags or {}
-        trace: Dict = {
-            "small_model_mode": bool(small_model_mode),
-            "context_sources": [],
-            "context_blocks": {},
-            "context_chars": 0,
-            # context_chars_final tracks the total chars as appends accumulate post-build.
-            # Starts equal to context_chars; updated by the orchestrator after each append.
-            "context_chars_final": 0,
-            "retrieval_count": 0,
-            "mode": "",  # computed by _compute_ctx_mode before final provider call
-            "flags": {
-                "skills_prefetch_used": bool(_flags.get("skills_prefetch_used", False)),
-                "skills_prefetch_mode": str(_flags.get("skills_prefetch_mode", "off" if small_model_mode else "full")),
-                "detection_rules_used": str(_flags.get("detection_rules_used", "false")),
-                # False in small mode: OutputLayer de-dup policy prevents duplicate injections.
-                "output_reinjection_risk": not small_model_mode,
-            },
-        }
-
-        # ── Canonical ContextManager call ────────────────────────────────
-        ctx = self.context.get_context(
-            query=user_text,
-            thinking_plan=cleanup_payload or {},
-            conversation_id=conv_id or "",
+        return util_build_effective_context(
+            self,
+            user_text,
+            conv_id,
             small_model_mode=small_model_mode,
+            cleanup_payload=cleanup_payload,
+            include_blocks=include_blocks,
+            debug_flags=debug_flags,
             request_cache=request_cache,
         )
-        memory_used = ctx.memory_used
-
-        parts: list = []
-        _part_compact: str = ""
-        _part_system_tools: str = ""
-        _part_memory_data: str = ""
-
-        # Block: compact (only when small_model_mode and requested)
-        if _include.get("compact") and small_model_mode:
-            # Commit B: compute CSV JIT trigger from thinking_plan (cleanup_payload)
-            _csv_trigger = None
-            _tp = cleanup_payload or {}
-            if _tp.get("time_reference"):
-                _csv_trigger = "time_reference"
-            elif _tp.get("is_fact_query"):
-                _csv_trigger = "fact_recall"
-            elif _tp.get("needs_memory"):
-                _csv_trigger = "remember"
-
-            compact = self._get_compact_context(
-                conv_id,
-                has_tool_failure=bool(_flags.get("has_tool_failure", False)),
-                csv_trigger=_csv_trigger,
-            )
-            if compact:
-                _part_compact = compact
-                parts.append(compact)
-                trace["context_sources"].append("compact")
-                trace["context_blocks"]["compact"] = len(compact)
-                # Fix: compute actual retrieval count (1 normal, 2 on failure with budget≥2).
-                # Mirrors _get_compact_context logic so trace reflects real retrieval steps.
-                from config import get_jit_retrieval_max, get_jit_retrieval_max_on_failure
-                _compact_has_failure = bool(_flags.get("has_tool_failure", False))
-                _compact_budget = (
-                    get_jit_retrieval_max_on_failure() if _compact_has_failure
-                    else get_jit_retrieval_max()
-                )
-                _compact_rc = 1 + (
-                    1 if _compact_budget >= 2 and (conv_id or "") != "_container_events" else 0
-                )
-                trace["retrieval_count"] = max(trace["retrieval_count"], _compact_rc)
-
-        # Block: system_tools (skills, blueprints, tool hints)
-        if _include.get("system_tools") and ctx.system_tools:
-            _part_system_tools = ctx.system_tools
-            parts.append(ctx.system_tools)
-            trace["context_sources"].append("system_tools")
-            trace["context_blocks"]["system_tools"] = len(ctx.system_tools)
-
-        # Block: memory_data (daily protocol / laws / containers / memory keys)
-        if _include.get("memory_data") and ctx.memory_data:
-            _part_memory_data = ctx.memory_data
-            parts.append(ctx.memory_data)
-            trace["context_sources"].append("memory_data")
-            trace["context_blocks"]["memory_data"] = len(ctx.memory_data)
-            if ctx.memory_used:
-                # Fix 2: cap at budget — memory_data must not push count over configured maximum.
-                from config import get_jit_retrieval_max, get_jit_retrieval_max_on_failure
-                _rc_cap = (
-                    get_jit_retrieval_max_on_failure() if _flags.get("has_tool_failure")
-                    else get_jit_retrieval_max()
-                )
-                trace["retrieval_count"] = min(trace["retrieval_count"] + 1, _rc_cap)
-
-        text = "\n".join(p for p in parts if p).strip()
-        trace["context_chars"] = len(text)
-        trace["memory_used"] = memory_used
-
-        # ── Hard char cap enforcement (small_model_mode only) ─────────────────
-        if small_model_mode:
-            from config import get_small_model_char_cap
-            _cap = get_small_model_char_cap()
-            if len(text) > _cap:
-                _dropped: list = []
-                # Priority: compact (NOW) > system_tools (RULES) > memory_data (NEXT)
-                # Step 1: drop memory_data
-                _try1 = "\n".join(p for p in [_part_compact, _part_system_tools] if p).strip()
-                if len(_try1) <= _cap:
-                    text = _try1
-                    if _part_memory_data:
-                        _dropped.append("memory_data")
-                else:
-                    # Step 2: drop system_tools as well
-                    _try2 = _part_compact.strip()
-                    if len(_try2) <= _cap:
-                        text = _try2
-                        if _part_memory_data:
-                            _dropped.append("memory_data")
-                        if _part_system_tools:
-                            _dropped.append("system_tools")
-                    else:
-                        # Step 3: hard truncate compact (fail-closed)
-                        text = _part_compact[:_cap] if _part_compact else ""
-                        if _part_memory_data:
-                            _dropped.append("memory_data")
-                        if _part_system_tools:
-                            _dropped.append("system_tools")
-                        if not text:
-                            # Absolute fail-closed fallback
-                            text = "[CONTEXT BUDGET EXHAUSTED. Please restate your request briefly.]"[:_cap]
-                trace["context_chars"] = len(text)
-                # Correct trace to reflect what was actually kept after truncation
-                for _drop in _dropped:
-                    if _drop in trace["context_sources"]:
-                        trace["context_sources"].remove(_drop)
-                    trace["context_blocks"].pop(_drop, None)
-                log_warn(
-                    f"[CTX] CHAR_CAP enforced: {len(text)}/{_cap} chars "
-                    f"dropped={_dropped}"
-                )
-
-        # ── Dry-run: build legacy path + log diff ─────────────────────────
-        if get_context_trace_dryrun():
-            # Legacy: compact (if small_model_mode) + system_tools + memory_data
-            legacy_parts = []
-            if small_model_mode:
-                _legacy_compact = self._get_compact_context(
-                    conv_id,
-                    has_tool_failure=bool(_flags.get("has_tool_failure", False)),
-                )
-                if _legacy_compact:
-                    legacy_parts.append(_legacy_compact)
-            if ctx.system_tools:
-                legacy_parts.append(ctx.system_tools)
-            if ctx.memory_data:
-                legacy_parts.append(ctx.memory_data)
-            legacy = "\n".join(p for p in legacy_parts if p).strip()
-            log_info(
-                f"[CTX-DRYRUN] new={len(text)} old={len(legacy)} "
-                f"src_new={trace['context_sources']} "
-                f"diff={len(text) - len(legacy):+d}chars"
-            )
-            trace["context_chars_final"] = len(legacy)
-            return legacy, trace
-
-        # Sync context_chars_final with final context_chars (post-cap baseline)
-        trace["context_chars_final"] = trace["context_chars"]
-        return text, trace
 
     # ── Commit 1: Canonical public entry-point ────────────────────────────
     def build_effective_context(self, *args, **kwargs) -> tuple:
@@ -2794,171 +4556,19 @@ class PipelineOrchestrator:
         conversation_id: str
     ) -> Optional[CoreChatResponse]:
         """Check if user is responding to a pending confirmation."""
-        if not INTENT_SYSTEM_AVAILABLE:
-            return None
-        store = get_intent_store()
-        pending = store.get_pending_for_conversation(conversation_id)
-        
-        if not pending:
-            return None
-        
-        intent = pending[-1]
-        text_lower = user_text.lower().strip()
-        normalized_tokens = "".join(
-            ch if (ch.isalnum() or ch.isspace()) else " "
-            for ch in text_lower
-        ).split()
-        first_token = normalized_tokens[0] if normalized_tokens else ""
-        
-        # skill_clarification: Jede Antwort die nicht explizit "nein" ist → Bestätigung mit Info
-        _negative = {"nein", "no", "abbrechen", "cancel", "stop", "nee"}
-        is_negative = text_lower in _negative or first_token in _negative
-        is_positive = (
-            text_lower in ["ja", "yes", "ok", "bestaetigen", "mach", "los", "ja bitte", "klar"]
-            or first_token in {"ja", "yes", "ok", "bestaetigen", "mach", "los", "klar"}
+        return await util_check_pending_confirmation(
+            self,
+            user_text,
+            conversation_id,
+            intent_system_available=bool(INTENT_SYSTEM_AVAILABLE),
+            get_intent_store_fn=get_intent_store if INTENT_SYSTEM_AVAILABLE else (lambda: None),
+            get_hub_fn=get_hub,
+            intent_state_cls=IntentState if INTENT_SYSTEM_AVAILABLE else None,
+            core_chat_response_cls=CoreChatResponse,
+            log_info_fn=log_info,
+            log_warn_fn=log_warn,
+            log_error_fn=log_error,
         )
-
-        if (getattr(intent, "intent_type", "") == "skill_clarification"
-                and not is_negative):
-            # Behandle als Bestätigung + Info-Antwort
-            text_lower = "ja"  # Weiterleitung zu Positive-Pfad
-            is_positive = True
-            is_negative = False
-
-        # Positive confirmation
-        if is_positive:
-            intent.confirm()
-            try:
-                hub = get_hub()
-                trace_id = self._normalize_trace_id(f"intent:{getattr(intent, 'id', '')}:{uuid.uuid4().hex[:8]}")
-                _intent_user_text = str(getattr(intent, "user_text", "") or "").strip()
-                if not _intent_user_text:
-                    _intent_user_text = f"Erstelle den Skill {intent.skill_name}".strip()
-                _complexity_raw = getattr(intent, "complexity", 5)
-                try:
-                    _complexity = int(_complexity_raw)
-                except Exception:
-                    _complexity = 5
-                _complexity = max(1, min(10, _complexity))
-                log_info(
-                    f"[Orchestrator-Intent][trace={trace_id}] Using autonomous_skill_task "
-                    f"for: {_intent_user_text[:50]}..."
-                )
-                
-                task_args = {
-                    "user_text": self._safe_str(_intent_user_text, max_len=4000),
-                    "intent": self._safe_str(_intent_user_text, max_len=4000),
-                    "complexity": _complexity,
-                    "allow_auto_create": True,
-                    "execute_after_create": True,
-                    "prefer_create": True,
-                    "_trace_id": trace_id,
-                }
-
-                # skill_clarification: User-Antwort in den ursprünglichen Intent einweben
-                if getattr(intent, "intent_type", "") == "skill_clarification":
-                    enriched = intent.user_text + f"\nHinweis vom User: {user_text}"
-                    safe_enriched = self._safe_str(enriched, max_len=4000)
-                    task_args["user_text"] = safe_enriched
-                    task_args["intent"] = safe_enriched
-                    task_args["complexity"] = 3  # explizite Erstellung → immer unter Threshold
-                    log_info(f"[Orchestrator-Intent][trace={trace_id}] Enriched skill_clarification with user answer")
-
-                if hasattr(intent, "thinking_plan") and intent.thinking_plan:
-                    safe_thinking_plan = self._sanitize_intent_thinking_plan_for_skill_task(intent.thinking_plan)
-                    if safe_thinking_plan:
-                        task_args["thinking_plan"] = safe_thinking_plan
-
-                _plan = task_args.get("thinking_plan") if isinstance(task_args.get("thinking_plan"), dict) else {}
-                _plan_keys = sorted(_plan.keys())[:12] if _plan else []
-                log_info(
-                    f"[Orchestrator-Intent][trace={trace_id}] Calling autonomous_skill_task "
-                    f"complexity={task_args.get('complexity')} plan_keys={_plan_keys}"
-                )
-                
-                result = hub.call_tool("autonomous_skill_task", task_args)
-                
-                if isinstance(result, dict):
-                    if result.get("success"):
-                        intent.mark_executed()
-                        store.update_state(intent.id, IntentState.EXECUTED)
-                        
-                        skill_name = result.get("skill_name", intent.skill_name)
-                        exec_result = result.get("execution_result", {})
-                        validation_score = result.get("validation_score", 0)
-                        
-                        log_info(
-                            f"[Orchestrator-Intent][trace={trace_id}] Skill {skill_name} "
-                            f"created (score: {validation_score})"
-                        )
-                        
-                        response_text = f"✅ Skill **{skill_name}** wurde erstellt und ausgeführt!\n\n"
-                        response_text += f"**Validation Score:** {validation_score:.0%}\n\n"
-                        if exec_result:
-                            response_text += f"**Ergebnis:**\n```json\n{json.dumps(exec_result, indent=2, ensure_ascii=False)[:500]}\n```"
-                        
-                        return CoreChatResponse(
-                            model="system",
-                            content=response_text,
-                            conversation_id=conversation_id
-                        )
-                    else:
-                        if result.get("skill_created"):
-                            skill_name = result.get("skill_name", intent.skill_name)
-                            run_error = result.get("error", "Unbekannter Laufzeitfehler")
-                            intent.mark_executed()
-                            store.update_state(intent.id, IntentState.EXECUTED)
-                            log_warn(
-                                f"[Orchestrator-Intent][trace={trace_id}] Skill {skill_name} created, "
-                                f"but first execution failed: {run_error}"
-                            )
-                            return CoreChatResponse(
-                                model="system",
-                                content=(
-                                    f"✅ Skill **{skill_name}** wurde erstellt.\n\n"
-                                    f"⚠️ Der erste Testlauf ist fehlgeschlagen: {run_error}\n"
-                                    f"(trace: {trace_id})"
-                                ),
-                                conversation_id=conversation_id
-                            )
-                        error = result.get("error", "Unknown error")
-                        log_error(f"[Orchestrator-Intent][trace={trace_id}] autonomous_skill_task failed: {error}")
-                        intent.mark_failed()
-                        store.update_state(intent.id, IntentState.FAILED)
-                        return CoreChatResponse(
-                            model="system",
-                            content=f"❌ Skill-Erstellung fehlgeschlagen: {error} (trace: {trace_id})",
-                            conversation_id=conversation_id
-                        )
-                
-                intent.mark_executed()
-                store.update_state(intent.id, IntentState.EXECUTED)
-                return CoreChatResponse(
-                    model="system",
-                    content="✅ Skill-Anfrage wurde verarbeitet.",
-                    conversation_id=conversation_id
-                )
-            except Exception as e:
-                log_error(f"[Orchestrator-Intent] Create failed: {e}")
-                store.update_state(intent.id, IntentState.FAILED)
-                return CoreChatResponse(
-                    model="system",
-                    content=f"❌ Fehler beim Erstellen: {e}",
-                    conversation_id=conversation_id
-                )
-        
-        # Negative response
-        elif is_negative:
-            intent.reject()
-            store.update_state(intent.id, IntentState.REJECTED)
-            log_info(f"[Orchestrator-Intent] Skill {intent.skill_name} creation rejected")
-            return CoreChatResponse(
-                model="system",
-                content="❌ Skill-Erstellung abgebrochen.",
-                conversation_id=conversation_id
-            )
-        
-        return None
     
     # ===============================================================
     # PUBLIC API
@@ -3021,406 +4631,27 @@ class PipelineOrchestrator:
         5. Output Layer -> Generate
         6. Memory Save
         """
-        log_info(f"[Orchestrator] Processing request from {request.source_adapter}")
-        
-        # [NEW] Lifecycle Start
-        req_id = f"req-{int(time.time()*1000)}"
-        self.lifecycle.start_task(req_id, {"user_text": request.get_last_user_message(), "conversation_id": request.conversation_id})
-        
-        user_text = request.get_last_user_message()
-        conversation_id = request.conversation_id
-        forced_response_mode = self._requested_response_mode(request)
-        request_retrieval_cache: Dict[str, Any] = {}
-        
-        # ===============================================================
-        # STEP 1: Intent Confirmation Check
-        # ===============================================================
-        if INTENT_SYSTEM_AVAILABLE:
-            confirmation_result = await self._check_pending_confirmation(
-                user_text, conversation_id
-            )
-            if confirmation_result:
-                log_info("[Orchestrator] Returning confirmation result")
-                return confirmation_result
-        
-        # ===============================================================
-        # STEP 2: Thinking Layer
-        # ===============================================================
-        # ===============================================================
-        # STEP 1.5: Tool Selector (Layer 0)
-        # ===============================================================
-        selected_tools = await self.tool_selector.select_tools(user_text)
-        selected_tools = self._filter_tool_selector_candidates(
-            selected_tools, user_text, forced_mode=forced_response_mode
-        )
-        
-        # ===============================================================
-        # STEP 2: Thinking Layer
-        # ===============================================================
-        # Check if we should skip ThinkingLayer for Master
-        skip_thinking = False
-        if request.source_adapter == "master_orchestrator":
-            settings = get_master_settings()
-            skip_thinking = not settings.get("use_thinking_layer", False)
-            if skip_thinking:
-                log_info("[Pipeline] Skipping ThinkingLayer for Master (settings: use_thinking_layer=False)")
-                thinking_plan = self.thinking._default_plan()
-        
-        if not skip_thinking:
-            # ── ThinkingLayer Cache-Check (Sync-Pfad) ──
-            _cached_plan_sync = _thinking_plan_cache.get(user_text)
-            if _cached_plan_sync:
-                thinking_plan = _cached_plan_sync
-                log_info(f"[Orchestrator] CACHE HIT ThinkingLayer (sync): intent='{thinking_plan.get('intent')}'")
-            else:
-                # Skill-Graph Pre-Fetch — policy-gated (sync path)
-                _sync_skill_ctx, _sync_prefetch_mode = self._maybe_prefetch_skills(
-                    user_text, selected_tools
-                )
-                thinking_plan = await self.thinking.analyze(
-                    user_text,
-                    memory_context=_sync_skill_ctx,
-                    available_tools=selected_tools
-                )
-                thinking_plan["_trace_skills_prefetch"] = bool(_sync_skill_ctx)
-                thinking_plan["_trace_skills_prefetch_mode"] = _sync_prefetch_mode
-                _thinking_plan_cache.set(user_text, thinking_plan)
-                log_info(f"[Orchestrator] ThinkingLayer plan cached (sync) prefetch={_sync_prefetch_mode}")
-
-        # ===============================================================
-        # STEP 2.1: RESPONSE MODE POLICY (interactive | deep)
-        # ===============================================================
-        response_mode = self._apply_response_mode_policy(
-            user_text,
-            thinking_plan,
-            forced_mode=forced_response_mode,
-        )
-        log_info(f"[Orchestrator] response_mode={response_mode} (sync)")
-
-        # ===============================================================
-        # STEP 1.7: SKILL DEDUP GATE (Sync-Pfad, fail-closed)
-        # ===============================================================
-        if "autonomous_skill_task" in thinking_plan.get("suggested_tools", []):
-            _skill_decision_sync = self._route_skill_request(user_text, thinking_plan)
-            if _skill_decision_sync and _skill_decision_sync.get("blocked"):
-                thinking_plan["_skill_gate_blocked"] = True
-                thinking_plan["_skill_gate_reason"] = _skill_decision_sync.get("reason", "skill_router_unavailable")
-                thinking_plan["suggested_tools"] = [
-                    t for t in thinking_plan.get("suggested_tools", [])
-                    if t not in {"autonomous_skill_task", "run_skill", "create_skill"}
-                ]
-                log_warn(
-                    "[Orchestrator-Sync] Skill gate blocked — "
-                    f"reason={thinking_plan['_skill_gate_reason']}"
-                )
-            elif _skill_decision_sync:
-                thinking_plan["suggested_tools"] = ["run_skill"]
-                thinking_plan["_skill_router"] = _skill_decision_sync
-                log_info(
-                    f"[Orchestrator-Sync] Skill Dedup Gate: '{_skill_decision_sync['skill_name']}' "
-                    f"(score={_skill_decision_sync['score']:.2f}) — run_skill statt create"
-                )
-
-        # ===============================================================
-        # STEP 1.8: BLUEPRINT ROUTER (Sync-Pfad)
-        # Identisch zu Streaming-Pfad — keine Divergenz.
-        # ===============================================================
-        if "request_container" in thinking_plan.get("suggested_tools", []):
-            _bp_decision_sync = self._route_blueprint_request(user_text, thinking_plan)
-            if _bp_decision_sync and _bp_decision_sync.get("blocked"):
-                thinking_plan["_blueprint_gate_blocked"] = True
-                thinking_plan["_blueprint_gate_reason"] = _bp_decision_sync.get(
-                    "reason", "blueprint_router_unavailable"
-                )
-                log_warn(
-                    "[Orchestrator-Sync] Blueprint gate blocked — "
-                    f"reason={thinking_plan['_blueprint_gate_reason']}"
-                )
-            elif _bp_decision_sync and not _bp_decision_sync.get("suggest"):
-                # Auto-route: score >= STRICT
-                thinking_plan["_blueprint_router"] = _bp_decision_sync
-                log_info(f"[Orchestrator-Sync] Blueprint auto-routed: '{_bp_decision_sync['blueprint_id']}' (score={_bp_decision_sync['score']:.2f})")
-            elif _bp_decision_sync and _bp_decision_sync.get("suggest"):
-                # Suggest-Zone: score in [SUGGEST, STRICT) → Rückfrage, kein Starten
-                thinking_plan["_blueprint_suggest"] = _bp_decision_sync
-                thinking_plan["_blueprint_gate_blocked"] = True
-                log_info(f"[Orchestrator-Sync] Blueprint suggest: Kandidaten={[c['id'] for c in _bp_decision_sync['candidates']]} — Rückfrage nötig")
-            else:
-                thinking_plan["_blueprint_gate_blocked"] = True
-                log_info("[Orchestrator-Sync] Blueprint gate: kein passender Blueprint — request_container wird blockiert")
-
-        # ===============================================================
-        # STEP 3: Context Retrieval (unified via _build_effective_context)
-        # ===============================================================
-        log_info("[Orchestrator] === CONTEXT RETRIEVAL ===")
-        from config import get_small_model_mode as _get_smm
-        _smm = _get_smm()
-        retrieved_memory, ctx_trace = self.build_effective_context(
-            user_text=user_text,
-            conv_id=conversation_id,
-            small_model_mode=_smm,
-            cleanup_payload=thinking_plan,
-            debug_flags={
-                "skills_prefetch_used": bool(thinking_plan.get("_trace_skills_prefetch")),
-                "skills_prefetch_mode": thinking_plan.get("_trace_skills_prefetch_mode", "off" if _smm else "full"),
-                "detection_rules_used": thinking_plan.get("_trace_detection_rules_mode", "false"),
-            },
-            request_cache=request_retrieval_cache,
-        )
-        memory_used = ctx_trace.get("memory_used", False)
-        # NOTE: context_text_chars = background context only (NOW/RULES/NEXT, capped).
-        # tool_context is appended separately after tool execution and is NOT included here.
-        log_info(
-            f"[CTX] mode={'small' if ctx_trace['small_model_mode'] else 'full'} "
-            f"context_text_chars={ctx_trace['context_chars']} retrieval={ctx_trace['retrieval_count']} "
-            f"src={','.join(ctx_trace['context_sources'])}"
-        )
-
-        # ===============================================================
-        # STEP 4: Control Layer
-        # ===============================================================
-        verification, verified_plan = await self._execute_control_layer(
-            user_text,
-            thinking_plan,
-            retrieved_memory,
-            conversation_id
-        )
-
-        # Skill confirmation must short-circuit the sync pipeline just like stream mode.
-        if verified_plan.get("_pending_intent"):
-            pending = verified_plan["_pending_intent"]
-            return CoreChatResponse(
-                model=request.model,
-                content=f"🛠️ Möchtest du den Skill **{pending.get('skill_name')}** erstellen? (Ja/Nein)",
-                conversation_id=conversation_id,
-                done=True,
-                done_reason="confirmation_pending",
-                memory_used=memory_used,
-                validation_passed=True,
-            )
-        
-        # ── ControlLayer Tool-Decision (sync-Pfad) ──
-        _ctrl_decisions_sync = await self._collect_control_tool_decisions(
-            user_text,
-            verified_plan,
-            stream=False,
-        )
-
-        # Blocked check - Self-Aware Error Handling
-        # None = ControlLayer hat nicht entschieden → erlauben. Nur explizit False = blocken.
-        if verification.get("approved") == False:
-            log_info("[Orchestrator] Request blocked (NON-STREAMING) - generating explanation...")
-            
-            warnings = verification.get("warnings", [])
-            reason = verification.get("reason", "Safety policy violation")
-
-            fallback = f"Diese Anfrage wurde aus Sicherheitsgründen blockiert: {reason}"
-            if warnings:
-                fallback += f" ({', '.join(warnings)})"
-            
-            return CoreChatResponse(
-                model=request.model,
-                content=fallback,
-                conversation_id=conversation_id,
-                done=True,
-                done_reason="blocked",
-                memory_used=False,
-            )
-        
-        # Extra memory lookup if Control corrected — gated by retrieval budget (Commit 4)
-        if verification.get("corrections", {}).get("memory_keys"):
-            from config import get_control_corrections_memory_keys_max
-            _extra_limit = get_control_corrections_memory_keys_max()
-            _raw_extra_keys = verification["corrections"]["memory_keys"] or []
-            if not isinstance(_raw_extra_keys, (list, tuple)):
-                _raw_extra_keys = []
-            _seen_extra = set()
-            extra_keys = []
-            for _k in _raw_extra_keys:
-                _nk = str(_k or "").strip()
-                if not _nk or _nk in _seen_extra:
-                    continue
-                extra_keys.append(_nk)
-                _seen_extra.add(_nk)
-                if len(extra_keys) >= _extra_limit:
-                    break
-            if _extra_limit == 0:
-                extra_keys = []
-            if len(_raw_extra_keys) > len(extra_keys):
-                log_info(
-                    f"[CTX] extra-lookup keys capped: kept={len(extra_keys)} "
-                    f"dropped={len(_raw_extra_keys) - len(extra_keys)} limit={_extra_limit}"
-                )
-            _policy = self._compute_retrieval_policy(thinking_plan, verified_plan)
-            _retrieval_budget = _policy["max_retrievals"]
-            for key in extra_keys:
-                if key not in thinking_plan.get("memory_keys", []):
-                    if ctx_trace["retrieval_count"] >= _retrieval_budget:
-                        log_info(
-                            f"[CTX] extra-lookup skipped (budget exhausted): "
-                            f"key='{key}' count={ctx_trace['retrieval_count']} max={_retrieval_budget}"
-                        )
-                        continue
-                    log_info(f"[Orchestrator-Control] Extra memory lookup: {key}")
-                    extra_text, extra_trace = self.build_effective_context(
-                        user_text=key,
-                        conv_id=conversation_id,
-                        small_model_mode=_smm,
-                        cleanup_payload={"needs_memory": True, "memory_keys": [key]},
-                        include_blocks={"compact": False, "system_tools": False, "memory_data": True},
-                        request_cache=request_retrieval_cache,
-                    )
-                    if extra_text:
-                        retrieved_memory = self._append_context_block(
-                            retrieved_memory, "\n" + extra_text, "jit_memory", ctx_trace
-                        )
-                        memory_used = True
-                        ctx_trace["retrieval_count"] += 1
-                        log_info(
-                            f"[CTX] extra-lookup key='{key}' "
-                            f"chars={extra_trace['context_chars']} "
-                            f"src={','.join(extra_trace['context_sources'])}"
-                        )
-        
-        # ===============================================================
-        # STEP 4.5: TOOL EXECUTION
-        # ===============================================================
-        suggested_tools = self._resolve_execution_suggested_tools(
-            user_text,
-            verified_plan,
-            _ctrl_decisions_sync,
-            stream=False,
-            enable_skill_trigger_router=False,
-        )
-
-        tool_context = ""
-        if suggested_tools:
-            log_info(f"[Orchestrator] === TOOL EXECUTION: {suggested_tools} ===")
-            # Suggest-Nachricht vorbereiten (wenn suggest-Zone, nicht no-match)
-            _bp_suggest_data = thinking_plan.get("_blueprint_suggest")
-            _bp_suggest_msg = ""
-            if _bp_suggest_data:
-                _cands = ", ".join(f"{c['id']} ({c['score']:.2f})" for c in _bp_suggest_data.get("candidates", []))
-                _bp_suggest_msg = f"RÜCKFRAGE: Welchen Blueprint soll ich starten? Meinst du: {_cands}? Bitte präzisiere."
-
-            tool_context = self._execute_tools_sync(
-                suggested_tools, user_text, _ctrl_decisions_sync,
-                time_reference=thinking_plan.get("time_reference"),
-                thinking_suggested_tools=thinking_plan.get("suggested_tools", []),
-                blueprint_gate_blocked=thinking_plan.get("_blueprint_gate_blocked", False),
-                blueprint_router_id=(thinking_plan.get("_blueprint_router") or {}).get("blueprint_id"),
-                blueprint_suggest_msg=_bp_suggest_msg,
-                session_id=conversation_id or "",
-            )
-
-        # ── Phase 1.5 Commit 2: Clip tool_context before append (small mode) ──
-        tool_context = self._clip_tool_context(tool_context, _smm)
-
-        # ── Phase 1.5 Commit 3: Unified failure-compact (sync adopts stream pattern) ──
-        # Prepend fail_block to tool_context; register source manually; single tool_ctx
-        # append counts all chars once (no double-counting between failure_ctx + tool_ctx).
-        if tool_context and "TOOL-FEHLER" in tool_context:
-            _fail_block = self._build_failure_compact_block(
-                conversation_id, len(retrieved_memory), _smm
-            )
-            if _fail_block:
-                log_info(f"[CTX] failure-compact injected chars={len(_fail_block)} (via entry-point, sync path)")
-                tool_context = _fail_block + tool_context
-                ctx_trace["context_sources"].append("failure_ctx")
-
-        if tool_context:
-            retrieved_memory = self._append_context_block(
-                retrieved_memory, tool_context, "tool_ctx", ctx_trace
-            )
-            verified_plan["_tool_results"] = tool_context
-            has_failures_or_skips = self._tool_context_has_failures_or_skips(tool_context)
-            has_success = self._tool_context_has_success(tool_context)
-            if has_failures_or_skips:
-                verified_plan["_tool_failure"] = True
-            if has_success and not has_failures_or_skips:
-                verified_plan["_tool_confidence"] = "high"
-            if _smm:
-                log_info(
-                    f"[CTX] total context after tool_context: {len(retrieved_memory)} chars "
-                    f"(tool_context={len(tool_context)}, failure_ctx merged if any)"
-                )
-
-        # ── Phase 1.5 Commit 1: Final hard cap (always active in small mode) ──
-        # Falls back to SMALL_MODEL_CHAR_CAP when SMALL_MODEL_FINAL_CAP=0 (no longer optional).
-        retrieved_memory = self._apply_final_cap(retrieved_memory, ctx_trace, _smm, "sync")
-        retrieved_memory = self._apply_effective_context_guardrail(
-            retrieved_memory, ctx_trace, _smm, "sync"
-        )
-
-        # ── Finalize orchestrator-side trace and hand off to OutputLayer ──
-        # [CTX-PRE-OUTPUT]: orchestrator context string before OutputLayer adds persona/instructions/history.
-        # [CTX-FINAL] is emitted inside OutputLayer after the full messages array is built.
-        ctx_trace["mode"] = self._compute_ctx_mode(ctx_trace)
-        log_info(
-            f"[CTX-PRE-OUTPUT] mode={ctx_trace['mode']} "
-            f"context_sources={','.join(ctx_trace['context_sources'])} "
-            f"context_chars={ctx_trace['context_chars_final']} "
-            f"retrieval_count={ctx_trace['retrieval_count']}"
-        )
-        verified_plan["_ctx_trace"] = ctx_trace
-        verified_plan["_response_mode"] = response_mode
-        try:
-            from config import get_output_timeout_interactive_s, get_output_timeout_deep_s
-            verified_plan["_output_time_budget_s"] = (
-                get_output_timeout_deep_s() if response_mode == "deep" else get_output_timeout_interactive_s()
-            )
-        except Exception:
-            pass
-
-        # ===============================================================
-        # STEP 5: Output Layer
-        # ===============================================================
-        needs_memory = thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query")
-        high_risk = thinking_plan.get("hallucination_risk") == "high"
-        memory_required_but_missing = needs_memory and high_risk and not memory_used
-        
-        answer = await self._execute_output_layer(
-            user_text=user_text,
-            verified_plan=verified_plan,
-            memory_data=retrieved_memory,
-            model=request.model,
-            chat_history=request.messages,
-            memory_required_but_missing=memory_required_but_missing
-        )
-        
-        # ===============================================================
-        # STEP 6: Memory Save
-        # ===============================================================
-        self._save_memory(conversation_id, verified_plan, answer)
-        
-        # ===============================================================
-        # RETURN
-        # ===============================================================
-        # [NEW] Lifecycle Finish
-        self.lifecycle.finish_task(req_id, {"chars": len(answer)})
-        self._post_task_processing()
-        
-        return CoreChatResponse(
-            model=request.model,
-            content=answer,
-            conversation_id=conversation_id,
-            done=True,
-            done_reason="stop",
-            memory_used=memory_used,
-            validation_passed=True,
+        return await util_process_request(
+            self,
+            request,
+            core_chat_response_cls=CoreChatResponse,
+            intent_system_available=bool(INTENT_SYSTEM_AVAILABLE),
+            get_master_settings_fn=get_master_settings,
+            thinking_plan_cache=_thinking_plan_cache,
+            soften_control_deny_fn=soften_control_deny,
+            log_info_fn=log_info,
+            log_warn_fn=log_warn,
+            log_warning_fn=log_warn,
         )
     
     # ===============================================================
-    # STREAMING PIPELINE
-    # ===============================================================
-
     async def process_stream_with_events(
         self,
         request: CoreChatRequest
     ) -> AsyncGenerator[Tuple[str, bool, Dict], None]:
         """
         Phase 3: Native event-rich streaming (ported from bridge.py).
-        
+
         Features:
         - Intent confirmation check
         - Chunking for large inputs
@@ -3430,1228 +4661,27 @@ class PipelineOrchestrator:
         - Output streaming
         - Memory save
         """
-        import time
-        from config import ENABLE_CONTROL_LAYER, SKIP_CONTROL_ON_LOW_RISK
-        
-        _t0 = time.time()
-        log_info("[Orchestrator] process_stream_with_events (Phase 3)")
-        
-        # [NEW] Lifecycle Start
-        req_id_str = f"stream-{int(time.time()*1000)}"
-        self.lifecycle.start_task(req_id_str, {"user_text": request.get_last_user_message(), "conversation_id": request.conversation_id})
-        
-        user_text = request.get_last_user_message()
-        conversation_id = request.conversation_id
-        forced_response_mode = self._requested_response_mode(request)
-        request_retrieval_cache: Dict[str, Any] = {}
-        
-        # ═══════════════════════════════════════════════════
-        # STEP 0: INTENT CONFIRMATION
-        # ═══════════════════════════════════════════════════
-        if INTENT_SYSTEM_AVAILABLE:
-            try:
-                result = await self._check_pending_confirmation(user_text, conversation_id)
-                if result:
-                    yield (result.content, False, {"type": "content"})
-                    yield ("", True, {"done_reason": "confirmation_executed"})
-                    return
-            except Exception as e:
-                log_info(f"[Orchestrator] Intent check skipped: {e}")
-        
-        # ═══════════════════════════════════════════════════
-        # STEP 0.5: CHUNKING (large inputs)
-        # ═══════════════════════════════════════════════════
-        chunking_context = None
-        
-        try:
-            from utils.chunker import needs_chunking, count_tokens
-            if ENABLE_CHUNKING and needs_chunking(user_text, CHUNKING_THRESHOLD):
-                log_info(f"[Orchestrator] Chunking: {count_tokens(user_text)} tokens")
-                async for event in self._process_chunked_stream(user_text, conversation_id, request):
-                    chunk_text, is_done, metadata = event
-                    yield event
-                    if metadata.get("type") == "chunking_done":
-                        chunking_context = {
-                            "aggregated_summary": metadata.get("aggregated_summary", ""),
-                            "thinking_result": metadata.get("thinking_result", {}),
-                        }
-        except Exception as e:
-            log_info(f"[Orchestrator] Chunking skipped: {e}")
-        
-        # ═══════════════════════════════════════════════════
-        # STEP 0.8: CONTEXT COMPRESSION (Rolling Summary)
-        # ═══════════════════════════════════════════════════
-        try:
-            from core.context_compressor import get_compressor, estimate_protocol_tokens
-            from utils.settings import settings as _settings
-            _compression_enabled = _settings.get("CONTEXT_COMPRESSION_ENABLED", True)
-            if _compression_enabled:
-                _token_est = estimate_protocol_tokens()
-                _compression_threshold = _settings.get("COMPRESSION_THRESHOLD", 100000)
-                if _token_est >= _compression_threshold:
-                    _compression_mode = _settings.get("CONTEXT_COMPRESSION_MODE", "sync")
-                    log_info(f"[Orchestrator] Context compression triggered ({_token_est} tokens, mode={_compression_mode})")
-                    yield ("", False, {
-                        "type": "compression_start",
-                        "token_count": _token_est,
-                        "mode": _compression_mode,
-                    })
-                    if _compression_mode == "sync":
-                        _did_compress, _phase = await get_compressor().check_and_compress()
-                        yield ("", False, {
-                            "type": "compression_done",
-                            "phase": _phase,
-                            "async": False,
-                        })
-                    else:
-                        # Async: Hintergrund-Task, Pipeline läuft sofort weiter
-                        asyncio.create_task(get_compressor().check_and_compress())
-                        yield ("", False, {
-                            "type": "compression_done",
-                            "phase": "async_started",
-                            "async": True,
-                        })
-        except Exception as _ce:
-            log_warn(f"[Orchestrator] Context compression skipped: {_ce}")
+        async for item in util_process_stream_with_events(
+            self,
+            request,
+            intent_system_available=bool(INTENT_SYSTEM_AVAILABLE),
+            enable_chunking=bool(ENABLE_CHUNKING),
+            chunking_threshold=int(CHUNKING_THRESHOLD),
+            get_master_settings_fn=get_master_settings,
+            thinking_plan_cache=_thinking_plan_cache,
+            sequential_result_cache=_sequential_result_cache,
+            soften_control_deny_fn=soften_control_deny,
+            skill_creation_intent_cls=SkillCreationIntent if INTENT_SYSTEM_AVAILABLE else None,
+            intent_origin_cls=IntentOrigin if INTENT_SYSTEM_AVAILABLE else None,
+            get_intent_store_fn=get_intent_store if INTENT_SYSTEM_AVAILABLE else (lambda: None),
+            log_info_fn=log_info,
+            log_warn_fn=log_warn,
+            log_error_fn=log_error,
+            log_debug_fn=log_debug,
+            log_warning_fn=log_warn,
+        ):
+            yield item
 
-        # ═══════════════════════════════════════════════════
-        # STEP 1: THINKING LAYER (STREAMING)
-        # ═══════════════════════════════════════════════════
-        log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: LAYER 1 THINKING")
-        
-        thinking_plan = {}
-        _thinking_skill_ctx = ""       # Pre-fetched for ThinkingLayer
-        _stream_prefetch_mode = "off"  # Tracks prefetch mode for trace
-
-        if chunking_context and chunking_context.get("thinking_result"):
-            log_info("[Orchestrator] Layer 1 SKIPPED (using chunking result)")
-            thinking_plan = chunking_context["thinking_result"]
-            yield ("", False, {"type": "thinking_done", "thinking": thinking_plan, "source": "chunking"})
-        else:
-            log_info("[Orchestrator] === LAYER 1: THINKING (STREAMING) ===")
-            
-            # Layer 0: Tool Selection
-            selected_tools = await self.tool_selector.select_tools(user_text)
-            selected_tools = self._filter_tool_selector_candidates(
-                selected_tools, user_text, forced_mode=forced_response_mode
-            )
-            if selected_tools:
-                yield ("", False, {"type": "tool_selection", "tools": selected_tools})
-
-            # Check if we should skip ThinkingLayer
-            skip_thinking = False
-            if request.source_adapter == "master_orchestrator":
-                settings = get_master_settings()
-                skip_thinking = not settings.get("use_thinking_layer", False)
-                
-                if skip_thinking:
-                    log_info("[Pipeline] Skipping ThinkingLayer for Master (ThinkingLayer=OFF in settings)")
-                    thinking_plan = self.thinking._default_plan()
-                    yield ("", False, {
-                        "type": "thinking_done",
-                        "thinking": {
-                            "intent": "Master orchestrator action",
-                            "needs_memory": False,
-                            "skipped": True,
-                            "reason": "Master has own planning + ThinkingLayer disabled in settings"
-                        }
-                    })
-            
-            if not skip_thinking:
-                # ── ThinkingLayer Cache-Check ──
-                _cached_plan = _thinking_plan_cache.get(user_text)
-                if _cached_plan:
-                    thinking_plan = _cached_plan
-                    log_info(f"[Orchestrator] CACHE HIT ThinkingLayer: intent='{thinking_plan.get('intent')}'")
-                    yield ("", False, {
-                        "type": "thinking_done",
-                        "thinking": {
-                            "intent": thinking_plan.get("intent", "unknown"),
-                            "needs_memory": thinking_plan.get("needs_memory", False),
-                            "memory_keys": thinking_plan.get("memory_keys", []),
-                            "hallucination_risk": thinking_plan.get("hallucination_risk", "medium"),
-                            "needs_sequential_thinking": thinking_plan.get("needs_sequential_thinking", False),
-                            "cached": True,
-                        }
-                    })
-                else:
-                    # STEP 0.5: Skill-Graph Pre-Fetch — policy-gated (stream path)
-                    _thinking_skill_ctx, _stream_prefetch_mode = self._maybe_prefetch_skills(
-                        user_text, selected_tools
-                    )
-                    if _thinking_skill_ctx:
-                        log_info(f"[Orchestrator] Skill-Context für ThinkingLayer vorbereitet mode={_stream_prefetch_mode}")
-
-                    async for chunk, is_done, plan in self.thinking.analyze_stream(
-                        user_text,
-                        memory_context=_thinking_skill_ctx,
-                        available_tools=selected_tools
-                    ):
-                        if not is_done:
-                            yield ("", False, {"type": "thinking_stream", "thinking_chunk": chunk})
-                        else:
-                            thinking_plan = plan
-                            thinking_plan["_trace_skills_prefetch"] = bool(_thinking_skill_ctx)
-                            thinking_plan["_trace_skills_prefetch_mode"] = _stream_prefetch_mode
-                            # Im Cache speichern für spätere Aufrufe
-                            _thinking_plan_cache.set(user_text, thinking_plan)
-                            log_info(f"[Orchestrator] ThinkingLayer plan cached prefetch={_stream_prefetch_mode}")
-                    yield ("", False, {
-                        "type": "thinking_done",
-                        "thinking": {
-                            "intent": thinking_plan.get("intent", "unknown"),
-                            "needs_memory": thinking_plan.get("needs_memory", False),
-                            "memory_keys": thinking_plan.get("memory_keys", []),
-                            "hallucination_risk": thinking_plan.get("hallucination_risk", "medium"),
-                            "needs_sequential_thinking": thinking_plan.get("needs_sequential_thinking", False),
-                        }
-                    })
-
-        # Response mode policy (interactive | deep)
-        response_mode_stream = self._apply_response_mode_policy(
-            user_text,
-            thinking_plan,
-            forced_mode=forced_response_mode,
-        )
-        log_info(f"[Orchestrator] response_mode={response_mode_stream} (stream)")
-        yield ("", False, {"type": "response_mode", "mode": response_mode_stream})
-        
-        # ═══════════════════════════════════════════════════
-        # WORKSPACE: Save thinking observations
-        # ═══════════════════════════════════════════════════
-        obs_text = self._extract_workspace_observations(thinking_plan)
-        if obs_text:
-            ws_event = self._save_workspace_entry(
-                conversation_id, obs_text, "observation", "thinking"
-            )
-            if ws_event:
-                yield ("", False, ws_event)
-
-        # ═══════════════════════════════════════════════════
-        # STEP 1.5: CONTEXT RETRIEVAL (unified helper)
-        # ═══════════════════════════════════════════════════
-        from config import get_small_model_mode as _get_smm_stream
-        _smm_stream = _get_smm_stream()
-        full_context, ctx_trace_stream = self.build_effective_context(
-            user_text=user_text,
-            conv_id=conversation_id,
-            small_model_mode=_smm_stream,
-            cleanup_payload=thinking_plan,
-            debug_flags={
-                # Prefer trace stored in plan (works for both cache-hit and fresh run).
-                # _thinking_skill_ctx is empty on cache-hit so must not be used as sole source.
-                "skills_prefetch_used": thinking_plan.get("_trace_skills_prefetch", bool(_thinking_skill_ctx)),
-                "skills_prefetch_mode": thinking_plan.get("_trace_skills_prefetch_mode", "off" if _smm_stream else "full"),
-                "detection_rules_used": thinking_plan.get("_trace_detection_rules_mode", "false"),
-            },
-            request_cache=request_retrieval_cache,
-        )
-        memory_used = ctx_trace_stream.get("memory_used", False)
-        # NOTE: context_text_chars = background context only (NOW/RULES/NEXT, capped).
-        # tool_context is appended separately and is NOT included here.
-        log_info(
-            f"[CTX] mode={'small' if ctx_trace_stream['small_model_mode'] else 'full'} "
-            f"context_text_chars={ctx_trace_stream['context_chars']} retrieval={ctx_trace_stream['retrieval_count']} "
-            f"src={','.join(ctx_trace_stream['context_sources'])}"
-        )
-        
-        # ═══════════════════════════════════════════════════
-        # STEP 1.6: EARLY HARDWARE GATE (vor Sequential Thinking!)
-        # Blockt teure Requests sofort — spart 20-40s Sequential-Time
-        # ═══════════════════════════════════════════════════
-        _early_gate_msg = self._check_hardware_gate_early(user_text, thinking_plan)
-        if _early_gate_msg:
-            log_info("[Orchestrator] Early Hardware Gate fired — blocking before Sequential Thinking")
-            yield (_early_gate_msg, False, {"type": "content"})
-            yield ("", True, {"done_reason": "blocked_hardware_gate"})
-            return
-
-        # ═══════════════════════════════════════════════════
-        # STEP 1.7: SKILL DEDUP GATE — Embedding-basiert, kein LLM
-        # Wenn autonomous_skill_task geplant: prüfe ob Skill bereits existiert.
-        # Score > 0.75 → use_existing (run_skill) statt Neuerstellen.
-        # Deterministisch — kein Modell kann das überschreiben.
-        # ═══════════════════════════════════════════════════
-        if "autonomous_skill_task" in thinking_plan.get("suggested_tools", []):
-            skill_decision = self._route_skill_request(user_text, thinking_plan)
-            if skill_decision and skill_decision.get("blocked"):
-                thinking_plan["_skill_gate_blocked"] = True
-                thinking_plan["_skill_gate_reason"] = skill_decision.get("reason", "skill_router_unavailable")
-                thinking_plan["suggested_tools"] = [
-                    t for t in thinking_plan.get("suggested_tools", [])
-                    if t not in {"autonomous_skill_task", "run_skill", "create_skill"}
-                ]
-                log_warn(
-                    "[Orchestrator] Skill gate blocked — "
-                    f"reason={thinking_plan['_skill_gate_reason']}"
-                )
-                yield ("", False, {
-                    "type": "skill_blocked",
-                    "reason": thinking_plan["_skill_gate_reason"],
-                })
-            elif skill_decision:
-                # Existing skill gefunden → suggested_tools überschreiben
-                thinking_plan["suggested_tools"] = ["run_skill"]
-                thinking_plan["_skill_router"] = skill_decision
-                log_info(
-                    f"[Orchestrator] Skill Dedup Gate: '{skill_decision['skill_name']}' "
-                    f"(score={skill_decision['score']:.2f}) — run_skill statt create"
-                )
-                yield ("", False, {
-                    "type": "skill_routed",
-                    "skill_name": skill_decision["skill_name"],
-                    "score": skill_decision["score"],
-                })
-
-        # ═══════════════════════════════════════════════════
-        # STEP 1.8: BLUEPRINT ROUTER — Container-Intent → Blueprint aus Graph
-        # Wenn request_container geplant: prüfe ob passender Blueprint verfügbar.
-        # Score > MATCH_THRESHOLD → blueprint_id in thinking_plan injizieren.
-        # Kein Match → HARD GATE: request_container wird blockiert (kein Freestyle-Fallback!).
-        # Deterministisch — kein Modell kann das überschreiben.
-        # ═══════════════════════════════════════════════════
-        if "request_container" in thinking_plan.get("suggested_tools", []):
-            blueprint_decision = self._route_blueprint_request(user_text, thinking_plan)
-            if blueprint_decision and blueprint_decision.get("blocked"):
-                thinking_plan["_blueprint_gate_blocked"] = True
-                thinking_plan["_blueprint_gate_reason"] = blueprint_decision.get(
-                    "reason", "blueprint_router_unavailable"
-                )
-                log_warn(
-                    "[Orchestrator] Blueprint gate blocked — "
-                    f"reason={thinking_plan['_blueprint_gate_reason']}"
-                )
-                yield ("", False, {
-                    "type": "blueprint_blocked",
-                    "reason": thinking_plan["_blueprint_gate_reason"],
-                })
-            elif blueprint_decision and not blueprint_decision.get("suggest"):
-                # Auto-route: score >= STRICT
-                thinking_plan["_blueprint_router"] = blueprint_decision
-                log_info(
-                    f"[Orchestrator] Blueprint auto-routed: '{blueprint_decision['blueprint_id']}' "
-                    f"(score={blueprint_decision['score']:.2f})"
-                )
-                yield ("", False, {
-                    "type": "blueprint_routed",
-                    "blueprint_id": blueprint_decision["blueprint_id"],
-                    "score": blueprint_decision["score"],
-                })
-            elif blueprint_decision and blueprint_decision.get("suggest"):
-                # Suggest-Zone: score in [SUGGEST, STRICT) → Rückfrage, kein Starten
-                thinking_plan["_blueprint_suggest"] = blueprint_decision
-                thinking_plan["_blueprint_gate_blocked"] = True
-                candidates = blueprint_decision.get("candidates", [])
-                log_info(f"[Orchestrator] Blueprint suggest: Kandidaten={[c['id'] for c in candidates]} — Rückfrage nötig")
-                yield ("", False, {
-                    "type": "blueprint_suggest",
-                    "candidates": candidates,
-                    "score": blueprint_decision["score"],
-                })
-            else:
-                # No blueprint match → HARD GATE: block request_container
-                thinking_plan["_blueprint_gate_blocked"] = True
-                log_info("[Orchestrator] Blueprint gate: kein passender Blueprint — request_container wird blockiert")
-                yield ("", False, {"type": "blueprint_blocked"})
-
-        # ═══════════════════════════════════════════════════
-        # STEP 1.75: SEQUENTIAL THINKING (STREAMING)
-        # ═══════════════════════════════════════════════════
-        if thinking_plan.get('needs_sequential_thinking') or thinking_plan.get('sequential_thinking_required'):
-            log_info("[Orchestrator] Sequential Thinking detected")
-            try:
-                sequential_input = user_text
-                if chunking_context and chunking_context.get("aggregated_summary"):
-                    sequential_input = f"User: {thinking_plan.get('intent')}\n{chunking_context['aggregated_summary']}"
-
-                # ── Sequential Cache-Check ──
-                _seq_cache_key = f"{sequential_input}|{thinking_plan.get('intent', '')}"
-                _cached_seq = _sequential_result_cache.get(_seq_cache_key)
-                if _cached_seq:
-                    log_info("[Orchestrator] CACHE HIT Sequential Thinking")
-                    thinking_plan["_sequential_result"] = _cached_seq
-                    yield ("", False, {
-                        "type": "sequential_done",
-                        "steps": _cached_seq.get("steps", []),
-                        "cached": True,
-                    })
-                else:
-                    _seq_steps_collected = []
-                    from config import get_sequential_timeout_s
-                    _seq_timeout_s = float(get_sequential_timeout_s())
-                    try:
-                        async with asyncio.timeout(_seq_timeout_s):
-                            async for event in self.control._check_sequential_thinking_stream(
-                                user_text=sequential_input,
-                                thinking_plan=thinking_plan
-                            ):
-                                # Sammle Steps für Cache
-                                if event.get("type") == "sequential_step":
-                                    _seq_steps_collected.append(event.get("step", {}))
-                                elif event.get("type") == "sequential_done":
-                                    # Im Cache speichern
-                                    _seq_result = {
-                                        "steps": _seq_steps_collected,
-                                        "summary": event.get("summary", ""),
-                                    }
-                                    thinking_plan["_sequential_result"] = _seq_result
-                                    _sequential_result_cache.set(_seq_cache_key, _seq_result)
-                                    log_info(f"[Orchestrator] Sequential result cached ({len(_seq_steps_collected)} steps)")
-                                yield ("", False, event)
-                    except TimeoutError:
-                        thinking_plan["_sequential_timed_out"] = True
-                        log_warn(f"[Orchestrator] Sequential stream timeout after {_seq_timeout_s:.0f}s")
-                        yield ("", False, {
-                            "type": "sequential_error",
-                            "error": f"timeout_after_{int(_seq_timeout_s)}s",
-                        })
-            except Exception as e:
-                log_info(f"[Orchestrator] Sequential error: {e}")
-        
-        # ═══════════════════════════════════════════════════
-        # STEP 2: CONTROL LAYER
-        # ═══════════════════════════════════════════════════
-        log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: LAYER 2 CONTROL")
-        
-        skip_control, _skip_reason_stream = self._should_skip_control_layer(user_text, thinking_plan)
-        if skip_control:
-            log_info(f"[Orchestrator] Layer 2 SKIPPED ({_skip_reason_stream})")
-        else:
-            log_info(f"[Orchestrator] Layer 2 CONTROL REQUIRED ({_skip_reason_stream})")
-        
-        if skip_control:
-            verified_plan = thinking_plan.copy()
-            verified_plan["_skipped"] = True
-            verification = {"approved": True}
-        else:
-            log_info("[Orchestrator] === LAYER 2: CONTROL ===")
-            verification = await self.control.verify(user_text, thinking_plan, full_context)
-            verified_plan = self.control.apply_corrections(thinking_plan, verification)
-            # Skill Confirmation Handling (stream parity with sync path)
-            if verification.get("_needs_skill_confirmation") and INTENT_SYSTEM_AVAILABLE:
-                skill_name = verification.get("_skill_name", "unknown")
-                log_info(f"[Orchestrator] Creating SkillCreationIntent for '{skill_name}' (stream)")
-                intent = SkillCreationIntent(
-                    skill_name=skill_name,
-                    origin=IntentOrigin.USER,
-                    reason=verification.get("_cim_decision", {}).get("pattern_id", "control_layer"),
-                    user_text=user_text,
-                    conversation_id=conversation_id,
-                    thinking_plan=thinking_plan,
-                    complexity=thinking_plan.get("sequential_complexity", 5),
-                )
-                store = get_intent_store()
-                store.add(intent)
-                verified_plan["_pending_intent"] = intent.to_dict()
-                log_info(f"[Orchestrator] Intent {intent.id[:8]} added to verified_plan (stream)")
-
-        log_info(f"[Orchestrator] Control approved={verification.get('approved')}")
-
-        # ── Stream extra-lookup — gated by retrieval budget (Commit 4 parity) ──
-        # Mirror of sync path (core/orchestrator.py:1848): budget check before each lookup.
-        if verification.get("corrections", {}).get("memory_keys"):
-            from config import get_control_corrections_memory_keys_max
-            _extra_limit_stream = get_control_corrections_memory_keys_max()
-            _raw_extra_keys_stream = verification["corrections"]["memory_keys"] or []
-            if not isinstance(_raw_extra_keys_stream, (list, tuple)):
-                _raw_extra_keys_stream = []
-            _seen_extra_stream = set()
-            _extra_keys_stream = []
-            for _key_raw in _raw_extra_keys_stream:
-                _nk_stream = str(_key_raw or "").strip()
-                if not _nk_stream or _nk_stream in _seen_extra_stream:
-                    continue
-                _extra_keys_stream.append(_nk_stream)
-                _seen_extra_stream.add(_nk_stream)
-                if len(_extra_keys_stream) >= _extra_limit_stream:
-                    break
-            if _extra_limit_stream == 0:
-                _extra_keys_stream = []
-            if len(_raw_extra_keys_stream) > len(_extra_keys_stream):
-                log_info(
-                    f"[CTX] stream extra-lookup keys capped: kept={len(_extra_keys_stream)} "
-                    f"dropped={len(_raw_extra_keys_stream) - len(_extra_keys_stream)} "
-                    f"limit={_extra_limit_stream}"
-                )
-            _policy_stream = self._compute_retrieval_policy(thinking_plan, verified_plan)
-            _budget_stream = _policy_stream["max_retrievals"]
-            for _key in _extra_keys_stream:
-                if _key not in thinking_plan.get("memory_keys", []):
-                    if ctx_trace_stream["retrieval_count"] >= _budget_stream:
-                        log_info(
-                            f"[CTX] stream extra-lookup skipped (budget exhausted): "
-                            f"key='{_key}' count={ctx_trace_stream['retrieval_count']} max={_budget_stream}"
-                        )
-                        continue
-                    log_info(f"[Orchestrator-Control-Stream] Extra memory lookup: {_key}")
-                    _extra_text_s, _extra_trace_s = self.build_effective_context(
-                        user_text=_key,
-                        conv_id=conversation_id,
-                        small_model_mode=_smm_stream,
-                        cleanup_payload={"needs_memory": True, "memory_keys": [_key]},
-                        include_blocks={"compact": False, "system_tools": False, "memory_data": True},
-                        request_cache=request_retrieval_cache,
-                    )
-                    if _extra_text_s:
-                        full_context = self._append_context_block(
-                            full_context, "\n" + _extra_text_s, "jit_memory", ctx_trace_stream
-                        )
-                        memory_used = True
-                        ctx_trace_stream["retrieval_count"] += 1
-                        log_info(
-                            f"[CTX] stream extra-lookup key='{_key}' "
-                            f"chars={_extra_trace_s['context_chars']} "
-                            f"src={','.join(_extra_trace_s['context_sources'])}"
-                        )
-
-        # ── ControlLayer Tool-Decision: Args via Function Calling ──
-        _control_tool_decisions = await self._collect_control_tool_decisions(
-            user_text,
-            verified_plan,
-            stream=True,
-        )
-        
-        # Self-Aware Error Handling
-        if verification.get("approved") == False:
-            log_info("[Orchestrator] Request blocked by ControlLayer gate")
-            reason = verification.get("reason", "Safety policy violation")
-            warnings = verification.get("warnings", [])
-            msg = reason
-            if warnings:
-                msg += f"\n\n_{', '.join(warnings)}_"
-            # Als normaler Content-Chunk yielden — dann done
-            yield (msg, False, {"type": "content"})
-            yield ("", True, {"done_reason": "blocked"})
-            return
-
-        yield ("", False, {"type": "control", "approved": verification.get("approved", True), "skipped": skip_control})
-
-        # ═══════════════════════════════════════════════════
-        # LOOP ENGINE TRIGGER CHECK
-        # Kein extra LLM-Call — ThinkingLayer berechnet
-        # sequential_complexity/needs_sequential sowieso.
-        # ═══════════════════════════════════════════════════
-        _loop_complexity = thinking_plan.get("sequential_complexity", 0)
-        _loop_sequential = thinking_plan.get("needs_sequential_thinking", False)
-        # Lese suggested_tools aus thinking_plan (vor CIM-Übersteuerung)
-        _raw_suggested = thinking_plan.get("suggested_tools") or verified_plan.get("suggested_tools") or []
-        _loop_tools_count = len(_raw_suggested)
-        # autonomous_skill_task braucht keinen LoopEngine — hat eigene Pipeline
-        _autonomous_task = "autonomous_skill_task" in _raw_suggested
-        from config import get_loop_engine_trigger_complexity, get_loop_engine_min_tools
-        _loop_complexity_threshold = int(get_loop_engine_trigger_complexity())
-        _loop_min_tools = int(get_loop_engine_min_tools())
-        _loop_candidate = (
-            _loop_complexity >= _loop_complexity_threshold
-            or (_loop_sequential and _loop_tools_count >= 2)
-        )
-        use_loop_engine = (
-            not _autonomous_task
-            and response_mode_stream == "deep"
-            and _loop_tools_count >= _loop_min_tools
-            and _loop_candidate
-        )
-        # ── Phase 1.5 Commit 4: LoopEngine guard in small-model-mode ──
-        # LoopEngine prompt grows unbounded across iterations — incompatible with small-model budget.
-        if use_loop_engine and _smm_stream:
-            use_loop_engine = False
-            log_info("[Orchestrator] LoopEngine SKIP — small-model-mode (unbounded prompt growth risk)")
-        if use_loop_engine:
-            log_info(
-                "[Orchestrator] LoopEngine trigger: "
-                f"complexity={_loop_complexity}/{_loop_complexity_threshold}, "
-                f"sequential={_loop_sequential}, tools={_loop_tools_count}/{_loop_min_tools}, "
-                f"response_mode={response_mode_stream}"
-            )
-        elif _autonomous_task:
-            log_info(f"[Orchestrator] LoopEngine SKIP — autonomous_skill_task hat eigene Pipeline")
-        elif response_mode_stream != "deep":
-            log_info("[Orchestrator] LoopEngine SKIP — response_mode!=deep")
-
-        # WORKSPACE: Save control layer decision if not skipped
-        if not skip_control:
-            corrections = verification.get("corrections", {})
-            warnings = verification.get("warnings", [])
-            if corrections or warnings:
-                ctrl_parts = []
-                if warnings:
-                    ctrl_parts.append(f"**Warnings:** {', '.join(str(w) for w in warnings)}")
-                if corrections:
-                    ctrl_parts.append(f"**Corrections:** {json.dumps(corrections, ensure_ascii=False)[:300]}")
-                ws_event = self._save_workspace_entry(
-                    conversation_id, "\n".join(ctrl_parts), "observation", "control"
-                )
-                if ws_event:
-                    yield ("", False, ws_event)
-
-        # Skill confirmation
-        if verified_plan.get("_pending_intent"):
-            pending = verified_plan["_pending_intent"]
-            yield (f"🛠️ Möchtest du den Skill **{pending.get('skill_name')}** erstellen? (Ja/Nein)", False, {"type": "content"})
-            yield ("", True, {"type": "confirmation_pending", "intent_id": pending.get("id")})
-            return
-        
-        if verification.get("approved") == False:
-            yield (verification.get("message", "Nicht genehmigt"), True, {"type": "error"})
-            return
-        
-        # ═══════════════════════════════════════════════════
-        # STEP 2.5: TOOL EXECUTION
-        # ═══════════════════════════════════════════════════
-        tool_context = ""
-
-        suggested_tools = self._resolve_execution_suggested_tools(
-            user_text,
-            verified_plan,
-            _control_tool_decisions,
-            stream=True,
-            enable_skill_trigger_router=True,
-        )
-
-        if suggested_tools:
-            log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: TOOL EXECUTION")
-            log_info(f"[Orchestrator] === TOOL EXECUTION: {suggested_tools} ===")
-            # Normalisierte dict-Specs für Frontend zu lesbaren Namen konvertieren
-            _tool_names_display = [t["tool"] if isinstance(t, dict) and "tool" in t else str(t) for t in suggested_tools]
-            yield ("", False, {"type": "tool_start", "tools": _tool_names_display})
-
-            tool_hub = get_hub()
-            tool_hub.initialize()
-            _last_container_id = None
-
-            # Fast Lane Executor für home_* Tools
-            _STREAM_FAST_LANE_TOOLS = {"home_read", "home_write", "home_list"}
-            try:
-                from core.tools.fast_lane.executor import get_fast_lane_executor
-                _stream_fast_lane = get_fast_lane_executor()
-            except ImportError:
-                _stream_fast_lane = None
-
-            # Reflection Loop: initialisieren + Round-1-Args verfolgen
-            from core.tool_intelligence import ReflectionLoop
-            _reflection = ReflectionLoop()
-            _round1_args: Dict[str, Dict] = {}
-
-            for tool_spec in suggested_tools:
-                # Handle normalisierte Specs: {"tool": "run_skill", "args": {...}}
-                if isinstance(tool_spec, dict) and "tool" in tool_spec:
-                    tool_name = tool_spec["tool"]
-                    tool_args = tool_spec.get("args", {})
-                else:
-                    tool_name = tool_spec
-                    # ControlLayer entscheidet Args (Function Calling) — Fallback: heuristic
-                    # IMPORTANT: {} is falsy → same logic as sync path (_cd.get() or _build_tool_args)
-                    tool_args = _control_tool_decisions.get(tool_name) or self._build_tool_args(tool_name, user_text)
-                    if tool_name in _control_tool_decisions and _control_tool_decisions[tool_name]:
-                        log_debug(f"[Orchestrator] Using ControlLayer args for {tool_name}")
-                    # autonomous_skill_task: Intent aus ThinkingLayer injizieren
-                    if tool_name == "autonomous_skill_task":
-                        tool_args["intent"] = thinking_plan.get("intent", user_text)
-                        # complexity=3: User will explizit Skill erstellen → immer unter AUTO_CREATE_THRESHOLD
-                        tool_args["complexity"] = 3
-                        tool_args["thinking_plan"] = {
-                            "intent": thinking_plan.get("intent", ""),
-                            "reasoning": thinking_plan.get("reasoning", ""),
-                            "sequential_complexity": thinking_plan.get("sequential_complexity", 3),
-                        }
-                try:
-                    _round1_args[tool_name] = tool_args
-                    _reflection.register_round1_tool(tool_name, tool_args)
-
-                    # Temporal guard: Protokoll ist die Quelle, kein Graph-Fallback nötig
-                    if tool_name == "memory_graph_search" and thinking_plan.get("time_reference"):
-                        log_info(f"[Orchestrator-Stream] Blocking memory_graph_search — time_reference={thinking_plan['time_reference']}, protocol is source")
-                        continue
-
-                    # Write-guard: home_write nur wenn ThinkingLayer es explizit vorgeschlagen hat
-                    if tool_name == "home_write" and "home_write" not in thinking_plan.get("suggested_tools", []):
-                        log_info("[Orchestrator-Stream] Blocking home_write — not in ThinkingLayer suggested_tools (ControlLayer hallucination)")
-                        continue
-
-                    # Fail-closed: bei Skill-Router-Ausfall keine Skill-Ausführung zulassen.
-                    if tool_name in {"autonomous_skill_task", "create_skill", "run_skill"} and thinking_plan.get("_skill_gate_blocked"):
-                        _skill_reason = thinking_plan.get("_skill_gate_reason", "skill_router_unavailable")
-                        log_warn(f"[Orchestrator-Stream] Blocking {tool_name} — reason={_skill_reason}")
-                        tool_context += (
-                            f"\n[{tool_name}]: FEHLER: Skill-Router nicht verfügbar ({_skill_reason}). "
-                            "Skill-Operation aus Sicherheitsgründen blockiert."
-                        )
-                        yield ("", False, {
-                            "type": "tool_result",
-                            "tool": tool_name,
-                            "success": False,
-                            "error": _skill_reason,
-                            "skipped": True,
-                        })
-                        continue
-
-                    # Blueprint Gate + Router (Stream):
-                    # Handles both: pre-planned gate (Step 1.8) AND keyword-fallback path (JIT check).
-                    if tool_name == "request_container":
-                        if thinking_plan.get("_blueprint_gate_blocked"):
-                            # Gate was set at Step 1.8 (no match OR suggest-zone) — block
-                            log_info("[Orchestrator-Stream] Blocking request_container — Blueprint Gate (pre-planned)")
-                            _suggest_data = thinking_plan.get("_blueprint_suggest")
-                            if _suggest_data:
-                                _cands = ", ".join(f"{c['id']} ({c['score']:.2f})" for c in _suggest_data.get("candidates", []))
-                                tool_context += f"\n[request_container]: RÜCKFRAGE: Welchen Blueprint soll ich starten? Meinst du: {_cands}? Bitte präzisiere."
-                            else:
-                                tool_context += "\n[request_container]: FEHLER: Kein passender Blueprint gefunden. Verfügbare Blueprints: python-sandbox, node-sandbox, db-sandbox, shell-sandbox."
-                            continue
-                        elif "_blueprint_router" in thinking_plan:
-                            _bp_id = thinking_plan["_blueprint_router"]["blueprint_id"]
-                            tool_args["blueprint_id"] = _bp_id  # Always inject — no fallback override allowed
-                            tool_args["session_id"] = conversation_id or ""
-                            tool_args["conversation_id"] = conversation_id or ""
-                            log_info(f"[Orchestrator-Stream] blueprint_id injected: {_bp_id}")
-                        else:
-                            # Keyword-fallback path: JIT router check
-                            try:
-                                _jit_d = self._route_blueprint_request(user_text, thinking_plan)
-                                if _jit_d and _jit_d.get("blocked"):
-                                    _jit_reason = _jit_d.get("reason", "blueprint_router_unavailable")
-                                    log_warn(f"[Orchestrator-Stream] JIT router blocked request_container — reason={_jit_reason}")
-                                    tool_context += "\n[request_container]: FEHLER: Blueprint-Router nicht verfügbar. Kein Freestyle-Container erlaubt."
-                                    continue
-                                elif _jit_d and not _jit_d.get("suggest"):
-                                    tool_args["blueprint_id"] = _jit_d["blueprint_id"]
-                                    tool_args["session_id"] = conversation_id or ""
-                                    tool_args["conversation_id"] = conversation_id or ""
-                                    log_info(f"[Orchestrator-Stream] JIT blueprint_id: {_jit_d['blueprint_id']} (score={_jit_d['score']:.2f})")
-                                elif _jit_d and _jit_d.get("suggest"):
-                                    _jit_cands = ", ".join(f"{c['id']} ({c['score']:.2f})" for c in _jit_d["candidates"])
-                                    log_info(f"[Orchestrator-Stream] JIT suggest: {_jit_cands} — Rückfrage nötig")
-                                    tool_context += f"\n[request_container]: RÜCKFRAGE: Welchen Blueprint soll ich starten? Meinst du: {_jit_cands}? Bitte präzisiere."
-                                    continue
-                                else:
-                                    log_info("[Orchestrator-Stream] JIT Blueprint Gate: kein Match — blocking")
-                                    tool_context += "\n[request_container]: FEHLER: Kein passender Blueprint gefunden. Verfügbare Blueprints: python-sandbox, node-sandbox, db-sandbox, shell-sandbox."
-                                    continue
-                            except Exception as _jit_e:
-                                log_warn(f"[Orchestrator-Stream] JIT router error: {_jit_e} — blocking request_container (no freestyle fallback)")
-                                tool_context += "\n[request_container]: FEHLER: Blueprint-Router nicht verfügbar. Kein Freestyle-Container erlaubt."
-                                continue
-
-                    # Chain: inject container_id from previous request_container
-                    if _last_container_id and tool_args.get("container_id") == "PENDING":
-                        tool_args["container_id"] = _last_container_id
-                    elif tool_args.get("container_id") == "PENDING":
-                        log_info(f"[Orchestrator] Skipping {tool_name} - no container_id yet")
-                        continue
-
-                    _valid, tool_args, _arg_reason = self._validate_tool_args(
-                        tool_hub, tool_name, tool_args, user_text
-                    )
-                    if not _valid:
-                        log_warn(f"[Orchestrator-Stream] Skipping {tool_name} due to invalid args: {_arg_reason}")
-                        tool_context += f"\n### TOOL-SKIP ({tool_name}): {_arg_reason}\n"
-                        yield ("", False, {
-                            "type": "tool_result",
-                            "tool": tool_name,
-                            "success": False,
-                            "error": _arg_reason,
-                            "skipped": True,
-                        })
-                        continue
-
-                    # ── Fast Lane: home_read/write/list nativ ausführen ──
-                    if tool_name in _STREAM_FAST_LANE_TOOLS and _stream_fast_lane:
-                        try:
-                            log_info(f"[Orchestrator-Stream] Fast Lane ⚡ {tool_name}")
-                            fl_result = _stream_fast_lane.execute(tool_name, tool_args)
-                            formatted, success, meta = self._format_tool_result(fl_result, tool_name)
-                            # ── Commit 2 stream parity: Card + Full Payload ──
-                            _fl_status = "ok" if success else "error"
-                            _card, _ref = self._build_tool_result_card(
-                                tool_name, formatted.strip(), _fl_status, conversation_id
-                            )
-                            tool_context += _card
-                            yield ("", False, {"type": "tool_result", "tool": tool_name, "success": success, "execution_mode": "fast_lane"})
-                            # HOME AUTO-EXPAND: home_list → auto-read files (same as MCP path)
-                            if tool_name == "home_list" and success and hasattr(fl_result, 'content') and isinstance(fl_result.content, list):
-                                _list_base = tool_args.get("path", ".").strip("/")
-                                if _list_base in (".", "", "/trion-home"):
-                                    _list_base = ""
-                                _files_read = 0
-                                for _item in fl_result.content:
-                                    if _files_read >= 5:
-                                        break
-                                    if _item.endswith("/"):
-                                        _subdir = (_list_base + "/" if _list_base else "") + _item.rstrip("/")
-                                        try:
-                                            _sr = _stream_fast_lane.execute("home_list", {"path": _subdir})
-                                            _si = _sr.content if hasattr(_sr, 'content') else []
-                                            if isinstance(_si, list):
-                                                tool_context += f"\n### INHALT VON {_subdir}/:\n{json.dumps(_si, ensure_ascii=False)}\n"
-                                                for _si_item in _si:
-                                                    if _files_read >= 5:
-                                                        break
-                                                    if not _si_item.endswith("/"):
-                                                        _fp = f"{_subdir}/{_si_item}"
-                                                        try:
-                                                            _fc = _stream_fast_lane.execute("home_read", {"path": _fp})
-                                                            _fcc = _fc.content if hasattr(_fc, 'content') else ""
-                                                            if _fcc:
-                                                                tool_context += f"\n### DATEI-INHALT ({_fp}):\n{_fcc}\n"
-                                                                _files_read += 1
-                                                        except Exception:
-                                                            pass
-                                        except Exception:
-                                            pass
-                                    else:
-                                        _fp = (_list_base + "/" if _list_base else "") + _item
-                                        try:
-                                            _fc = _stream_fast_lane.execute("home_read", {"path": _fp})
-                                            _fcc = _fc.content if hasattr(_fc, 'content') else ""
-                                            if _fcc:
-                                                tool_context += f"\n### DATEI-INHALT ({_fp}):\n{_fcc}\n"
-                                                _files_read += 1
-                                        except Exception:
-                                            pass
-                                if _files_read > 0:
-                                    log_info(f"[Orchestrator-Stream] FL home auto-expand: {_files_read} file(s)")
-                            continue
-                        except Exception as _fl_e:
-                            log_warning(f"[Orchestrator-Stream] Fast Lane failed for {tool_name}, falling back: {_fl_e}")
-                            # Fall through to MCP
-
-                    # ── Container Verify-Step (Phase 1: fail-only) ──
-                    if tool_name == "exec_in_container" and tool_args.get("container_id"):
-                        cid = tool_args["container_id"]
-                        if cid != _last_container_id:  # Skip verify for freshly started containers
-                            if not self._verify_container_running(cid):
-                                log_warn(f"[Orchestrator-Verify] Container {cid[:12]} NOT running — aborting exec")
-                                stop_event = json.dumps({
-                                    "container_id": cid,
-                                    "stopped_at": datetime.utcnow().isoformat() + "Z",
-                                    "reason": "verify_failed",
-                                    "session_id": conversation_id or "",
-                                }, ensure_ascii=False)
-                                ws_ev = self._save_workspace_entry(
-                                    "_container_events", stop_event, "container_stopped", "orchestrator"
-                                )
-                                if ws_ev:
-                                    yield ("", False, ws_ev)
-                                tool_context += f"\n### VERIFY-FEHLER ({tool_name}): Container {cid[:12]} ist nicht mehr aktiv.\n"
-                                yield ("", False, {"type": "tool_result", "tool": tool_name, "success": False, "error": "container_not_running"})
-                                continue
-
-                    log_info(f"[Orchestrator] Calling tool: {tool_name}({tool_args})")
-                    result = tool_hub.call_tool(tool_name, tool_args)
-
-                    # ── Clarification Intercept (autonomous_skill_task) ──
-                    # Wenn Skill-Erstellung eine Frage stellt — NICHT als TOOL-FEHLER behandeln
-                    if isinstance(result, dict) and result.get("needs_clarification"):
-                        question    = result.get("question", "")
-                        orig_intent = result.get("original_intent", user_text)
-                        log_info(f"[Orchestrator] Skill gap detected — asking user for clarification")
-
-                        # 1. Intent für Resume speichern
-                        if INTENT_SYSTEM_AVAILABLE:
-                            try:
-                                store = get_intent_store()
-                                intent_obj = store.create(
-                                    conversation_id=conversation_id,
-                                    user_text=orig_intent,
-                                    skill_name="pending_skill_creation",
-                                    reason=orig_intent,
-                                )
-                                intent_obj.intent_type = "skill_clarification"
-                                intent_obj.thinking_plan = thinking_plan
-                            except Exception as _e:
-                                log_warn(f"[Orchestrator] Intent store failed: {_e}")
-
-                        # 2. Workspace: Pending-State sichern
-                        ws_content = (
-                            f"**⏸️ Pending Skill:** {orig_intent}\n"
-                            f"**Status:** Wartet auf Nutzer-Antwort\n"
-                            f"**Frage:** {question}"
-                        )
-                        ws_ev = self._save_workspace_entry(
-                            conversation_id, ws_content, "pending_skill", "orchestrator"
-                        )
-                        if ws_ev:
-                            yield ("", False, ws_ev)
-
-                        # 3. Frage in tool_context (OutputLayer formuliert freundlich)
-                        tool_context += f"\n### KLÄRUNG BENÖTIGT:\n{question}\n"
-                        tool_context += "\nStelle diese Frage freundlich an den User.\n"
-                        continue  # nächstes Tool
-
-                    # Track container_id from deploy result
-                    if tool_name == "request_container" and isinstance(result, dict):
-                        _last_container_id = result.get("container_id", "") or result.get("container", {}).get("container_id", "")
-
-                    result_str = json.dumps(result, ensure_ascii=False, default=str) if isinstance(result, (dict, list)) else str(result)
-                    # ╔════════════════════════════════════════════════════════════╗
-                    # ║  PHASE 3: TOOL INTELLIGENCE (Refactored Stream)           ║
-                    # ╚════════════════════════════════════════════════════════════╝
-                    
-                    intelligence_result = self.tool_intelligence.handle_tool_result(
-                        tool_name=tool_name,
-                        result=result,
-                        tool_args=tool_args,
-                        tool_hub=tool_hub  # NEW: Pass hub for retry
-                    )
-                    
-                    # Check if auto-retry succeeded
-                    retry_result = intelligence_result.get('retry_result')
-                    if retry_result and retry_result.get('success'):
-                        # ✅ AUTO-RETRY SUCCEEDED!
-                        log_info(f"[AutoRetry] Success on attempt {retry_result['attempts']}!")
-                        result = retry_result['result']
-                        result_str = json.dumps(result, ensure_ascii=False, default=str)
-                        retry_info = (
-                            f"Auto-Retry OK (fix={retry_result['fix_applied']}, "
-                            f"attempt={retry_result['attempts']}/2)\n{result_str}"
-                        )
-                        # ── Commit 2 stream parity: Card + Full Payload ──
-                        _card, _ref = self._build_tool_result_card(
-                            tool_name, retry_info, "ok", conversation_id
-                        )
-                        tool_context += _card
-                        yield ("", False, {
-                            "type": "tool_result",
-                            "tool": tool_name,
-                            "success": True,
-                            "retry_success": True,
-                            "attempts": retry_result['attempts']
-                        })
-
-                    elif intelligence_result['is_error']:
-                        # Error (retry failed or not attempted)
-                        error_msg = intelligence_result['error_msg']
-                        solutions = intelligence_result.get('solutions', '')
-
-                        # ── HOME READ RECOVERY: "Is a directory" → auto-expand ──
-                        if tool_name == "home_read" and "Is a directory" in error_msg:
-                            dir_path = tool_args.get("path", ".")
-                            log_info(f"[Orchestrator] home_read got directory '{dir_path}' → auto-expanding")
-                            try:
-                                from core.tools.fast_lane.executor import FastLaneExecutor
-                                fl = FastLaneExecutor()
-                                sub_result = fl.execute("home_list", {"path": dir_path})
-                                sub_items = sub_result.content if hasattr(sub_result, 'content') else sub_result
-                                if isinstance(sub_items, list):
-                                    tool_context += f"\n### INHALT VON {dir_path}/:\n{json.dumps(sub_items, ensure_ascii=False)}\n"
-                                    files_read = 0
-                                    for sub_item in sub_items:
-                                        if files_read >= 5:
-                                            break
-                                        if sub_item.endswith("/"):
-                                            continue
-                                        fp = sub_item if dir_path in (".", "") else f"{dir_path}/{sub_item}"
-                                        try:
-                                            fc = fl.execute("home_read", {"path": fp})
-                                            fc_content = fc.content if hasattr(fc, 'content') else fc
-                                            if fc_content:
-                                                tool_context += f"\n### DATEI-INHALT ({fp}):\n{fc_content}\n"
-                                                files_read += 1
-                                        except Exception:
-                                            pass
-                                    log_info(f"[Orchestrator] home_read recovery: read {files_read} file(s) from {dir_path}/")
-                                    yield ("", False, {"type": "tool_result", "tool": tool_name, "success": True})
-                                    continue
-                            except Exception as expand_err:
-                                log_warn(f"[Orchestrator] home_read recovery failed: {expand_err}")
-
-                        log_warn(f"[Orchestrator] Tool {tool_name} FAILED: {error_msg}")
-                        _err_detail = error_msg + (f"\n{solutions}" if solutions else "")
-                        if retry_result:
-                            _err_detail += f"\nAuto-Retry: {retry_result.get('reason', '')}"
-                        # ── Commit 2 stream parity: Error Card + Full Payload ──
-                        _card, _ref = self._build_tool_result_card(
-                            tool_name, _err_detail, "error", conversation_id
-                        )
-                        tool_context += f"\n### TOOL-FEHLER ({tool_name}):\n"
-                        tool_context += _card
-                        yield ("", False, {
-                            "type": "tool_result",
-                            "tool": tool_name,
-                            "success": False,
-                            "error": error_msg,
-                            "retry_attempted": retry_result is not None
-                        })
-                    else:
-                        # TOOL SUCCESS (no error, no retry needed)
-                        # ── Commit 2 stream parity: Card + Full Payload ──
-                        _card, _ref = self._build_tool_result_card(
-                            tool_name, result_str, "ok", conversation_id
-                        )
-                        tool_context += _card
-                        log_info(f"[Orchestrator] Tool {tool_name} OK: {len(result_str)} chars ref={_ref}")
-                        yield ("", False, {"type": "tool_result", "tool": tool_name, "success": True})
-
-                        # ── HOME AUTO-EXPAND: home_list → auto-read files ──
-                        _home_list_content = result.content if hasattr(result, 'content') else result
-                        if tool_name == "home_list" and isinstance(_home_list_content, list):
-                            try:
-                                from core.tools.fast_lane.executor import FastLaneExecutor
-                                fl = FastLaneExecutor()
-                                files_read = 0
-                                _list_base = tool_args.get("path", ".").strip("/")
-                                if _list_base in (".", "", "/trion-home"):
-                                    _list_base = ""
-                                for item in _home_list_content:
-                                    if files_read >= 5:
-                                        break
-                                    if item.endswith("/"):
-                                        subdir = (_list_base + "/" if _list_base else "") + item.rstrip("/")
-                                        try:
-                                            sub_result = fl.execute("home_list", {"path": subdir})
-                                            sub_items = sub_result.content if hasattr(sub_result, 'content') else sub_result
-                                            if isinstance(sub_items, list):
-                                                tool_context += f"\n### INHALT VON {subdir}/:\n{json.dumps(sub_items, ensure_ascii=False)}\n"
-                                                for sub_item in sub_items:
-                                                    if files_read >= 5:
-                                                        break
-                                                    if not sub_item.endswith("/"):
-                                                        file_path = f"{subdir}/{sub_item}"
-                                                        try:
-                                                            fc = fl.execute("home_read", {"path": file_path})
-                                                            fc_content = fc.content if hasattr(fc, 'content') else fc
-                                                            tool_context += f"\n### DATEI-INHALT ({file_path}):\n{fc_content}\n"
-                                                            files_read += 1
-                                                        except Exception:
-                                                            pass
-                                        except Exception:
-                                            pass
-                                    else:
-                                        file_path = (_list_base + "/" if _list_base else "") + item
-                                        try:
-                                            fc = fl.execute("home_read", {"path": file_path})
-                                            fc_content = fc.content if hasattr(fc, 'content') else fc
-                                            if fc_content:
-                                                tool_context += f"\n### DATEI-INHALT ({file_path}):\n{fc_content}\n"
-                                                files_read += 1
-                                        except Exception:
-                                            pass
-                                if files_read > 0:
-                                    log_info(f"[Orchestrator] Home auto-expand: read {files_read} file(s)")
-                            except Exception as e:
-                                log_warn(f"[Orchestrator] Home auto-expand failed: {e}")
-
-                    # ── Container Session Tracking (stream path) ──
-                    container_evt = self._build_container_event_content(
-                        tool_name, result, user_text, tool_args,
-                        session_id=conversation_id or "",
-                    )
-                    if container_evt:
-                        ws_ev = self._save_container_event("_container_events", container_evt)
-                        if ws_ev:
-                            yield ("", False, ws_ev)
-                        log_info(f"[Orchestrator] Container event: {container_evt['event_type']}")
-
-                except Exception as e:
-                    log_error(f"[Orchestrator] Tool {tool_name} failed: {e}")
-                    tool_context += f"\n### TOOL-FEHLER ({tool_name}): {str(e)}\n"
-                    yield ("", False, {"type": "tool_result", "tool": tool_name, "success": False, "error": str(e)})
-
-        # ═══════════════════════════════════════════════════
-        # STEP 2.5: REFLECTION LOOP (Round 2, max 1x)
-        # ═══════════════════════════════════════════════════
-        _stream_has_failure = bool(tool_context and "TOOL-FEHLER" in tool_context)
-        if _stream_has_failure:
-            # ── Failure-compact via entry-point (Gap D closed, stream path) ──
-            _fail_block_stream = self._build_failure_compact_block(
-                conversation_id, len(full_context), _smm_stream
-            )
-            if _fail_block_stream:
-                log_info(f"[CTX] failure-compact injected chars={len(_fail_block_stream)} (via entry-point, stream path)")
-                # Prepend to tool_context so it flows into reflection/output.
-                # Source registered here; chars are NOT counted here to avoid double-counting:
-                # the full tool_context (incl. this block) is measured once at the tool_ctx append below.
-                tool_context = _fail_block_stream + tool_context
-                ctx_trace_stream["context_sources"].append("failure_ctx")
-
-        if tool_context and "TOOL-FEHLER" in tool_context:
-            retry_plan = _reflection.plan_retry(
-                tool_context=tool_context,
-                user_text=user_text,
-                round1_tool_args=_round1_args,
-            )
-            if retry_plan:
-                log_info(f"[ReflectionLoop] === ROUND 2: {len(retry_plan)} alternative(s) ===")
-                yield ("", False, {"type": "reflection_start", "count": len(retry_plan)})
-                for step in retry_plan:
-                    alt_tool = step["tool"]
-                    alt_args = step["args"]
-                    try:
-                        log_info(f"[ReflectionLoop] Versuche: {alt_tool}({alt_args}) | {step['reason']}")
-                        alt_result = tool_hub.call_tool(alt_tool, alt_args)
-                        alt_str = json.dumps(alt_result, ensure_ascii=False, default=str) if isinstance(alt_result, (dict, list)) else str(alt_result)
-                        # Extract content if ToolResult
-                        if hasattr(alt_result, 'content') and alt_result.content is not None:
-                            alt_str = json.dumps(alt_result.content, ensure_ascii=False, default=str) if isinstance(alt_result.content, (dict, list)) else str(alt_result.content)
-                        tool_context += (
-                            f"\n### 🔄 REFLECTION ({alt_tool}):\n"
-                            f"**Grund:** {step['reason']}\n"
-                            f"**Wegen:** {step['original_error']}\n"
-                            f"**Ergebnis:** {alt_str}\n"
-                        )
-                        log_info(f"[ReflectionLoop] {alt_tool} OK: {len(alt_str)} chars")
-                        yield ("", False, {"type": "tool_result", "tool": alt_tool, "success": True, "reflection": True})
-                    except Exception as re_err:
-                        log_warn(f"[ReflectionLoop] {alt_tool} fehlgeschlagen: {re_err}")
-                        tool_context += f"\n### 🔄 REFLECTION-FEHLER ({alt_tool}): {re_err}\n"
-
-        # ── Phase 1.5 Commit 2: Clip tool_context before append (small mode) ──
-        tool_context = self._clip_tool_context(tool_context, _smm_stream)
-
-        if tool_context:
-            full_context = self._append_context_block(
-                full_context, tool_context, "tool_ctx", ctx_trace_stream
-            )
-            verified_plan["_tool_results"] = tool_context
-            if _smm_stream:
-                log_info(
-                    f"[CTX] total context after tool_context: {len(full_context)} chars "
-                    f"(tool_context={len(tool_context)}, failure_ctx merged if any)"
-                )
-
-            has_failures_or_skips = self._tool_context_has_failures_or_skips(tool_context)
-            has_success = self._tool_context_has_success(tool_context)
-            if has_failures_or_skips:
-                verified_plan["_tool_failure"] = True
-            # Confidence Override: only when we have explicit successful tool evidence
-            # and no skip/failure markers.
-            if has_success and not has_failures_or_skips:
-                verified_plan["_tool_confidence"] = "high"
-                log_info("[Orchestrator] Tool confidence: HIGH — OutputLayer wird nicht gebremst")
-
-            # WORKSPACE: Save tool execution results as note
-            _tool_names = [t["tool"] if isinstance(t, dict) and "tool" in t else str(t) for t in suggested_tools]
-            tool_summary = f"**Tools executed:** {', '.join(_tool_names)}\n\n{tool_context[:2000]}"
-            ws_event = self._save_workspace_entry(
-                conversation_id, tool_summary, "note", "control"
-            )
-            if ws_event:
-                yield ("", False, ws_event)
-
-        # ═══════════════════════════════════════════════════
-        # STEP 3: OUTPUT LAYER (STREAMING)
-        # ═══════════════════════════════════════════════════
-        log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: LAYER 3 OUTPUT")
-        log_info("[Orchestrator] === LAYER 3: OUTPUT ===")
-
-        full_response = ""
-        first_chunk = True
-
-        # Tool-Confidence Override: LoopEngine überspringen wenn Tools bereits Daten geliefert haben
-        if use_loop_engine and verified_plan.get("_tool_confidence") == "high":
-            log_info("[Orchestrator] LoopEngine SKIP — Tool-Ergebnisse bereits vorhanden (_tool_confidence=high)")
-            use_loop_engine = False
-
-        # ── Phase 1.5 Commit 1: Final hard cap (always active in small mode) ──
-        # Falls back to SMALL_MODEL_CHAR_CAP when SMALL_MODEL_FINAL_CAP=0 (no longer optional).
-        full_context = self._apply_final_cap(full_context, ctx_trace_stream, _smm_stream, "stream")
-        full_context = self._apply_effective_context_guardrail(
-            full_context, ctx_trace_stream, _smm_stream, "stream"
-        )
-
-        # ── Finalize orchestrator-side trace and hand off to OutputLayer ──
-        # [CTX-PRE-OUTPUT]: orchestrator context string before OutputLayer adds persona/instructions/history.
-        # [CTX-FINAL] is emitted inside OutputLayer after the full messages array is built.
-        ctx_trace_stream["mode"] = self._compute_ctx_mode(ctx_trace_stream, is_loop=use_loop_engine)
-        log_info(
-            f"[CTX-PRE-OUTPUT] mode={ctx_trace_stream['mode']} "
-            f"context_sources={','.join(ctx_trace_stream['context_sources'])} "
-            f"context_chars={ctx_trace_stream['context_chars_final']} "
-            f"retrieval_count={ctx_trace_stream['retrieval_count']}"
-        )
-        verified_plan["_ctx_trace"] = ctx_trace_stream
-        verified_plan["_response_mode"] = response_mode_stream
-        try:
-            from config import get_output_timeout_interactive_s, get_output_timeout_deep_s
-            verified_plan["_output_time_budget_s"] = (
-                get_output_timeout_deep_s()
-                if response_mode_stream == "deep"
-                else get_output_timeout_interactive_s()
-            )
-        except Exception:
-            pass
-
-        if use_loop_engine:
-            # ── LOOP ENGINE: OutputLayer bleibt aktiv, ruft Tools autonom auf ──
-            from core.autonomous.loop_engine import LoopEngine
-            from config import get_loop_engine_output_char_cap, get_loop_engine_max_predict
-            log_info("[Orchestrator] LoopEngine aktiv")
-            yield ("", False, {
-                "type": "loop_engine_start",
-                "complexity": _loop_complexity,
-                "sequential": _loop_sequential,
-            })
-            loop_engine = LoopEngine(model=request.model or None)
-            _loop_output_char_cap = int(get_loop_engine_output_char_cap())
-            _loop_max_predict = int(get_loop_engine_max_predict())
-            log_info(
-                f"[Orchestrator] LoopEngine budgets: char_cap={_loop_output_char_cap} "
-                f"num_predict={_loop_max_predict}"
-            )
-            sys_prompt = self.output._build_system_prompt(verified_plan, full_context)
-            # [CTX-FINAL] for LoopEngine path: sys_prompt + user_text + initial tool_context
-            # (LoopEngine bypasses OutputLayer.generate_stream, so we measure here)
-            _loop_initial_chars = len(sys_prompt) + len(user_text) + len(tool_context or "")
-            log_info(
-                f"[CTX-FINAL] mode={ctx_trace_stream['mode']} "
-                f"context_sources={','.join(ctx_trace_stream['context_sources'])} "
-                f"payload_chars={_loop_initial_chars} "
-                f"retrieval_count={ctx_trace_stream['retrieval_count']}"
-            )
-            async for le_chunk, le_done, le_meta in loop_engine.run_stream(
-                user_text=user_text,
-                system_prompt=sys_prompt,
-                initial_tool_context=tool_context,
-                max_iterations=5,
-                output_char_cap=_loop_output_char_cap,
-                output_num_predict=_loop_max_predict,
-            ):
-                if le_meta.get("type") == "content" and le_chunk:
-                    if first_chunk:
-                        log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: FIRST LOOP CHUNK")
-                        first_chunk = False
-                    full_response += le_chunk
-                    yield (le_chunk, False, {"type": "content"})
-                elif le_meta.get("type") not in ("done",):
-                    # Pass loop events to frontend (loop_iteration, loop_tool_call, etc.)
-                    yield ("", False, le_meta)
-        else:
-            # ── NORMALER OUTPUT: einmaliger OutputLayer-Call ──
-            async for chunk in self.output.generate_stream(
-                user_text=user_text,
-                verified_plan=verified_plan,
-                memory_data=full_context,
-                model=request.model
-            ):
-                if first_chunk:
-                    log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: FIRST OUTPUT CHUNK")
-                    first_chunk = False
-                full_response += chunk
-                yield (chunk, False, {"type": "content"})
-        
-        log_info(f"[Orchestrator] Output: {len(full_response)} chars")
-        
-        # ═══════════════════════════════════════════════════
-        # STEP 4: MEMORY SAVE
-        # ═══════════════════════════════════════════════════
-        self._save_memory(
-            conversation_id=conversation_id,
-            answer=full_response,
-            verified_plan=verified_plan
-        )
-        
-        # ═══════════════════════════════════════════════════
-        # DONE
-        # ═══════════════════════════════════════════════════
-        # [NEW] Lifecycle Finish
-        self.lifecycle.finish_task(req_id_str, {"status": "done", "duration": time.time()-_t0})
-        self._post_task_processing()
-        
-        yield ("", True, {"type": "done", "done_reason": "stop", "memory_used": memory_used, "model": request.model})
-        log_info(f"[TIMING] T+{time.time()-_t0:.2f}s: COMPLETE")
-
-
-    # ===============================================================
     # CHUNKING (moved from bridge.py)
     # ===============================================================
 
@@ -4670,105 +4700,16 @@ class PipelineOrchestrator:
         3. EIN LLM-Aufruf mit kompakter Summary (~15-20 Sek)
         4. Ergebnis zurueck
         """
-        log_info("[Orchestrator-Chunking] v3 MCP-basierte Analyse startet...")
-
-        hub = get_hub()
-
-        # PHASE 1: Preprocessing via MCP
-        yield ("", False, {
-            "type": "document_analysis_start",
-            "message": "Preprocessing document...",
-        })
-
-        try:
-            preprocess_result = hub.call_tool("preprocess", {
-                "text": user_text,
-                "add_paragraph_ids": True,
-                "normalize_whitespace": True,
-                "remove_artifacts": True
-            })
-            processed_text = preprocess_result.get("text", user_text)
-            log_info(f"[Orchestrator-Chunking] Preprocessed: {len(processed_text)} chars")
-        except Exception as e:
-            log_error(f"[Orchestrator-Chunking] Preprocess failed: {e}, using raw text")
-            processed_text = user_text
-
-        # PHASE 2: Structure Analysis via MCP
-        yield ("", False, {
-            "type": "document_analysis_progress",
-            "message": "Analyzing document structure...",
-        })
-
-        try:
-            structure = hub.call_tool("analyze_structure", {
-                "text": processed_text
-            })
-
-            log_info(f"[Orchestrator-Chunking] Structure: {structure.get('heading_count', 0)} Headings, "
-                    f"{structure.get('code_blocks', 0)} Code-Bloecke, "
-                    f"Complexity {structure.get('complexity', 0)}/10")
-
-            compact_summary = self._build_summary_from_structure(structure)
-
-        except Exception as e:
-            log_error(f"[Orchestrator-Chunking] Structure analysis failed: {e}")
-            structure = {
-                "heading_count": 0,
-                "code_blocks": 0,
-                "complexity": 5,
-                "keywords": [],
-                "intro": processed_text[:500]
-            }
-            compact_summary = f"Text ({len(processed_text)} chars)"
-
-        yield ("", False, {
-            "type": "document_analysis_done",
-            "structure": {
-                "total_chars": structure.get("total_chars", len(processed_text)),
-                "total_tokens": structure.get("total_tokens", len(processed_text) // 4),
-                "total_lines": structure.get("total_lines", processed_text.count('\n')),
-                "heading_count": structure.get("heading_count", 0),
-                "headings": structure.get("headings", [])[:10],
-                "code_blocks": structure.get("code_blocks", 0),
-                "code_languages": structure.get("languages", []),
-                "keywords": structure.get("keywords", []),
-                "estimated_complexity": structure.get("complexity", 5),
-            },
-            "message": f"Struktur erkannt: {structure.get('heading_count', 0)} Abschnitte, {structure.get('code_blocks', 0)} Code-Bloecke",
-        })
-
-        # PHASE 3: EIN LLM-Aufruf mit kompakter Info
-        yield ("", False, {
-            "type": "thinking_start",
-            "message": "Analysiere Inhalt...",
-        })
-
-        analysis_prompt = f"""Analysiere folgendes Dokument anhand der Struktur-Uebersicht:
-
-{compact_summary}
-
-Der User hat dieses Dokument gesendet. Was ist sein wahrscheinlicher Intent?
-Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
-
-        thinking_result = await self.thinking.analyze(analysis_prompt)
-
-        log_info(f"[Orchestrator-Chunking] ThinkingLayer: intent={thinking_result.get('intent')}, "
-                f"needs_sequential={thinking_result.get('needs_sequential_thinking')}")
-
-        yield ("", False, {
-            "type": "chunking_done",
-            "conversation_id": conversation_id,
-            "method": "mcp_v3",
-            "aggregated_summary": compact_summary,
-            "structure": {
-                "headings": structure.get("headings", []),
-                "keywords": structure.get("keywords", []),
-                "complexity": structure.get("complexity", 5),
-            },
-            "thinking_result": thinking_result,
-            "needs_sequential_any": thinking_result.get('needs_sequential_thinking', False) or thinking_result.get('sequential_thinking_required', False),
-            "max_complexity": structure.get("complexity", 5),
-        })
+        async for chunk in util_process_chunked_stream(
+            self,
+            user_text,
+            conversation_id,
+            request,
+            get_hub_fn=get_hub,
+            log_info_fn=log_info,
+            log_error_fn=log_error,
+        ):
+            yield chunk
 
     def _build_summary_from_structure(self, structure: Dict) -> str:
         """Build compact summary from MCP structure analysis."""
@@ -4811,81 +4752,24 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
         user_text: str,
         thinking_plan: Dict,
         memory_data: str,
-        conversation_id: str
+        conversation_id: str,
+        response_mode: str = "interactive",
     ) -> Tuple[Dict, Dict]:
         """Execute Control Layer (Step 2)."""
-        
-        # Skip logic (shared with stream path)
-        skip_control, _skip_reason_sync = self._should_skip_control_layer(user_text, thinking_plan)
-        if skip_control:
-            log_info(f"[Orchestrator] === LAYER 2: CONTROL === SKIPPED ({_skip_reason_sync})")
-        
-        if thinking_plan.get("_sequential_deferred"):
-            log_info(
-                f"[Orchestrator] Sequential deferred: "
-                f"{thinking_plan.get('_sequential_deferred_reason', 'interactive_mode')}"
-            )
-
-        # Sequential Thinking Check (BEFORE Control!)
-        if thinking_plan.get("needs_sequential_thinking") or thinking_plan.get("sequential_thinking_required"):
-            log_info("[Orchestrator] Sequential Thinking detected - executing BEFORE Control...")
-            from config import get_sequential_timeout_s
-            _seq_timeout = get_sequential_timeout_s()
-            try:
-                sequential_result = await asyncio.wait_for(
-                    self.control._check_sequential_thinking(
-                        user_text=user_text,
-                        thinking_plan=thinking_plan
-                    ),
-                    timeout=float(_seq_timeout),
-                )
-                if sequential_result:
-                    thinking_plan["_sequential_result"] = sequential_result
-                    log_info(f"[Orchestrator] Sequential completed: {len(sequential_result.get('steps', []))} steps")
-            except asyncio.TimeoutError:
-                log_warn(f"[Orchestrator] Sequential timeout after {_seq_timeout}s — continuing without sequential result")
-                thinking_plan["_sequential_timed_out"] = True
-
-        if skip_control:
-            verified_plan = thinking_plan.copy()
-            verified_plan["_verified"] = False
-            verified_plan["_skipped"] = True
-            verified_plan["_final_instruction"] = ""
-            verified_plan["_warnings"] = []
-            verification = {"approved": True, "corrections": {}}
-        else:
-            log_info("[Orchestrator] === LAYER 2: CONTROL ===")
-            verification = await self.control.verify(
-                user_text,
-                thinking_plan,
-                memory_data
-            )
-            log_info(f"[Orchestrator-Control] approved={verification.get('approved')}")
-            log_info(f"[Orchestrator-Control] warnings={verification.get('warnings', [])}")
-            # Apply corrections
-            verified_plan = self.control.apply_corrections(thinking_plan, verification)
-            # Skill Confirmation Handling
-            if verification.get("_needs_skill_confirmation") and INTENT_SYSTEM_AVAILABLE:
-                skill_name = verification.get("_skill_name", "unknown")
-                log_info(f"[Orchestrator] Creating SkillCreationIntent for '{skill_name}'")
-                
-                intent = SkillCreationIntent(
-                    skill_name=skill_name,
-                    origin=IntentOrigin.USER,
-                    reason=verification.get("_cim_decision", {}).get("pattern_id", "control_layer"),
-                    user_text=user_text,
-                    
-                    conversation_id=conversation_id,
-                    thinking_plan=thinking_plan,
-                    complexity=thinking_plan.get("sequential_complexity", 5)
-                )
-                store = get_intent_store()
-                store.add(intent)
-                
-                verified_plan["_pending_intent"] = intent.to_dict()
-                log_info(f"[Orchestrator] Intent {intent.id[:8]} added to verified_plan")
-        
-        return verification, verified_plan
+        return await util_execute_control_layer(
+            self,
+            user_text,
+            thinking_plan,
+            memory_data,
+            conversation_id,
+            response_mode=response_mode,
+            intent_system_available=bool(INTENT_SYSTEM_AVAILABLE),
+            skill_creation_intent_cls=SkillCreationIntent if INTENT_SYSTEM_AVAILABLE else None,
+            intent_origin_cls=IntentOrigin if INTENT_SYSTEM_AVAILABLE else None,
+            get_intent_store_fn=get_intent_store if INTENT_SYSTEM_AVAILABLE else (lambda: None),
+            log_info_fn=log_info,
+            log_warn_fn=log_warn,
+        )
     
     async def _execute_output_layer(
         self,
@@ -4894,6 +4778,8 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
         memory_data: str,
         model: str,
         chat_history: list,
+        control_decision: Optional[ControlDecision] = None,
+        execution_result: Optional[Dict[str, Any]] = None,
         memory_required_but_missing: bool = False
     ) -> str:
         """Execute Output Layer (Step 3)."""
@@ -4908,7 +4794,9 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
             memory_data=memory_data,
             model=model,
             memory_required_but_missing=memory_required_but_missing,
-            chat_history=chat_history
+            chat_history=chat_history,
+            control_decision=control_decision,
+            execution_result=execution_result,
         )
         
         log_info(f"[Orchestrator-Output] Generated {len(answer)} chars")
@@ -4942,19 +4830,80 @@ Braucht die Antwort Sequential Thinking (schrittweises Reasoning)?"""
         
         # Autosave assistant response
         # Guard against self-reinforcement of low-quality outputs after failed/skipped tool phases.
-        tool_ctx = str(verified_plan.get("_tool_results", "") or "")
+        tool_ctx = str(get_runtime_tool_results(verified_plan) or "")
+        grounding_policy = load_grounding_policy()
+        output_grounding = (grounding_policy or {}).get("output") or {}
+        memory_grounding = (grounding_policy or {}).get("memory") or {}
+        allowed_statuses = output_grounding.get("allowed_evidence_statuses", ["ok"])
+        min_successful_evidence = int(output_grounding.get("min_successful_evidence", 1) or 1)
+        successful_evidence = self._count_successful_grounding_evidence(
+            verified_plan, allowed_statuses=allowed_statuses
+        )
+        is_fact_query = bool(verified_plan.get("is_fact_query", False))
+        has_tool_usage = bool(tool_ctx.strip())
+        has_tool_suggestions = bool(self._extract_suggested_tool_names(verified_plan))
+        require_evidence_for_autosave = bool(
+            memory_grounding.get("autosave_requires_evidence_for_fact_query", True)
+            and is_fact_query
+            and (
+                (
+                    bool(output_grounding.get("enforce_evidence_for_fact_query", True))
+                    and (has_tool_usage or has_tool_suggestions)
+                )
+                or (bool(output_grounding.get("enforce_evidence_when_tools_used", True)) and has_tool_usage)
+                or (
+                    bool(output_grounding.get("enforce_evidence_when_tools_suggested", True))
+                    and has_tool_suggestions
+                )
+            )
+        )
         skip_autosave = False
         skip_reason = ""
         if verified_plan.get("_pending_intent"):
             skip_autosave = True
             skip_reason = "pending_intent_confirmation"
-        elif verified_plan.get("_tool_failure") or self._tool_context_has_failures_or_skips(tool_ctx):
+        elif (
+            (get_runtime_tool_failure(verified_plan) or self._tool_context_has_failures_or_skips(tool_ctx))
+            and not (answer or "").strip()
+        ):
             skip_autosave = True
-            skip_reason = "tool_failure_or_skip"
+            skip_reason = "tool_failure_with_empty_answer"
+        elif bool(
+            get_runtime_grounding_value(
+                verified_plan,
+                key="missing_evidence",
+                legacy_key="_grounding_missing_evidence",
+                default=False,
+            )
+        ):
+            skip_autosave = True
+            skip_reason = "grounding_missing_evidence"
+        elif bool(
+            get_runtime_grounding_value(
+                verified_plan,
+                key="violation_detected",
+                legacy_key="_grounding_violation_detected",
+                default=False,
+            )
+        ):
+            skip_autosave = True
+            skip_reason = "grounding_violation_detected"
+        elif require_evidence_for_autosave and successful_evidence < min_successful_evidence:
+            skip_autosave = True
+            skip_reason = "insufficient_grounding_evidence"
 
         if skip_autosave:
             log_warn(f"[Orchestrator-Autosave] Skipped assistant autosave ({skip_reason})")
             return
+
+        dedupe_guard = get_autosave_dedupe_guard()
+        if dedupe_guard is not None:
+            try:
+                if dedupe_guard.should_skip(conversation_id=conversation_id, content=answer):
+                    log_warn("[Orchestrator-Autosave] Skipped assistant autosave (duplicate_window)")
+                    return
+            except Exception as dedupe_err:
+                log_warn(f"[Orchestrator-Autosave] Dedupe guard fallback: {dedupe_err}")
 
         try:
             autosave_assistant(

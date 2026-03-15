@@ -50,6 +50,35 @@ DEFAULT_MIN_SIMILARITY = 0.5
 
 logger = logging.getLogger(__name__)
 _EMBED_SCHEMA_READY = False
+_DB_FALLBACK_WARNED = False
+
+
+def _resolve_db_path() -> str:
+    """Resolve writable DB path with safe fallback for non-writable mounts."""
+    global _DB_FALLBACK_WARNED
+    path = str(DB_PATH or "").strip() or "/app/memory_data/memory.db"
+    if path == ":memory:" or path.startswith("file:"):
+        return path
+
+    db_dir = os.path.dirname(path)
+    if db_dir:
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except PermissionError as e:
+            fallback = str(
+                os.getenv("MEMORY_DB_FALLBACK_PATH", "/tmp/trion_memory_data/memory.db")
+            ).strip() or "/tmp/trion_memory_data/memory.db"
+            fallback_dir = os.path.dirname(fallback)
+            if fallback_dir:
+                os.makedirs(fallback_dir, exist_ok=True)
+            if not _DB_FALLBACK_WARNED:
+                log_warning(
+                    "[ArchiveManager] DB path not writable "
+                    f"({path}): {e}. Falling back to {fallback}"
+                )
+                _DB_FALLBACK_WARNED = True
+            return fallback
+    return path
 
 
 def _compute_embedding_version_id(model: str, runtime_policy: str) -> str:
@@ -107,7 +136,8 @@ def _ensure_embeddings_schema(conn: sqlite3.Connection) -> None:
 def _get_db() -> sqlite3.Connection:
     """Get SQLite connection with WAL mode and busy timeout."""
     global _EMBED_SCHEMA_READY
-    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    db_path = _resolve_db_path()
+    conn = sqlite3.connect(db_path, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")

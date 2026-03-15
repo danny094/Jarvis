@@ -2,6 +2,25 @@ from pathlib import Path
 from typing import Tuple, Optional
 import os
 
+
+def _resolve_default_safe_base() -> str:
+    # Explicit override wins.
+    explicit = str(os.environ.get("TRION_HOME_SAFE_BASE", "")).strip()
+    if explicit:
+        return explicit
+    # Fallback to configured home identity.
+    try:
+        from utils.trion_home_identity import load_home_identity
+
+        identity = load_home_identity(create_if_missing=False)
+        configured = str(identity.get("home_path", "")).strip()
+        if configured:
+            return configured
+    except Exception:
+        pass
+    # Safe fallback compatible with current deployment.
+    return "/trion-home"
+
 class SecurePathValidator:
     """
     SECURE Path Validation with Symlink Protection & Path Traversal Prevention.
@@ -13,14 +32,15 @@ class SecurePathValidator:
     3. Access to hidden files (optional, enabled by default)
     """
     
-    def __init__(self, safe_base: str = "/trion-home"):
+    def __init__(self, safe_base: Optional[str] = None):
         """
         Initialize the validator with a safe base directory.
         
         Args:
             safe_base: The absolute path to the directory where file access is allowed.
         """
-        self.safe_base = Path(safe_base).resolve()
+        resolved_base = str(safe_base or _resolve_default_safe_base()).strip() or "/trion-home"
+        self.safe_base = Path(resolved_base).resolve()
     
     def validate(self, user_path: str) -> Tuple[bool, str, str]:
         """

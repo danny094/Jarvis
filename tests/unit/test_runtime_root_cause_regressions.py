@@ -155,6 +155,42 @@ async def test_loop_engine_stream_path_yields_content_without_sync_fallback(monk
 
 
 @pytest.mark.asyncio
+async def test_loop_engine_uses_selected_cloud_provider_instead_of_local_http(monkeypatch):
+    engine = LoopEngine(ollama_base="http://fake-local", model="cloud-model", provider="ollama_cloud")
+    engine._hub = _FakeHub({"ok": True})
+    engine._get_ollama_tools = lambda: []  # type: ignore[assignment]
+    monkeypatch.setattr(
+        engine,
+        "_resolve_runtime_provider_endpoint",
+        lambda: ("ollama_cloud", ""),
+    )
+
+    async def _fake_complete_chat(**kwargs):
+        assert kwargs["provider"] == "ollama_cloud"
+        assert kwargs["model"] == "cloud-model"
+        return {"content": "cloud-ok", "tool_calls": []}
+
+    monkeypatch.setattr("core.autonomous.loop_engine.complete_chat", _fake_complete_chat)
+
+    chunks: List[str] = []
+    done_meta: Dict[str, Any] = {}
+    async for chunk, done, meta in engine.run_stream(
+        user_text="run",
+        system_prompt="sys",
+        max_iterations=1,
+    ):
+        if chunk:
+            chunks.append(chunk)
+        if done:
+            done_meta = meta
+            break
+
+    assert "".join(chunks) == "cloud-ok"
+    assert done_meta.get("type") == "done"
+    assert done_meta.get("iterations") == 1
+
+
+@pytest.mark.asyncio
 async def test_loop_engine_output_char_cap_truncates_and_stops(monkeypatch):
     engine = LoopEngine(ollama_base="http://fake", model="fake-model")
     engine._hub = _FakeHub({"ok": True})

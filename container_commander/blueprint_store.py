@@ -11,6 +11,7 @@ Manages blueprint persistence in SQLite with:
 import os
 import json
 import sqlite3
+import threading
 import yaml
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -20,6 +21,8 @@ from .models import Blueprint, ResourceLimits, SecretRequirement, MountDef, Netw
 # ── Database Path ─────────────────────────────────────────
 
 DB_PATH = os.environ.get("COMMANDER_DB_PATH", "/app/data/commander.db")
+_INIT_LOCK = threading.Lock()
+_INIT_DONE = False
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -47,6 +50,14 @@ def init_db():
                 resources_json TEXT DEFAULT '{}',
                 secrets_json TEXT DEFAULT '[]',
                 mounts_json TEXT DEFAULT '[]',
+                storage_scope TEXT DEFAULT '',
+                ports_json TEXT DEFAULT '[]',
+                runtime TEXT DEFAULT '',
+                devices_json TEXT DEFAULT '[]',
+                environment_json TEXT DEFAULT '{}',
+                healthcheck_json TEXT DEFAULT '{}',
+                cap_add_json TEXT DEFAULT '[]',
+                shm_size TEXT DEFAULT '',
                 network TEXT DEFAULT 'internal',
                 tags_json TEXT DEFAULT '[]',
                 icon TEXT DEFAULT '📦',
@@ -82,9 +93,71 @@ def init_db():
             conn.commit()
         except Exception:
             pass  # Column already exists
+        # Auto-migration: runtime wiring fields for advanced blueprints (Phase CC-P0)
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN ports_json TEXT DEFAULT '[]'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN runtime TEXT DEFAULT ''")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN devices_json TEXT DEFAULT '[]'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN environment_json TEXT DEFAULT '{}'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN healthcheck_json TEXT DEFAULT '{}'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN cap_add_json TEXT DEFAULT '[]'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN shm_size TEXT DEFAULT ''")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN storage_scope TEXT DEFAULT ''")
+            conn.commit()
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()
+
+
+def ensure_store_initialized(seed_defaults: bool = True):
+    """
+    Explicit one-time initialization entrypoint.
+
+    Replaces implicit import side effects so startup order is deterministic and test
+    imports remain side-effect free.
+    """
+    global _INIT_DONE
+    if _INIT_DONE:
+        return
+    with _INIT_LOCK:
+        if _INIT_DONE:
+            return
+        init_db()
+        # Mark initialized before optional seeding to avoid recursion when the seed
+        # path calls CRUD functions that themselves enforce initialization.
+        _INIT_DONE = True
+        if seed_defaults:
+            seed_default_blueprints()
 
 
 # ── Row ↔ Model Conversion ────────────────────────────────
@@ -94,6 +167,11 @@ def _row_to_blueprint(row: sqlite3.Row) -> Blueprint:
     resources_data = json.loads(row["resources_json"] or "{}")
     secrets_data = json.loads(row["secrets_json"] or "[]")
     mounts_data = json.loads(row["mounts_json"] or "[]")
+    ports_data = json.loads(row["ports_json"] or "[]")
+    devices_data = json.loads(row["devices_json"] or "[]")
+    environment_data = json.loads(row["environment_json"] or "{}")
+    healthcheck_data = json.loads(row["healthcheck_json"] or "{}")
+    cap_add_data = json.loads(row["cap_add_json"] or "[]")
     tags = json.loads(row["tags_json"] or "[]")
     # exec_policy_json added in Phase 2 — graceful fallback for older rows
     try:
@@ -106,6 +184,18 @@ def _row_to_blueprint(row: sqlite3.Row) -> Blueprint:
         image_digest = row["image_digest"] or None
     except Exception:
         image_digest = None
+    try:
+        runtime = row["runtime"] or ""
+    except Exception:
+        runtime = ""
+    try:
+        storage_scope = row["storage_scope"] or ""
+    except Exception:
+        storage_scope = ""
+    try:
+        shm_size = row["shm_size"] or ""
+    except Exception:
+        shm_size = ""
 
     return Blueprint(
         id=row["id"],
@@ -119,6 +209,14 @@ def _row_to_blueprint(row: sqlite3.Row) -> Blueprint:
         resources=ResourceLimits(**resources_data) if resources_data else ResourceLimits(),
         secrets_required=[SecretRequirement(**s) for s in secrets_data],
         mounts=[MountDef(**m) for m in mounts_data],
+        storage_scope=storage_scope,
+        ports=[str(p) for p in ports_data if p is not None],
+        runtime=runtime,
+        devices=[str(d) for d in devices_data if d is not None],
+        environment={str(k): str(v) for k, v in dict(environment_data or {}).items()},
+        healthcheck=dict(healthcheck_data or {}),
+        cap_add=[str(c) for c in cap_add_data if c is not None],
+        shm_size=shm_size,
         network=NetworkMode(row["network"]) if row["network"] else NetworkMode.INTERNAL,
         allowed_exec=allowed_exec,
         tags=tags,
@@ -142,6 +240,14 @@ def _blueprint_to_params(bp: Blueprint) -> dict:
         "resources_json": bp.resources.model_dump_json() if bp.resources else "{}",
         "secrets_json": json.dumps([s.model_dump() for s in bp.secrets_required]),
         "mounts_json": json.dumps([m.model_dump() for m in bp.mounts]),
+        "storage_scope": bp.storage_scope,
+        "ports_json": json.dumps(bp.ports),
+        "runtime": bp.runtime,
+        "devices_json": json.dumps(bp.devices),
+        "environment_json": json.dumps(bp.environment),
+        "healthcheck_json": json.dumps(bp.healthcheck),
+        "cap_add_json": json.dumps(bp.cap_add),
+        "shm_size": bp.shm_size,
         "network": bp.network.value if bp.network else "internal",
         "tags_json": json.dumps(bp.tags),
         "exec_policy_json": json.dumps(bp.allowed_exec),
@@ -155,15 +261,18 @@ def _blueprint_to_params(bp: Blueprint) -> dict:
 
 def create_blueprint(bp: Blueprint) -> Blueprint:
     """Insert a new blueprint into the database."""
+    ensure_store_initialized()
     conn = _get_conn()
     try:
         params = _blueprint_to_params(bp)
         conn.execute("""
             INSERT INTO blueprints (id, name, description, extends, dockerfile, image, image_digest,
-                system_prompt, resources_json, secrets_json, mounts_json,
+                system_prompt, resources_json, secrets_json, mounts_json, storage_scope,
+                ports_json, runtime, devices_json, environment_json, healthcheck_json, cap_add_json, shm_size,
                 network, tags_json, exec_policy_json, icon, created_at, updated_at)
             VALUES (:id, :name, :description, :extends, :dockerfile, :image, :image_digest,
-                :system_prompt, :resources_json, :secrets_json, :mounts_json,
+                :system_prompt, :resources_json, :secrets_json, :mounts_json, :storage_scope,
+                :ports_json, :runtime, :devices_json, :environment_json, :healthcheck_json, :cap_add_json, :shm_size,
                 :network, :tags_json, :exec_policy_json, :icon, :created_at, :updated_at)
         """, params)
         conn.commit()
@@ -176,6 +285,7 @@ def create_blueprint(bp: Blueprint) -> Blueprint:
 
 def get_blueprint(blueprint_id: str) -> Optional[Blueprint]:
     """Get a single blueprint by ID (excluding soft-deleted)."""
+    ensure_store_initialized()
     conn = _get_conn()
     try:
         row = conn.execute(
@@ -189,6 +299,7 @@ def get_blueprint(blueprint_id: str) -> Optional[Blueprint]:
 
 def list_blueprints(tag: Optional[str] = None) -> List[Blueprint]:
     """List all active (non-deleted) blueprints, optionally filtered by tag."""
+    ensure_store_initialized()
     conn = _get_conn()
     try:
         rows = conn.execute(
@@ -204,6 +315,7 @@ def list_blueprints(tag: Optional[str] = None) -> List[Blueprint]:
 
 def get_active_blueprint_ids() -> set:
     """Return the set of active (non-deleted) blueprint IDs for cross-checking."""
+    ensure_store_initialized()
     conn = _get_conn()
     try:
         rows = conn.execute(
@@ -218,6 +330,7 @@ def get_active_blueprint_ids() -> set:
 
 def update_blueprint(blueprint_id: str, updates: dict) -> Optional[Blueprint]:
     """Update specific fields of a blueprint."""
+    ensure_store_initialized()
     existing = get_blueprint(blueprint_id)
     if not existing:
         return None
@@ -245,7 +358,11 @@ def update_blueprint(blueprint_id: str, updates: dict) -> Optional[Blueprint]:
                 dockerfile=:dockerfile, image=:image, image_digest=:image_digest,
                 system_prompt=:system_prompt,
                 resources_json=:resources_json, secrets_json=:secrets_json,
-                mounts_json=:mounts_json, network=:network, tags_json=:tags_json,
+                mounts_json=:mounts_json, storage_scope=:storage_scope,
+                ports_json=:ports_json, runtime=:runtime, devices_json=:devices_json,
+                environment_json=:environment_json, healthcheck_json=:healthcheck_json,
+                cap_add_json=:cap_add_json, shm_size=:shm_size,
+                network=:network, tags_json=:tags_json,
                 exec_policy_json=:exec_policy_json,
                 icon=:icon, updated_at=:updated_at
             WHERE id=:id
@@ -262,6 +379,7 @@ def delete_blueprint(blueprint_id: str) -> bool:
     but Router and ContextManager cross-check against this SQLite flag — stale graph
     nodes are filtered before routing or context injection.
     """
+    ensure_store_initialized()
     conn = _get_conn()
     try:
         cursor = conn.execute(
@@ -281,6 +399,7 @@ def resolve_blueprint(blueprint_id: str) -> Optional[Blueprint]:
     Resolve a blueprint with inheritance (extends field).
     Child overrides parent. Merges: tags, secrets, mounts.
     """
+    ensure_store_initialized()
     bp = get_blueprint(blueprint_id)
     if not bp:
         return None
@@ -305,6 +424,22 @@ def resolve_blueprint(blueprint_id: str) -> Optional[Blueprint]:
         merged.image = bp.image
     if bp.system_prompt:
         merged.system_prompt = bp.system_prompt
+    if bp.storage_scope:
+        merged.storage_scope = bp.storage_scope
+    if bp.ports:
+        merged.ports = bp.ports
+    if bp.runtime:
+        merged.runtime = bp.runtime
+    if bp.devices:
+        merged.devices = bp.devices
+    if bp.environment:
+        merged.environment = {**merged.environment, **bp.environment}
+    if bp.healthcheck:
+        merged.healthcheck = {**merged.healthcheck, **bp.healthcheck}
+    if bp.cap_add:
+        merged.cap_add = bp.cap_add
+    if bp.shm_size:
+        merged.shm_size = bp.shm_size
     if bp.network != NetworkMode.INTERNAL:
         merged.network = bp.network
 
@@ -334,6 +469,7 @@ def resolve_blueprint(blueprint_id: str) -> Optional[Blueprint]:
 
 def import_from_yaml(yaml_content: str) -> Blueprint:
     """Parse a YAML string into a Blueprint and save it."""
+    ensure_store_initialized()
     data = yaml.safe_load(yaml_content)
     
     # Handle nested resource/secrets/mounts
@@ -355,6 +491,7 @@ def import_from_yaml(yaml_content: str) -> Blueprint:
 
 def export_to_yaml(blueprint_id: str) -> Optional[str]:
     """Export a blueprint as YAML string."""
+    ensure_store_initialized()
     bp = resolve_blueprint(blueprint_id)
     if not bp:
         return None
@@ -373,6 +510,7 @@ def export_to_yaml(blueprint_id: str) -> Optional[str]:
 
 def log_action(container_id: str, blueprint_id: str, action: str, details: str = ""):
     """Log a container action for audit trail."""
+    ensure_store_initialized()
     conn = _get_conn()
     try:
         conn.execute(
@@ -386,6 +524,7 @@ def log_action(container_id: str, blueprint_id: str, action: str, details: str =
 
 def get_audit_log(blueprint_id: Optional[str] = None, limit: int = 50) -> List[dict]:
     """Get audit log entries."""
+    ensure_store_initialized()
     conn = _get_conn()
     try:
         if blueprint_id:
@@ -466,6 +605,7 @@ def backfill_exec_policies():
     Safe to call on every startup.
     """
     import logging as _log
+    ensure_store_initialized()
     conn = _get_conn()
     try:
         updated = 0
@@ -494,7 +634,7 @@ def backfill_exec_policies():
 _OFFICIAL_BLUEPRINT_IDS = frozenset({"python-sandbox", "node-sandbox", "db-sandbox", "shell-sandbox"})
 
 
-def _sync_single_blueprint_to_graph(bp, trust_level: str = "", force_update: bool = False) -> bool:
+def sync_blueprint_to_graph(bp, trust_level: str = "", force_update: bool = False) -> bool:
     """
     Sync a single blueprint to the graph (for create/update hooks).
     trust_level: override string; if empty, derived via trust.py (single source of truth).
@@ -504,6 +644,7 @@ def _sync_single_blueprint_to_graph(bp, trust_level: str = "", force_update: boo
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
+    ensure_store_initialized()
     try:
         from mcp.client import call_tool
         if not force_update:
@@ -576,6 +717,14 @@ def _sync_single_blueprint_to_graph(bp, trust_level: str = "", force_update: boo
         return False
 
 
+def _sync_single_blueprint_to_graph(bp, trust_level: str = "", force_update: bool = False) -> bool:
+    """
+    Backward-compatible alias.
+    Prefer `sync_blueprint_to_graph()` in new code.
+    """
+    return sync_blueprint_to_graph(bp, trust_level=trust_level, force_update=force_update)
+
+
 def remove_blueprint_from_graph(blueprint_id: str) -> int:
     """
     Mark stale graph nodes for a deleted blueprint as tombstoned.
@@ -593,6 +742,7 @@ def remove_blueprint_from_graph(blueprint_id: str) -> int:
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
+    ensure_store_initialized()
     try:
         from mcp.client import call_tool
         # Find existing nodes for this blueprint_id
@@ -654,6 +804,7 @@ def sync_blueprints_to_graph() -> int:
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
+    ensure_store_initialized()
 
     # Import here to avoid circular imports at module load time
     try:
@@ -738,8 +889,3 @@ def sync_blueprints_to_graph() -> int:
 
     _log.info(f"[BlueprintSync] Done: {count} new blueprints synced to graph")
     return count
-
-
-# Auto-init on import
-init_db()
-seed_default_blueprints()

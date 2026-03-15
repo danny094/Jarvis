@@ -10,8 +10,16 @@
 
     const TAB_ID = "workspace";
     const TAB_TITLE = "Workspace";
+    const AUTONOMY_CACHE_KEY = "trion-autonomy-job-ids";
+    const AUTONOMY_POLL_MS = 3000;
     let initialized = false;
     let entries = []; // local cache
+    let lastPlanningReplayKey = null;
+    let autonomyJobIds = [];
+    let autonomyJobs = [];
+    let autonomyRuntime = null;
+    let autonomyStats = null;
+    let autonomyPollTimer = null;
 
     function tryParseJson(value) {
         if (typeof value !== "string") return value;
@@ -85,6 +93,37 @@
         };
     }
 
+    function replayPlanningWorkspaceEvents(conversationId, allEntries) {
+        const replayKey = conversationId || "__global__";
+        if (lastPlanningReplayKey === replayKey) return;
+        lastPlanningReplayKey = replayKey;
+
+        if (!Array.isArray(allEntries) || allEntries.length === 0) return;
+        const planningEvents = allEntries
+            .filter(item =>
+                item &&
+                item._source === "event" &&
+                typeof item.entry_type === "string" &&
+                /^planning_(start|step|done|error)$/.test(item.entry_type)
+            )
+            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+        planningEvents.forEach((entry) => {
+            const payload = {
+                type: "workspace_update",
+                source: "event",
+                entry_id: entry.id,
+                content: entry.content || "",
+                entry_type: entry.entry_type,
+                source_layer: entry.source_layer || "sequential",
+                conversation_id: entry.conversation_id || conversationId || "",
+                timestamp: entry.created_at || new Date().toISOString(),
+                replay: true,
+            };
+            window.dispatchEvent(new CustomEvent("sse-event", { detail: payload }));
+        });
+    }
+
     // ═══════════════════════════════════════════════════════════
     // API BASE (same detection as api.js)
     // ═══════════════════════════════════════════════════════════
@@ -97,6 +136,155 @@
             return "";
         }
         return `${window.location.protocol}//${window.location.hostname}:8200`;
+    }
+
+    function getActiveConversationId() {
+        const current = String(window.currentConversationId || "").trim();
+        if (current) return current;
+        try {
+            const stored = String(localStorage.getItem("jarvis-conversation-id") || "").trim();
+            if (stored) {
+                window.currentConversationId = stored;
+                return stored;
+            }
+        } catch {
+            // localStorage may be unavailable.
+        }
+        const generated = `webui-${Date.now()}`;
+        window.currentConversationId = generated;
+        try {
+            localStorage.setItem("jarvis-conversation-id", generated);
+        } catch {
+            // Best-effort only.
+        }
+        return generated;
+    }
+
+    function loadAutonomyJobIds() {
+        try {
+            const raw = localStorage.getItem(AUTONOMY_CACHE_KEY);
+            const parsed = raw ? JSON.parse(raw) : [];
+            if (!Array.isArray(parsed)) return [];
+            return parsed
+                .map((id) => String(id || "").trim())
+                .filter(Boolean)
+                .slice(0, 20);
+        } catch {
+            return [];
+        }
+    }
+
+    function saveAutonomyJobIds() {
+        try {
+            localStorage.setItem(AUTONOMY_CACHE_KEY, JSON.stringify(autonomyJobIds.slice(0, 20)));
+        } catch {
+            // Best-effort cache only.
+        }
+    }
+
+    function trackAutonomyJobId(jobId) {
+        const id = String(jobId || "").trim();
+        if (!id) return;
+        autonomyJobIds = [id, ...autonomyJobIds.filter((x) => x !== id)].slice(0, 20);
+        saveAutonomyJobIds();
+    }
+
+    function upsertAutonomyJob(job) {
+        if (!job || !job.job_id) return;
+        const id = String(job.job_id);
+        const idx = autonomyJobs.findIndex((j) => String(j.job_id) === id);
+        if (idx >= 0) {
+            autonomyJobs[idx] = { ...autonomyJobs[idx], ...job };
+        } else {
+            autonomyJobs.unshift(job);
+        }
+        autonomyJobs.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        autonomyJobs = autonomyJobs.slice(0, 20);
+        trackAutonomyJobId(id);
+    }
+
+    async function fetchAutonomyRuntime() {
+        const base = getApiBase();
+        const res = await fetch(`${base}/api/runtime/autonomy-status`);
+        if (!res.ok) {
+            throw new Error(`autonomy-status HTTP ${res.status}`);
+        }
+        return res.json();
+    }
+
+    async function fetchAutonomyJobStats() {
+        const base = getApiBase();
+        const res = await fetch(`${base}/api/autonomous/jobs-stats`);
+        if (!res.ok) {
+            throw new Error(`autonomy-jobs-stats HTTP ${res.status}`);
+        }
+        return res.json();
+    }
+
+    async function submitAutonomyJob(objective, conversationId, maxLoops) {
+        const base = getApiBase();
+        const resolvedConversationId = String(conversationId || "").trim() || getActiveConversationId();
+        const body = {
+            objective: String(objective || "").trim(),
+            conversation_id: resolvedConversationId,
+        };
+        if (Number.isFinite(maxLoops) && maxLoops > 0) {
+            body.max_loops = Math.floor(maxLoops);
+        }
+        const res = await fetch(`${base}/api/autonomous/jobs`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const msg = payload?.error || payload?.error_code || `HTTP ${res.status}`;
+            throw new Error(`Autonomy submit failed: ${msg}`);
+        }
+        return payload;
+    }
+
+    async function fetchAutonomyJob(jobId) {
+        const id = String(jobId || "").trim();
+        if (!id) throw new Error("missing_job_id");
+        const base = getApiBase();
+        const res = await fetch(`${base}/api/autonomous/jobs/${encodeURIComponent(id)}`);
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const msg = payload?.error || `HTTP ${res.status}`;
+            throw new Error(`Autonomy status failed: ${msg}`);
+        }
+        return payload;
+    }
+
+    async function cancelAutonomyJob(jobId) {
+        const id = String(jobId || "").trim();
+        if (!id) throw new Error("missing_job_id");
+        const base = getApiBase();
+        const res = await fetch(`${base}/api/autonomous/jobs/${encodeURIComponent(id)}/cancel`, {
+            method: "POST",
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const msg = payload?.error || `HTTP ${res.status}`;
+            throw new Error(`Autonomy cancel failed: ${msg}`);
+        }
+        return payload;
+    }
+
+    async function retryAutonomyJob(jobId) {
+        const id = String(jobId || "").trim();
+        if (!id) throw new Error("missing_job_id");
+        const base = getApiBase();
+        const res = await fetch(`${base}/api/autonomous/jobs/${encodeURIComponent(id)}/retry`, {
+            method: "POST",
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const msg = payload?.error || payload?.error_code || `HTTP ${res.status}`;
+            throw new Error(`Autonomy retry failed: ${msg}`);
+        }
+        return payload;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -346,6 +534,172 @@
         }
     }
 
+    function autonomyStatusClass(status) {
+        const s = String(status || "").toLowerCase();
+        if (["succeeded", "connected", "ok", "ready"].includes(s)) return "ws-pill-ok";
+        if (["failed", "offline", "error"].includes(s)) return "ws-pill-err";
+        return "ws-pill-warn";
+    }
+
+    function renderAutonomyPanel(container) {
+        if (!container) return;
+        const panel = container.querySelector(".ws-autonomy");
+        if (!panel) return;
+
+        const runtime = autonomyRuntime || {};
+        const stats = autonomyStats || {};
+        const master = runtime.master || {};
+        const tools = runtime.planning_tools || {};
+        const home = runtime.home || {};
+        const allReady = Boolean(tools.all_required_available) && home.status === "connected" && master.enabled !== false;
+        const convId = getActiveConversationId();
+
+        const jobsHtml = autonomyJobs.length
+            ? autonomyJobs.slice(0, 10).map((job) => {
+                const status = String(job.status || "unknown");
+                const canCancel = ["queued", "running", "cancel_requested"].includes(status);
+                const canRetry = ["failed", "cancelled"].includes(status);
+                const detail = job.error_code || job.error || "";
+                const when = formatDate(job.created_at || job.finished_at || "");
+                return `
+                    <div class="ws-autonomy-job">
+                        <div class="ws-autonomy-job-head">
+                            <span class="ws-pill ${autonomyStatusClass(status)}">${status}</span>
+                            <span class="ws-autonomy-job-id">${String(job.job_id || "").slice(0, 12)}</span>
+                            <span class="ws-autonomy-job-date">${when}</span>
+                        </div>
+                        <div class="ws-autonomy-job-meta">
+                            <span>loops=${job.max_loops ?? "-"}</span>
+                            <span>q=${job.queue_position ?? "-"}</span>
+                            <span>run=${job.running_jobs ?? "-"}</span>
+                            ${job.retry_of ? `<span>retry_of=${String(job.retry_of).slice(0, 12)}</span>` : ""}
+                        </div>
+                        ${detail ? `<div class="ws-autonomy-job-detail">${escapeHtml(String(detail))}</div>` : ""}
+                        <div class="ws-autonomy-job-actions">
+                            ${canCancel ? `<button data-autonomy-action="cancel" data-job-id="${job.job_id}">Cancel</button>` : ""}
+                            ${canRetry ? `<button data-autonomy-action="retry" data-job-id="${job.job_id}">Retry</button>` : ""}
+                        </div>
+                    </div>
+                `;
+            }).join("")
+            : '<div class="ws-autonomy-empty">No tracked autonomy jobs yet.</div>';
+
+        panel.innerHTML = `
+            <div class="ws-autonomy-head">
+                <h3>Autonomy Control</h3>
+                <button class="ws-autonomy-refresh" id="ws-autonomy-refresh">Refresh</button>
+            </div>
+            <div class="ws-autonomy-runtime">
+                <span class="ws-pill ${autonomyStatusClass(allReady ? "ok" : "warn")}">${allReady ? "ready" : "degraded"}</span>
+                <span>home=${home.status || "unknown"}</span>
+                <span>tools=${tools.all_required_available ? "ok" : "missing"}</span>
+                <span>master=${master.enabled ? "on" : "off"}</span>
+                <span>queued=${stats.queued_jobs ?? "-"}</span>
+                <span>running=${stats.running_jobs ?? "-"}</span>
+            </div>
+            <form class="ws-autonomy-form" id="ws-autonomy-form">
+                <input
+                    id="ws-autonomy-objective"
+                    type="text"
+                    maxlength="280"
+                    placeholder="Autonomous objective for current conversation"
+                    required
+                />
+                <input id="ws-autonomy-loops" type="number" min="1" max="50" step="1" value="${master.max_loops || 10}" />
+                <button type="submit">Run</button>
+            </form>
+            <div class="ws-autonomy-context">conversation: <code>${escapeHtml(convId)}</code></div>
+            <div class="ws-autonomy-jobs">${jobsHtml}</div>
+        `;
+
+        const refreshBtn = panel.querySelector("#ws-autonomy-refresh");
+        if (refreshBtn) {
+            refreshBtn.addEventListener("click", async () => {
+                await refreshAutonomyData(true);
+            });
+        }
+
+        const form = panel.querySelector("#ws-autonomy-form");
+        if (form) {
+            form.addEventListener("submit", async (event) => {
+                event.preventDefault();
+                const objectiveInput = panel.querySelector("#ws-autonomy-objective");
+                const loopsInput = panel.querySelector("#ws-autonomy-loops");
+                const objective = String(objectiveInput?.value || "").trim();
+                const maxLoops = Number(loopsInput?.value || 0);
+                if (!objective) return;
+
+                try {
+                    const submit = await submitAutonomyJob(objective, convId, maxLoops);
+                    trackAutonomyJobId(submit.job_id);
+                    if (objectiveInput) objectiveInput.value = "";
+                    await refreshAutonomyData(true);
+                } catch (err) {
+                    console.warn("[Workspace] autonomy submit failed:", err);
+                }
+            });
+        }
+
+        panel.querySelectorAll("[data-autonomy-action]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+                const action = btn.getAttribute("data-autonomy-action");
+                const jobId = btn.getAttribute("data-job-id");
+                if (!jobId) return;
+                try {
+                    if (action === "cancel") {
+                        const updated = await cancelAutonomyJob(jobId);
+                        upsertAutonomyJob(updated);
+                    } else if (action === "retry") {
+                        const retried = await retryAutonomyJob(jobId);
+                        trackAutonomyJobId(retried.job_id);
+                    }
+                    await refreshAutonomyData(true);
+                } catch (err) {
+                    console.warn(`[Workspace] autonomy ${action} failed:`, err);
+                }
+            });
+        });
+    }
+
+    async function refreshAutonomyData(refreshJobs = false) {
+        const container = getContainer();
+        if (!container) return;
+
+        const [runtimeRes, statsRes] = await Promise.allSettled([
+            fetchAutonomyRuntime(),
+            fetchAutonomyJobStats(),
+        ]);
+        if (runtimeRes.status === "fulfilled") autonomyRuntime = runtimeRes.value;
+        if (statsRes.status === "fulfilled") autonomyStats = statsRes.value;
+
+        if (refreshJobs) {
+            const ids = [...new Set(autonomyJobIds)].slice(0, 20);
+            const statuses = await Promise.allSettled(ids.map((id) => fetchAutonomyJob(id)));
+            statuses.forEach((st) => {
+                if (st.status === "fulfilled") {
+                    upsertAutonomyJob(st.value);
+                }
+            });
+            autonomyJobIds = autonomyJobs.map((job) => String(job.job_id || "")).filter(Boolean).slice(0, 20);
+            saveAutonomyJobIds();
+        }
+
+        renderAutonomyPanel(container);
+    }
+
+    function startAutonomyPolling() {
+        if (autonomyPollTimer) return;
+        autonomyPollTimer = setInterval(() => {
+            void refreshAutonomyData(true);
+        }, AUTONOMY_POLL_MS);
+    }
+
+    function stopAutonomyPolling() {
+        if (!autonomyPollTimer) return;
+        clearInterval(autonomyPollTimer);
+        autonomyPollTimer = null;
+    }
+
     // ═══════════════════════════════════════════════════════════
     // TAB + CONTAINER
     // ═══════════════════════════════════════════════════════════
@@ -372,7 +726,10 @@
         const container = getContainer();
         if (container) {
             container.classList.add("ws-container");
-            container.innerHTML = '<div class="ws-entries"></div>';
+            container.innerHTML = `
+                <section class="ws-autonomy"></section>
+                <div class="ws-entries"></div>
+            `;
         }
     }
 
@@ -388,7 +745,9 @@
         const convId = window.currentConversationId || null;
         console.log("[Workspace] Loading entries...", convId ? `conv=${convId}` : 'global');
         entries = await fetchEntries(convId);
+        replayPlanningWorkspaceEvents(convId, entries);
         console.log(`[Workspace] Fetched ${entries.length} entries`);
+        await refreshAutonomyData(true);
 
         const list = container.querySelector(".ws-entries");
         if (list) {
@@ -458,6 +817,7 @@
     function init() {
         if (initialized) return;
         initialized = true;
+        autonomyJobIds = loadAutonomyJobIds();
 
         console.log("[Workspace] Initializing...");
 
@@ -478,15 +838,20 @@
             // Load entries when tab is activated
             window.TRIONPanel.on("tab-change", (data) => {
                 if (data.id === TAB_ID) {
+                    startAutonomyPolling();
                     loadEntries();
+                } else {
+                    stopAutonomyPolling();
                 }
             });
 
             // Also pre-load entries so SSE events have context
             loadEntries();
+            startAutonomyPolling();
         }
 
         setupPanel();
+        window.addEventListener("beforeunload", stopAutonomyPolling);
         console.log("[Workspace] Initialized");
     }
 

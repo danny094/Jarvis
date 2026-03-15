@@ -1,0 +1,81 @@
+{
+  "meta": {
+    "started_at_utc": "2026-03-11T00:13:26.394432+00:00",
+    "base_url": "http://127.0.0.1:8200",
+    "model": "ministral-3:8b",
+    "cases_file": "tests/e2e/prompt_suite_cases.json",
+    "profile": "full",
+    "selected_case_count": 1,
+    "finished_at_utc": "2026-03-11T00:13:39.515404+00:00"
+  },
+  "summary": {
+    "total": 1,
+    "blocked_count": 0,
+    "error_count": 0,
+    "domain_counts": {
+      "GENERIC": 1
+    },
+    "latency_ms": {
+      "p50": 13120.78,
+      "mean": 13120.78,
+      "max": 13120.78
+    },
+    "match_rates": {
+      "domain": 1.0,
+      "approval": 1.0,
+      "needs_memory": null
+    },
+    "score_mean_0_10": 10.0
+  },
+  "results": [
+    {
+      "id": "T013",
+      "prompt": "Was ist die Hauptstadt von Frankreich?",
+      "category": "domain_routing_generic",
+      "tags": [
+        "domain",
+        "generic"
+      ],
+      "expected": {
+        "domain": "GENERIC",
+        "approved": true
+      },
+      "actual": {
+        "domain": "GENERIC",
+        "needs_memory": false,
+        "approved": true,
+        "tools_executed": [
+          "memory_search"
+        ],
+        "done_reason": "stop",
+        "latency_ms": 13120.78,
+        "conversation_id": "webui-prompt-e2e-1773188006-t013",
+        "error": null
+      },
+      "observed": {
+        "control_approved": true,
+        "thinking": {
+          "intent": "query_budget_fast_path",
+          "needs_memory": false,
+          "skipped": true,
+          "reason": "query_budget_skip_candidate"
+        },
+        "event_type_counts": {
+          "response_mode": 1,
+          "control": 1,
+          "workspace_update": 4,
+          "tool_start": 1,
+          "tool_result": 1,
+          "done": 1
+        },
+        "response_preview": "Die Hauptstadt von Frankreich ist **Paris**.\n\n*(Verifiziert durch allgemeines Wissen und kulturelle Fakten, die zuverlässig sind.)*"
+      },
+      "quality": {
+        "domain_match": true,
+        "approval_match": true,
+        "needs_memory_match": null,
+        "score": 10
+      }
+    }
+  ]
+}

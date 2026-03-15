@@ -10,7 +10,10 @@ Source-inspection markers kept for contract tests:
 - pending_package_approval
 """
 
+import importlib
+
 import mini_control_core as _core
+_core = importlib.reload(_core)
 from mini_control_core import *  # noqa: F401,F403
 
 # Backward-compatible export for tests/modules that still access private constants.

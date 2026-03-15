@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "daily": {
+    "last_run": null,
+    "status": "never",
+    "duration_s": null,
+    "input_events": null,
+    "digest_written": null,
+    "digest_key": null,
+    "reason": null,
+    "retry_policy": null
+  },
+  "weekly": {
+    "last_run": null,
+    "status": "never",
+    "duration_s": null,
+    "input_events": null,
+    "digest_written": null,
+    "digest_key": null,
+    "reason": null,
+    "retry_policy": null
+  },
+  "archive": {
+    "last_run": null,
+    "status": "never",
+    "duration_s": null,
+    "input_events": null,
+    "digest_written": null,
+    "digest_key": null,
+    "reason": null,
+    "retry_policy": null
+  },
+  "catch_up": {
+    "last_run": "2026-03-15T17:12:03.057143Z",
+    "days_processed": 2,
+    "written": 2,
+    "status": "ok",
+    "missed_runs": 0,
+    "recovered": null,
+    "generated": 2,
+    "mode": "off"
+  },
+  "jit": {
+    "trigger": null,
+    "rows": 1,
+    "ts": "2026-03-15T17:12:02.129383Z"
+  }
+}

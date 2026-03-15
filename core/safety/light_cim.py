@@ -8,6 +8,8 @@ Fast checks (<50ms) with escalation to Full CIM when needed.
 from typing import Dict, Any, List
 import re
 
+from core.light_cim_policy import load_light_cim_policy
+
 
 class LightCIM:
     """
@@ -20,6 +22,7 @@ class LightCIM:
     """
     
     def __init__(self):
+        self.policy = load_light_cim_policy()
         self.danger_keywords = [
             "harm", "hurt", "attack", "weapon",
             "illegal", "hack", "exploit", "steal", 
@@ -28,7 +31,9 @@ class LightCIM:
             "terror", "terrorism", "hostage",
             "poison", "overdose", "suicide",
             "threat", "blackmail", "extort",
-            "fraud", "scam", "impersonate" 
+            "fraud", "scam", "impersonate",
+            "virus", "malware", "trojan", "ransomware",
+            "keylogger", "botnet"
         ]
         self.sensitive_keywords = [
             "password", "passcode", "pin",
@@ -40,6 +45,18 @@ class LightCIM:
             "oauth", "bearer token",
             "login", "credentials", "auth"
         ]
+
+    @staticmethod
+    def _contains_keyword(text: str, keyword: str) -> bool:
+        raw = str(text or "").lower()
+        token = str(keyword or "").strip().lower()
+        if not raw or not token:
+            return False
+        # Multi-token / phrase keywords should still match exactly as phrase.
+        if " " in token or "-" in token or "/" in token:
+            pattern = rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])"
+            return re.search(pattern, raw) is not None
+        return re.search(rf"\b{re.escape(token)}\b", raw) is not None
 
     def validate_basic(
         self, 
@@ -62,7 +79,7 @@ class LightCIM:
         """
         # Run all checks
         intent_check = self.validate_intent(intent)
-        logic_check = self.check_logic_basic(thinking_plan)
+        logic_check = self.check_logic_basic(thinking_plan, user_text=user_text)
         safety_check = self.safety_guard_lite(user_text, thinking_plan)
         
         # Decide if escalation needed
@@ -125,7 +142,7 @@ class LightCIM:
         # Check for danger keywords
         intent_lower = intent.lower()
         for keyword in self.danger_keywords:
-            if keyword in intent_lower:
+            if self._contains_keyword(intent_lower, keyword):
                 warnings.append(f"Dangerous keyword detected: {keyword}")
                 return {
                     "safe": False,
@@ -148,7 +165,11 @@ class LightCIM:
             "warnings": warnings
         }
 
-    def check_logic_basic(self, thinking_plan: Dict[str, Any]) -> Dict[str, Any]:
+    def check_logic_basic(
+        self,
+        thinking_plan: Dict[str, Any],
+        user_text: str = "",
+    ) -> Dict[str, Any]:
         """
         Quick logic consistency checks.
         
@@ -166,7 +187,13 @@ class LightCIM:
         issues = []
         
         # Check 1: Memory keys consistency
-        if thinking_plan.get("needs_memory") and not thinking_plan.get("memory_keys"):
+        if (
+            thinking_plan.get("needs_memory")
+            and not thinking_plan.get("memory_keys")
+            and not self._is_cron_context_turn(thinking_plan, user_text)
+            and not self._is_runtime_action_context_turn(thinking_plan, user_text)
+            and not self._has_explicit_tool_domain_tag(user_text)
+        ):
             issues.append("Needs memory but no keys specified")
         
         # Check 2: High hallucination without memory
@@ -177,17 +204,153 @@ class LightCIM:
         # DISABLED: Sequential Thinking handles hallucination risk now
         #             issues.append("High hallucination risk without memory usage")
         
-        # Check 3: New fact completeness
-        if thinking_plan.get("is_new_fact"):
-            if not thinking_plan.get("new_fact_key"):
-                issues.append("New fact without key")
-            if not thinking_plan.get("new_fact_value"):
-                issues.append("New fact without value")
+        # Check 3: New fact completeness (policy-driven with meta-turn relaxation)
+        logic_cfg = (
+            (self.policy or {}).get("logic", {})
+            if isinstance(self.policy, dict)
+            else {}
+        )
+        enforce_new_fact = bool(logic_cfg.get("enforce_new_fact_completeness", True))
+        if thinking_plan.get("is_new_fact") and enforce_new_fact:
+            if not self._should_relax_new_fact_completeness(thinking_plan, user_text):
+                if not thinking_plan.get("new_fact_key"):
+                    issues.append("New fact without key")
+                if not thinking_plan.get("new_fact_value"):
+                    issues.append("New fact without value")
         
         return {
             "consistent": len(issues) == 0,
             "issues": issues
         }
+
+    @staticmethod
+    def _is_cron_context_turn(thinking_plan: Dict[str, Any], user_text: str = "") -> bool:
+        route = (thinking_plan or {}).get("_domain_route", {}) if isinstance(thinking_plan, dict) else {}
+        if str((route or {}).get("domain_tag") or "").strip().upper() == "CRONJOB":
+            return True
+
+        suggested = (thinking_plan or {}).get("suggested_tools", []) if isinstance(thinking_plan, dict) else []
+        for tool in suggested if isinstance(suggested, list) else []:
+            if isinstance(tool, dict):
+                name = str(tool.get("tool") or tool.get("name") or "").strip().lower()
+            else:
+                name = str(tool or "").strip().lower()
+            if name.startswith("autonomy_cron_") or name == "cron_reference_links_list":
+                return True
+
+        intent = str((thinking_plan or {}).get("intent") or "").strip().lower()
+        if any(tok in intent for tok in ("cron", "cronjob", "schedule", "zeitplan")):
+            return True
+
+        text = str(user_text or "").strip().lower()
+        return any(tok in text for tok in ("cron", "cronjob", "zeitplan", "schedule"))
+
+    @staticmethod
+    def _has_explicit_tool_domain_tag(user_text: str) -> bool:
+        text = str(user_text or "")
+        if not text:
+            return False
+        if re.search(r"\{(?:tool|domain)\s*[:=]\s*(cronjob|skill|container|mcp_call)\s*\}", text, re.IGNORECASE):
+            return True
+        if re.search(r"\{(cronjob|skill|container|mcp_call)\}", text, re.IGNORECASE):
+            return True
+        return False
+
+    @classmethod
+    def _is_runtime_action_context_turn(
+        cls,
+        thinking_plan: Dict[str, Any],
+        user_text: str = "",
+    ) -> bool:
+        route = (thinking_plan or {}).get("_domain_route", {}) if isinstance(thinking_plan, dict) else {}
+        domain_tag = str((route or {}).get("domain_tag") or "").strip().upper()
+        domain_locked = bool((route or {}).get("domain_locked"))
+        if domain_locked and domain_tag in {"CRONJOB", "SKILL", "CONTAINER"}:
+            return True
+
+        suggested = (thinking_plan or {}).get("suggested_tools", []) if isinstance(thinking_plan, dict) else []
+        runtime_tools = {
+            "request_container",
+            "stop_container",
+            "exec_in_container",
+            "container_logs",
+            "container_stats",
+            "container_list",
+            "container_inspect",
+            "blueprint_list",
+            "blueprint_get",
+            "blueprint_create",
+            "run_skill",
+            "create_skill",
+            "autonomous_skill_task",
+            "list_skills",
+            "get_skill_info",
+            "validate_skill_code",
+            "cron_reference_links_list",
+        }
+        for tool in suggested if isinstance(suggested, list) else []:
+            if isinstance(tool, dict):
+                name = str(tool.get("tool") or tool.get("name") or "").strip().lower()
+            else:
+                name = str(tool or "").strip().lower()
+            if not name:
+                continue
+            if name in runtime_tools:
+                return True
+            if name.startswith("autonomy_cron_"):
+                return True
+
+        text = str(user_text or "").strip().lower()
+        if not text:
+            return False
+        has_runtime_context = any(
+            token in text
+            for token in (
+                "container",
+                "docker",
+                "blueprint",
+                "host server",
+                "host-server",
+                "ip adresse",
+                "ip-adresse",
+                "ip address",
+                "cron",
+                "cronjob",
+                "schedule",
+                "zeitplan",
+                "skill",
+                "tools",
+                "tool",
+            )
+        )
+        if not has_runtime_context:
+            return False
+        return any(
+            token in text
+            for token in (
+                "starte",
+                "start",
+                "deploy",
+                "run",
+                "ausführen",
+                "ausfuehren",
+                "execute",
+                "stop",
+                "status",
+                "logs",
+                "list",
+                "liste",
+                "find",
+                "finden",
+                "ermittel",
+                "heraus",
+                "zeige",
+                "gib",
+                "nutze",
+                "benutze",
+                "use",
+            )
+        )
 
     def safety_guard_lite(
         self, 
@@ -211,7 +374,7 @@ class LightCIM:
         
         # Check for sensitive keywords
         for keyword in self.sensitive_keywords:
-            if keyword in text_lower:
+            if self._contains_keyword(text_lower, keyword):
                 return {
                     "safe": False,
                     "warning": f"Sensitive content detected: {keyword}"
@@ -236,6 +399,62 @@ class LightCIM:
             "safe": True,
             "warning": None
         }
+
+    def _should_relax_new_fact_completeness(
+        self,
+        thinking_plan: Dict[str, Any],
+        user_text: str,
+    ) -> bool:
+        logic_cfg = (
+            (self.policy or {}).get("logic", {})
+            if isinstance(self.policy, dict)
+            else {}
+        )
+        relax_cfg = logic_cfg.get("relax_new_fact_completeness", {})
+        if not isinstance(relax_cfg, dict):
+            return False
+        if not bool(relax_cfg.get("enabled", True)):
+            return False
+
+        dialogue_act = str(thinking_plan.get("dialogue_act") or "").strip().lower()
+        allowed_acts = {
+            str(act).strip().lower()
+            for act in relax_cfg.get("dialogue_acts", [])
+            if str(act).strip()
+        }
+        if dialogue_act and dialogue_act in allowed_acts:
+            return True
+
+        intent = str(thinking_plan.get("intent") or "")
+        intent_patterns = [
+            str(pattern)
+            for pattern in relax_cfg.get("intent_regex", [])
+            if str(pattern).strip()
+        ]
+        if self._matches_any_regex(intent, intent_patterns):
+            return True
+
+        user_patterns = [
+            str(pattern)
+            for pattern in relax_cfg.get("user_text_regex", [])
+            if str(pattern).strip()
+        ]
+        if self._matches_any_regex(str(user_text or ""), user_patterns):
+            return True
+
+        return False
+
+    @staticmethod
+    def _matches_any_regex(text: str, patterns: List[str]) -> bool:
+        if not text:
+            return False
+        for pattern in patterns:
+            try:
+                if re.search(pattern, text, flags=re.IGNORECASE):
+                    return True
+            except re.error:
+                continue
+        return False
     
     def _should_escalate(
         self,

@@ -14,6 +14,7 @@ Tests:
 import requests
 import pytest
 import time
+import os
 from pathlib import Path
 
 # ============================================================
@@ -22,6 +23,17 @@ from pathlib import Path
 
 API_BASE = "http://localhost:8200"  # Updated: admin-api port
 API_URL = f"{API_BASE}/api/personas"
+
+_RUN_PERSONA_REST_API_TESTS = (
+    os.environ.get("RUN_PERSONA_REST_API_TESTS", "0").strip() == "1"
+)
+pytestmark = pytest.mark.skipif(
+    not _RUN_PERSONA_REST_API_TESTS,
+    reason=(
+        "Persona REST API integration tests require a prepared live admin-api "
+        "(set RUN_PERSONA_REST_API_TESTS=1)."
+    ),
+)
 
 # ============================================================
 # TEST DATA

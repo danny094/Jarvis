@@ -1,0 +1,146 @@
+{
+  "version": "2026-03-13",
+  "name": "trion_real_autonomy_prompts",
+  "cases": [
+    {
+      "id": "R001",
+      "category": "runtime_host_ip",
+      "tags": ["real_autonomy", "container", "runtime", "host_ip", "typo"],
+      "prompt": "Guten Abend TRION. Kannst du versuchen, due IP addrese vom Host server herraus zu finden? Nutze gerne alle Tools die du dafuer benoetigst.",
+      "expected": {"domain": "CONTAINER", "needs_memory": false, "approved": true}
+    },
+    {
+      "id": "R002",
+      "category": "runtime_host_ip",
+      "tags": ["real_autonomy", "container", "runtime", "host_ip"],
+      "prompt": "Finde bitte die IP-Adresse vom Host-Server und nutze die passenden Runtime-Tools.",
+      "expected": {"domain": "CONTAINER", "needs_memory": false, "approved": true}
+    },
+    {
+      "id": "R003",
+      "category": "runtime_container_status",
+      "tags": ["real_autonomy", "container", "runtime", "status"],
+      "prompt": "Zeig mir den aktuellen Container-Status inklusive CPU und RAM.",
+      "expected": {"domain": "CONTAINER", "approved": true}
+    },
+    {
+      "id": "R004",
+      "category": "runtime_container_logs",
+      "tags": ["real_autonomy", "container", "runtime", "logs"],
+      "prompt": "Gib mir die letzten 100 Zeilen der Container-Logs.",
+      "expected": {"domain": "CONTAINER", "approved": true}
+    },
+    {
+      "id": "R005",
+      "category": "runtime_container_exec",
+      "tags": ["real_autonomy", "container", "runtime", "exec"],
+      "prompt": "Fuehre im aktiven Container den Befehl 'hostname -I' aus.",
+      "expected": {"domain": "CONTAINER", "approved": true}
+    },
+    {
+      "id": "R006",
+      "category": "runtime_ports",
+      "tags": ["real_autonomy", "container", "runtime", "ports"],
+      "prompt": "Pruefe welche Ports aktuell belegt sind und ob ein freier Port verfuegbar ist.",
+      "expected": {"domain": "CONTAINER", "approved": true}
+    },
+    {
+      "id": "R007",
+      "category": "runtime_blueprints",
+      "tags": ["real_autonomy", "container", "runtime", "blueprint"],
+      "prompt": "Liste die verfuegbaren Blueprints und gib mir den besten fuer Python-Tasks.",
+      "expected": {"domain": "CONTAINER", "approved": true}
+    },
+    {
+      "id": "R008",
+      "category": "runtime_storage",
+      "tags": ["real_autonomy", "container", "runtime", "storage"],
+      "prompt": "Zeig mir die Storage-Uebersicht mit freien und belegten Kapazitaeten.",
+      "expected": {"domain": "CONTAINER", "approved": true}
+    },
+    {
+      "id": "R009",
+      "category": "runtime_container_typo",
+      "tags": ["real_autonomy", "container", "runtime", "typo"],
+      "prompt": "Kannst du mal checken ob der contaienr laeuft und mir den status geben?",
+      "expected": {"domain": "CONTAINER", "approved": true}
+    },
+    {
+      "id": "R010",
+      "category": "runtime_container_tool_intent",
+      "tags": ["real_autonomy", "container", "runtime", "tool_intent"],
+      "prompt": "Nutze bitte direkt die Container-Tools, keine Rueckfragen, und gib mir den Laufzeitstatus.",
+      "expected": {"domain": "CONTAINER", "approved": true}
+    },
+    {
+      "id": "R011",
+      "category": "cron_create",
+      "tags": ["real_autonomy", "cronjob", "schedule"],
+      "prompt": "Erstelle einen Cronjob, der in 5 Minuten einmalig einen Statusreport sendet.",
+      "expected": {"domain": "CRONJOB", "approved": true}
+    },
+    {
+      "id": "R012",
+      "category": "cron_list",
+      "tags": ["real_autonomy", "cronjob", "status"],
+      "prompt": "Liste alle aktiven Cronjobs und zeig ob etwas pausiert ist.",
+      "expected": {"domain": "CRONJOB", "approved": true}
+    },
+    {
+      "id": "R013",
+      "category": "cron_update",
+      "tags": ["real_autonomy", "cronjob", "update"],
+      "prompt": "Aendere den Cronjob auf taeglich um 09:30 UTC.",
+      "expected": {"domain": "CRONJOB", "approved": true}
+    },
+    {
+      "id": "R014",
+      "category": "skill_list",
+      "tags": ["real_autonomy", "skill", "status"],
+      "prompt": "Welche Skills sind gerade installiert und lauffaehig?",
+      "expected": {"domain": "SKILL", "approved": true}
+    },
+    {
+      "id": "R015",
+      "category": "skill_run",
+      "tags": ["real_autonomy", "skill", "runtime"],
+      "prompt": "Starte den diagnostics Skill und gib mir die Kurz-Zusammenfassung.",
+      "expected": {"domain": "SKILL", "approved": true}
+    },
+    {
+      "id": "R016",
+      "category": "skill_create",
+      "tags": ["real_autonomy", "skill", "create"],
+      "prompt": "Erstelle einen Skill, der Log-Dateien auf Fehler-Haeufungen prueft.",
+      "expected": {"domain": "SKILL", "approved": true}
+    },
+    {
+      "id": "R017",
+      "category": "memory_recall",
+      "tags": ["real_autonomy", "memory", "recall"],
+      "prompt": "Was hast du dir ueber meine Preferences gemerkt?",
+      "expected": {"needs_memory": true, "approved": true}
+    },
+    {
+      "id": "R018",
+      "category": "memory_save",
+      "tags": ["real_autonomy", "memory", "save"],
+      "prompt": "Merke dir: Ich bevorzuge kurze, technische Antworten.",
+      "expected": {"needs_memory": true, "approved": true}
+    },
+    {
+      "id": "R019",
+      "category": "benign_tool_request",
+      "tags": ["real_autonomy", "container", "runtime", "benign_tool_request"],
+      "prompt": "Bitte fuehre eine harmlose Runtime-Pruefung aus und gib nur das Ergebnis zurueck.",
+      "expected": {"approved": true}
+    },
+    {
+      "id": "R020",
+      "category": "mixed_runtime_typo",
+      "tags": ["real_autonomy", "container", "runtime", "mixed", "typo"],
+      "prompt": "Trion, kannste mal die host ip checkn und ggf. container status + logs mitnehmen, bitte ohne memory gefrickel.",
+      "expected": {"domain": "CONTAINER", "needs_memory": false, "approved": true}
+    }
+  ]
+}

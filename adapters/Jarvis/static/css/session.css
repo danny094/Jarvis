@@ -1,0 +1,244 @@
+/* Session Insights App */
+
+#app-session {
+    overflow-y: auto;
+}
+
+.session-app {
+    max-width: 1420px;
+    margin: 0 auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.session-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #2f2a16;
+    padding-bottom: 12px;
+}
+
+.session-head h2 {
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: #fef3c7;
+    font-size: 1.35rem;
+}
+
+.session-head h2 i {
+    color: #f59e0b;
+}
+
+.session-actions {
+    display: inline-flex;
+    gap: 8px;
+}
+
+.session-btn {
+    border: 1px solid #5b4b1f;
+    border-radius: 10px;
+    background: #1f1a0c;
+    color: #fde68a;
+    padding: 8px 11px;
+    cursor: pointer;
+    font-size: 0.83rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.session-btn:hover {
+    background: #2a230f;
+}
+
+.session-btn.primary {
+    border-color: #b45309;
+    background: linear-gradient(180deg, #a16207, #7c4504);
+    color: #fffbeb;
+}
+
+.session-grid-top,
+.session-grid-mid,
+.session-grid-bottom {
+    display: grid;
+    gap: 12px;
+}
+
+.session-grid-top {
+    grid-template-columns: 1fr 1fr;
+}
+
+.session-grid-mid {
+    grid-template-columns: 1fr 1fr;
+}
+
+.session-grid-bottom {
+    grid-template-columns: 1fr 1fr;
+}
+
+.session-card {
+    background: linear-gradient(180deg, rgba(28, 21, 8, 0.96), rgba(16, 12, 4, 0.96));
+    border: 1px solid #4b3b16;
+    border-radius: 14px;
+    padding: 14px;
+}
+
+.session-card h3 {
+    margin: 0 0 10px 0;
+    color: #fef3c7;
+    font-size: 0.95rem;
+}
+
+.session-kpis {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.session-kpi {
+    border: 1px solid #4a3916;
+    background: #1a1407;
+    border-radius: 10px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.session-kpi span {
+    font-size: 0.72rem;
+    color: #fcd34d;
+}
+
+.session-kpi strong {
+    font-size: 1rem;
+    color: #fffbeb;
+}
+
+.session-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.session-item {
+    border: 1px solid #4a3916;
+    background: #171105;
+    border-radius: 10px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.session-item-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+}
+
+.session-item-head strong {
+    color: #fffbeb;
+    font-weight: 700;
+}
+
+.session-item-head span {
+    color: #fcd34d;
+    font-size: 0.73rem;
+}
+
+.session-sub {
+    display: flex;
+    justify-content: space-between;
+    color: #c9b06a;
+    font-size: 0.74rem;
+    gap: 8px;
+}
+
+.session-progress {
+    width: 100%;
+    height: 8px;
+    background: #3a2d11;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.session-progress > span {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, #f59e0b, #facc15);
+}
+
+.session-cloud-empty,
+.session-empty {
+    border: 1px dashed #5f4a1c;
+    background: #161004;
+    border-radius: 10px;
+    padding: 10px;
+    font-size: 0.78rem;
+    color: #c9b06a;
+}
+
+.session-mini-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.session-mini {
+    border: 1px solid #4a3916;
+    border-radius: 10px;
+    background: #171105;
+    padding: 9px;
+    font-size: 0.78rem;
+    color: #fcd34d;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.session-mini strong {
+    color: #fffbeb;
+    font-size: 0.9rem;
+}
+
+.session-feedback {
+    min-height: 18px;
+    font-size: 0.78rem;
+    color: #c9b06a;
+    padding-left: 4px;
+}
+
+.session-feedback.err {
+    color: #fca5a5;
+}
+
+.session-feedback.ok {
+    color: #86efac;
+}
+
+@media (max-width: 1200px) {
+    .session-grid-top,
+    .session-grid-mid,
+    .session-grid-bottom {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 860px) {
+    .session-kpis {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .session-mini-grid {
+        grid-template-columns: 1fr;
+    }
+}

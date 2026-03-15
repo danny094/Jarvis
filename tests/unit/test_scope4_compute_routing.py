@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -15,6 +15,8 @@ from utils.role_endpoint_resolver import (
     clear_ollama_discovery_cache,
     clear_role_routing_cache,
     _CACHE,
+    _candidate_default_endpoints,
+    _docker_default_gateway_endpoint,
     resolve_ollama_base_endpoint,
     resolve_role_endpoint,
 )
@@ -194,6 +196,22 @@ class TestRoleEndpointResolver(unittest.TestCase):
 class TestOllamaBaseDiscovery(unittest.TestCase):
     def setUp(self):
         clear_ollama_discovery_cache()
+
+    def test_default_gateway_endpoint_parsing(self):
+        route_content = (
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+            "eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"
+        )
+        with patch("builtins.open", mock_open(read_data=route_content)):
+            endpoint = _docker_default_gateway_endpoint()
+        self.assertEqual(endpoint, "http://172.18.0.1:11434")
+
+    def test_candidate_defaults_use_dynamic_gateway_not_fixed_bridges(self):
+        with patch("utils.role_endpoint_resolver._docker_default_gateway_endpoint", return_value="http://172.19.0.1:11434"):
+            endpoints = _candidate_default_endpoints("http://ollama:11434")
+        self.assertIn("http://172.19.0.1:11434", endpoints)
+        self.assertNotIn("http://172.17.0.1:11434", endpoints)
+        self.assertNotIn("http://172.18.0.1:11434", endpoints)
 
     def test_prefers_first_healthy_candidate(self):
         with patch("utils.role_endpoint_resolver._candidate_default_endpoints", return_value=[

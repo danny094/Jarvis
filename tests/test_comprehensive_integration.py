@@ -19,12 +19,25 @@ Coverage: Full system
 import requests
 import time
 import json
+import os
+import pytest
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
 
 # Configuration
 API_BASE = "http://localhost:8200"
 TEST_TIMEOUT = 30  # seconds per test
+
+_RUN_COMPREHENSIVE_INTEGRATION = (
+    os.environ.get("RUN_COMPREHENSIVE_INTEGRATION", "0").strip() == "1"
+)
+pytestmark = pytest.mark.skipif(
+    not _RUN_COMPREHENSIVE_INTEGRATION,
+    reason=(
+        "Comprehensive integration suite requires a prepared live stack "
+        "(set RUN_COMPREHENSIVE_INTEGRATION=1)."
+    ),
+)
 
 # Test state tracking
 test_results = {

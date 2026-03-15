@@ -1,0 +1,671 @@
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+output_reserve: reallocating output buffer from size 2.77 MiB to 2.89 MiB
+[GIN] 2026/03/08 - 23:49:47 | 200 |   17.853793ms |     172.18.0.13 | POST     "/api/embeddings"
+time=2026-03-08T23:49:47.807Z level=INFO source=server.go:392 msg="starting runner" cmd="/usr/bin/ollama runner --ollama-engine --port 34043"
+time=2026-03-08T23:49:48.165Z level=INFO source=server.go:392 msg="starting runner" cmd="/usr/bin/ollama runner --ollama-engine --port 34767"
+time=2026-03-08T23:49:48.302Z level=WARN source=cpu_linux.go:130 msg="failed to parse CPU allowed micro secs" error="strconv.ParseInt: parsing \"max\": invalid syntax"
+llama_model_loader: loaded meta data with 23 key-value pairs and 389 tensors from /root/.ollama/models/blobs/sha256-819c2adf5ce6df2b6bd2ae4ca90d2a69f060afeb438d0c171db57daa02e39c3d (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = bert
+llama_model_loader: - kv   1:                               general.name str              = mxbai-embed-large-v1
+llama_model_loader: - kv   2:                           bert.block_count u32              = 24
+llama_model_loader: - kv   3:                        bert.context_length u32              = 512
+llama_model_loader: - kv   4:                      bert.embedding_length u32              = 1024
+llama_model_loader: - kv   5:                   bert.feed_forward_length u32              = 4096
+llama_model_loader: - kv   6:                  bert.attention.head_count u32              = 16
+llama_model_loader: - kv   7:          bert.attention.layer_norm_epsilon f32              = 0.000000
+llama_model_loader: - kv   8:                          general.file_type u32              = 1
+llama_model_loader: - kv   9:                      bert.attention.causal bool             = false
+llama_model_loader: - kv  10:                          bert.pooling_type u32              = 2
+llama_model_loader: - kv  11:            tokenizer.ggml.token_type_count u32              = 2
+llama_model_loader: - kv  12:                tokenizer.ggml.bos_token_id u32              = 101
+llama_model_loader: - kv  13:                tokenizer.ggml.eos_token_id u32              = 102
+llama_model_loader: - kv  14:                       tokenizer.ggml.model str              = bert
+llama_model_loader: - kv  15:                      tokenizer.ggml.tokens arr[str,30522]   = ["[PAD]", "[unused0]", "[unused1]", "...
+llama_model_loader: - kv  16:                      tokenizer.ggml.scores arr[f32,30522]   = [-1000.000000, -1000.000000, -1000.00...
+llama_model_loader: - kv  17:                  tokenizer.ggml.token_type arr[i32,30522]   = [3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  18:            tokenizer.ggml.unknown_token_id u32              = 100
+llama_model_loader: - kv  19:          tokenizer.ggml.seperator_token_id u32              = 102
+llama_model_loader: - kv  20:            tokenizer.ggml.padding_token_id u32              = 0
+llama_model_loader: - kv  21:                tokenizer.ggml.cls_token_id u32              = 101
+llama_model_loader: - kv  22:               tokenizer.ggml.mask_token_id u32              = 103
+llama_model_loader: - type  f32:  243 tensors
+llama_model_loader: - type  f16:  146 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = F16
+print_info: file size   = 637.85 MiB (16.02 BPW) 
+load: special_eos_id is not in special_eog_ids - the tokenizer config may be incorrect
+load: printing all EOG tokens:
+load:   - 102 ('[SEP]')
+load: special tokens cache size = 5
+load: token to piece cache size = 0.2032 MB
+print_info: arch             = bert
+print_info: vocab_only       = 1
+print_info: model type       = ?B
+print_info: model params     = 334.09 M
+print_info: general.name     = mxbai-embed-large-v1
+print_info: vocab type       = WPM
+print_info: n_vocab          = 30522
+print_info: n_merges         = 0
+print_info: BOS token        = 101 '[CLS]'
+print_info: EOS token        = 102 '[SEP]'
+print_info: UNK token        = 100 '[UNK]'
+print_info: SEP token        = 102 '[SEP]'
+print_info: PAD token        = 0 '[PAD]'
+print_info: MASK token       = 103 '[MASK]'
+print_info: LF token         = 0 '[PAD]'
+print_info: EOG token        = 102 '[SEP]'
+print_info: max token length = 21
+llama_model_load: vocab only - skipping tensors
+time=2026-03-08T23:49:48.337Z level=WARN source=server.go:167 msg="requested context size too large for model" num_ctx=4096 n_ctx_train=512
+time=2026-03-08T23:49:48.338Z level=INFO source=server.go:392 msg="starting runner" cmd="/usr/bin/ollama runner --model /root/.ollama/models/blobs/sha256-819c2adf5ce6df2b6bd2ae4ca90d2a69f060afeb438d0c171db57daa02e39c3d --port 44191"
+time=2026-03-08T23:49:48.338Z level=INFO source=sched.go:443 msg="system memory" total="31.2 GiB" free="12.4 GiB" free_swap="8.0 GiB"
+time=2026-03-08T23:49:48.338Z level=INFO source=server.go:459 msg="loading model" "model layers"=25 requested=0
+time=2026-03-08T23:49:48.338Z level=INFO source=device.go:245 msg="model weights" device=CPU size="636.8 MiB"
+time=2026-03-08T23:49:48.338Z level=INFO source=device.go:256 msg="kv cache" device=CPU size="3.0 MiB"
+time=2026-03-08T23:49:48.338Z level=INFO source=device.go:272 msg="total memory" size="639.8 MiB"
+time=2026-03-08T23:49:48.348Z level=INFO source=runner.go:963 msg="starting go runner"
+load_backend: loaded CPU backend from /usr/lib/ollama/libggml-cpu-haswell.so
+time=2026-03-08T23:49:48.353Z level=INFO source=ggml.go:104 msg=system CPU.0.SSE3=1 CPU.0.SSSE3=1 CPU.0.AVX=1 CPU.0.AVX2=1 CPU.0.F16C=1 CPU.0.FMA=1 CPU.0.BMI2=1 CPU.0.LLAMAFILE=1 CPU.1.LLAMAFILE=1 compiler=cgo(gcc)
+time=2026-03-08T23:49:48.353Z level=INFO source=runner.go:999 msg="Server listening on 127.0.0.1:44191"
+time=2026-03-08T23:49:48.360Z level=INFO source=runner.go:893 msg=load request="{Operation:commit LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:false KvSize:512 KvCacheType: NumThreads:6 GPULayers:[] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-03-08T23:49:48.360Z level=INFO source=server.go:1294 msg="waiting for llama runner to start responding"
+time=2026-03-08T23:49:48.360Z level=INFO source=server.go:1328 msg="waiting for server to become available" status="llm server loading model"
+llama_model_loader: loaded meta data with 23 key-value pairs and 389 tensors from /root/.ollama/models/blobs/sha256-819c2adf5ce6df2b6bd2ae4ca90d2a69f060afeb438d0c171db57daa02e39c3d (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = bert
+llama_model_loader: - kv   1:                               general.name str              = mxbai-embed-large-v1
+llama_model_loader: - kv   2:                           bert.block_count u32              = 24
+llama_model_loader: - kv   3:                        bert.context_length u32              = 512
+llama_model_loader: - kv   4:                      bert.embedding_length u32              = 1024
+llama_model_loader: - kv   5:                   bert.feed_forward_length u32              = 4096
+llama_model_loader: - kv   6:                  bert.attention.head_count u32              = 16
+llama_model_loader: - kv   7:          bert.attention.layer_norm_epsilon f32              = 0.000000
+llama_model_loader: - kv   8:                          general.file_type u32              = 1
+llama_model_loader: - kv   9:                      bert.attention.causal bool             = false
+llama_model_loader: - kv  10:                          bert.pooling_type u32              = 2
+llama_model_loader: - kv  11:            tokenizer.ggml.token_type_count u32              = 2
+llama_model_loader: - kv  12:                tokenizer.ggml.bos_token_id u32              = 101
+llama_model_loader: - kv  13:                tokenizer.ggml.eos_token_id u32              = 102
+llama_model_loader: - kv  14:                       tokenizer.ggml.model str              = bert
+llama_model_loader: - kv  15:                      tokenizer.ggml.tokens arr[str,30522]   = ["[PAD]", "[unused0]", "[unused1]", "...
+llama_model_loader: - kv  16:                      tokenizer.ggml.scores arr[f32,30522]   = [-1000.000000, -1000.000000, -1000.00...
+llama_model_loader: - kv  17:                  tokenizer.ggml.token_type arr[i32,30522]   = [3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  18:            tokenizer.ggml.unknown_token_id u32              = 100
+llama_model_loader: - kv  19:          tokenizer.ggml.seperator_token_id u32              = 102
+llama_model_loader: - kv  20:            tokenizer.ggml.padding_token_id u32              = 0
+llama_model_loader: - kv  21:                tokenizer.ggml.cls_token_id u32              = 101
+llama_model_loader: - kv  22:               tokenizer.ggml.mask_token_id u32              = 103
+llama_model_loader: - type  f32:  243 tensors
+llama_model_loader: - type  f16:  146 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = F16
+print_info: file size   = 637.85 MiB (16.02 BPW) 
+load: special_eos_id is not in special_eog_ids - the tokenizer config may be incorrect
+load: printing all EOG tokens:
+load:   - 102 ('[SEP]')
+load: special tokens cache size = 5
+load: token to piece cache size = 0.2032 MB
+print_info: arch             = bert
+print_info: vocab_only       = 0
+print_info: n_ctx_train      = 512
+print_info: n_embd           = 1024
+print_info: n_embd_inp       = 1024
+print_info: n_layer          = 24
+print_info: n_head           = 16
+print_info: n_head_kv        = 16
+print_info: n_rot            = 64
+print_info: n_swa            = 0
+print_info: is_swa_any       = 0
+print_info: n_embd_head_k    = 64
+print_info: n_embd_head_v    = 64
+print_info: n_gqa            = 1
+print_info: n_embd_k_gqa     = 1024
+print_info: n_embd_v_gqa     = 1024
+print_info: f_norm_eps       = 1.0e-12
+print_info: f_norm_rms_eps   = 0.0e+00
+print_info: f_clamp_kqv      = 0.0e+00
+print_info: f_max_alibi_bias = 0.0e+00
+print_info: f_logit_scale    = 0.0e+00
+print_info: f_attn_scale     = 0.0e+00
+print_info: n_ff             = 4096
+print_info: n_expert         = 0
+print_info: n_expert_used    = 0
+print_info: n_expert_groups  = 0
+print_info: n_group_used     = 0
+print_info: causal attn      = 0
+print_info: pooling type     = 2
+print_info: rope type        = 2
+print_info: rope scaling     = linear
+print_info: freq_base_train  = 10000.0
+print_info: freq_scale_train = 1
+print_info: n_ctx_orig_yarn  = 512
+print_info: rope_finetuned   = unknown
+print_info: model type       = 335M
+print_info: model params     = 334.09 M
+print_info: general.name     = mxbai-embed-large-v1
+print_info: vocab type       = WPM
+print_info: n_vocab          = 30522
+print_info: n_merges         = 0
+print_info: BOS token        = 101 '[CLS]'
+print_info: EOS token        = 102 '[SEP]'
+print_info: UNK token        = 100 '[UNK]'
+print_info: SEP token        = 102 '[SEP]'
+print_info: PAD token        = 0 '[PAD]'
+print_info: MASK token       = 103 '[MASK]'
+print_info: LF token         = 0 '[PAD]'
+print_info: EOG token        = 102 '[SEP]'
+print_info: max token length = 21
+load_tensors: loading model tensors, this can take a while... (mmap = false)
+load_tensors:          CPU model buffer size =   637.85 MiB
+llama_context: constructing llama_context
+llama_context: n_seq_max     = 1
+llama_context: n_ctx         = 512
+llama_context: n_ctx_seq     = 512
+llama_context: n_batch       = 512
+llama_context: n_ubatch      = 512
+llama_context: causal_attn   = 0
+llama_context: flash_attn    = disabled
+llama_context: kv_unified    = false
+llama_context: freq_base     = 10000.0
+llama_context: freq_scale    = 1
+llama_context:        CPU  output buffer size =     0.12 MiB
+llama_context:        CPU compute buffer size =    27.01 MiB
+llama_context: graph nodes  = 851
+llama_context: graph splits = 1
+time=2026-03-08T23:49:48.863Z level=INFO source=server.go:1332 msg="llama runner started in 0.53 seconds"
+time=2026-03-08T23:49:48.863Z level=INFO source=sched.go:517 msg="loaded runners" count=1
+time=2026-03-08T23:49:48.863Z level=INFO source=server.go:1294 msg="waiting for llama runner to start responding"
+time=2026-03-08T23:49:48.863Z level=INFO source=server.go:1332 msg="llama runner started in 0.53 seconds"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+output_reserve: reallocating output buffer from size 0.12 MiB to 2.89 MiB
+[GIN] 2026/03/08 - 23:49:48 | 200 |  1.143362525s |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:49:49 | 200 |   76.459503ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:49:49 | 200 |   33.608966ms |      172.18.0.5 | POST     "/api/embeddings"
+time=2026-03-08T23:49:49.266Z level=INFO source=server.go:392 msg="starting runner" cmd="/usr/bin/ollama runner --ollama-engine --port 32967"
+time=2026-03-08T23:49:49.440Z level=WARN source=cpu_linux.go:130 msg="failed to parse CPU allowed micro secs" error="strconv.ParseInt: parsing \"max\": invalid syntax"
+time=2026-03-08T23:49:49.456Z level=INFO source=sched.go:583 msg="updated VRAM based on existing loaded models" gpu=GPU-50da79e5-cb37-47ad-5191-1bf844f588fb library=CUDA total="8.0 GiB" available="7.6 GiB"
+time=2026-03-08T23:49:49.521Z level=INFO source=server.go:209 msg="enabling flash attention"
+time=2026-03-08T23:49:49.521Z level=INFO source=server.go:392 msg="starting runner" cmd="/usr/bin/ollama runner --ollama-engine --model /root/.ollama/models/blobs/sha256-3c9af22ff0acd89c7335e92e4b947569b089e7448971c98d72b017d346453ae3 --port 45043"
+time=2026-03-08T23:49:49.521Z level=INFO source=sched.go:443 msg="system memory" total="31.2 GiB" free="11.7 GiB" free_swap="8.0 GiB"
+time=2026-03-08T23:49:49.521Z level=INFO source=sched.go:450 msg="gpu memory" id=GPU-50da79e5-cb37-47ad-5191-1bf844f588fb library=CUDA available="7.2 GiB" free="7.6 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-03-08T23:49:49.521Z level=INFO source=server.go:702 msg="loading model" "model layers"=35 requested=-1
+time=2026-03-08T23:49:49.532Z level=INFO source=runner.go:1398 msg="starting ollama engine"
+time=2026-03-08T23:49:49.532Z level=INFO source=runner.go:1433 msg="Server listening on 127.0.0.1:45043"
+time=2026-03-08T23:49:49.543Z level=INFO source=runner.go:1271 msg=load request="{Operation:fit LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:true KvSize:4096 KvCacheType: NumThreads:6 GPULayers:35[ID:GPU-50da79e5-cb37-47ad-5191-1bf844f588fb Layers:35(0..34)] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-03-08T23:49:49.574Z level=INFO source=ggml.go:136 msg="" architecture=mistral3 file_type=Q4_K_M name="" description="" num_tensors=531 num_key_values=45
+load_backend: loaded CPU backend from /usr/lib/ollama/libggml-cpu-haswell.so
+ggml_cuda_init: GGML_CUDA_FORCE_MMQ:    no
+ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS: no
+ggml_cuda_init: found 1 CUDA devices:
+  Device 0: NVIDIA GeForce RTX 2060 SUPER, compute capability 7.5, VMM: yes, ID: GPU-50da79e5-cb37-47ad-5191-1bf844f588fb
+load_backend: loaded CUDA backend from /usr/lib/ollama/cuda_v13/libggml-cuda.so
+time=2026-03-08T23:49:49.710Z level=INFO source=ggml.go:104 msg=system CPU.0.SSE3=1 CPU.0.SSSE3=1 CPU.0.AVX=1 CPU.0.AVX2=1 CPU.0.F16C=1 CPU.0.FMA=1 CPU.0.BMI2=1 CPU.0.LLAMAFILE=1 CPU.1.LLAMAFILE=1 CUDA.0.ARCHS=750,800,860,870,890,900,1000,1030,1100,1200,1210 CUDA.0.USE_GRAPHS=1 CUDA.0.PEER_MAX_BATCH_SIZE=128 compiler=cgo(gcc)
+time=2026-03-08T23:49:50.323Z level=INFO source=runner.go:1271 msg=load request="{Operation:alloc LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:true KvSize:4096 KvCacheType: NumThreads:6 GPULayers:35[ID:GPU-50da79e5-cb37-47ad-5191-1bf844f588fb Layers:35(0..34)] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-03-08T23:49:50.699Z level=INFO source=runner.go:1271 msg=load request="{Operation:commit LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:true KvSize:4096 KvCacheType: NumThreads:6 GPULayers:35[ID:GPU-50da79e5-cb37-47ad-5191-1bf844f588fb Layers:35(0..34)] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-03-08T23:49:50.699Z level=INFO source=ggml.go:482 msg="offloading 34 repeating layers to GPU"
+time=2026-03-08T23:49:50.699Z level=INFO source=ggml.go:489 msg="offloading output layer to GPU"
+time=2026-03-08T23:49:50.699Z level=INFO source=ggml.go:494 msg="offloaded 35/35 layers to GPU"
+time=2026-03-08T23:49:50.699Z level=INFO source=device.go:240 msg="model weights" device=CUDA0 size="5.3 GiB"
+time=2026-03-08T23:49:50.699Z level=INFO source=device.go:245 msg="model weights" device=CPU size="288.0 MiB"
+time=2026-03-08T23:49:50.699Z level=INFO source=device.go:251 msg="kv cache" device=CUDA0 size="544.0 MiB"
+time=2026-03-08T23:49:50.699Z level=INFO source=device.go:262 msg="compute graph" device=CUDA0 size="882.2 MiB"
+time=2026-03-08T23:49:50.699Z level=INFO source=device.go:267 msg="compute graph" device=CPU size="8.0 MiB"
+time=2026-03-08T23:49:50.699Z level=INFO source=device.go:272 msg="total memory" size="7.0 GiB"
+time=2026-03-08T23:49:50.699Z level=INFO source=sched.go:517 msg="loaded runners" count=2
+time=2026-03-08T23:49:50.699Z level=INFO source=server.go:1294 msg="waiting for llama runner to start responding"
+time=2026-03-08T23:49:50.699Z level=INFO source=server.go:1328 msg="waiting for server to become available" status="llm server loading model"
+time=2026-03-08T23:49:51.453Z level=INFO source=server.go:1332 msg="llama runner started in 1.93 seconds"
+[GIN] 2026/03/08 - 23:49:53 | 200 |    1.675729ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:49:59 | 200 | 10.785053994s |     172.18.0.13 | POST     "/api/generate"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:49:59 | 200 |   34.083433ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:00 | 200 |   52.099213ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:00 | 200 |   68.140616ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:00 | 200 |    99.16874ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:00 | 200 |  137.533171ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:00 | 200 |  172.313572ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:00 | 200 |  212.856985ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:50:00 | 200 |    1.424395ms |     172.18.0.13 | GET      "/api/tags"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+output_reserve: reallocating output buffer from size 2.89 MiB to 6.62 MiB
+[GIN] 2026/03/08 - 23:50:00 | 200 |  161.233142ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:00 | 200 |  182.098502ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:00 | 200 |  180.185774ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |   75.469199ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |   76.543711ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |   77.311174ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |   34.437082ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |   52.838931ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |   80.734229ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |   103.35571ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |  142.013687ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |  173.301371ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:01 | 200 |  209.473275ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:02 | 200 |  166.366703ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:02 | 200 |  175.951373ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:02 | 200 |  177.894499ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:02 | 200 |   75.676702ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:02 | 200 |   75.478437ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:02 | 200 |   75.578687ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:02 | 200 |   33.521851ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:03 | 200 |   46.417544ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:03 | 200 |   78.212599ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:03 | 200 |  112.942214ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:03 | 200 |  147.663634ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:03 | 200 |  181.637389ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:03 | 200 |  214.570657ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:03 | 200 |  159.724629ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:03 | 200 |  174.645464ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:03 | 200 |  178.939165ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |    75.48541ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |   75.543479ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |   75.653488ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |   36.494844ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |   43.746251ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |    78.46189ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |    111.7401ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |   146.47215ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |  181.173351ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:04 | 200 |  214.425121ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:05 | 200 |  167.042771ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:05 | 200 |  169.643331ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:05 | 200 |  178.504043ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:05 | 200 |   75.260304ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:05 | 200 |   75.898582ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:05 | 200 |   75.486232ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:05 | 200 |   33.555996ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:06 | 200 |   49.316729ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:06 | 200 |   68.600797ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:06 | 200 |   93.673073ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:06 | 200 |  128.839676ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:06 | 200 |   157.77461ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:06 | 200 |  194.843189ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:06 | 200 |  164.845565ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:06 | 200 |  174.013708ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:06 | 200 |  179.939798ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |   75.341677ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |   76.195984ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |   75.763777ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |   33.568469ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |    47.80582ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |   72.076692ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |   88.952184ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |  123.934978ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |  157.010465ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:07 | 200 |  183.988837ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |  166.606817ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |  175.559402ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |  179.092675ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |    2.060267ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:50:08 | 200 |   71.115844ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |   33.227473ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |   39.707111ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |   59.945434ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |   77.229148ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |   98.780726ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |  118.627438ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:08 | 200 |  146.104283ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |   72.664173ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |   33.607643ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |   39.806699ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |   58.405401ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |   82.912479ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |  109.348276ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |  135.822154ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |  161.473878ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |   70.904034ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:09 | 200 |   33.430568ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |   36.817575ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |   56.340465ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |   77.422804ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |   95.860652ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |  122.411175ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |  145.898816ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |   70.756073ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |   34.912622ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |   49.059081ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |    62.96175ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |   87.036239ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |  113.542619ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:10 | 200 |  135.284096ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:11 | 200 |   163.77497ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:11 | 200 |   70.408807ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:11 | 200 |   35.534868ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:11 | 200 |   38.209538ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:11 | 200 |   57.256127ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:11 | 200 |   72.028681ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:11 | 200 |   99.178668ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:11 | 200 |  118.298726ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:11 | 200 |  143.027854ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |   70.393588ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |   35.410403ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |   37.261064ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |   54.546771ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |   81.902208ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |  105.930681ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |  132.893374ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |   152.74726ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |   84.024632ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |   84.296958ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:12 | 200 |   32.514065ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:50:23 | 200 |    1.552697ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:50:28 | 200 | 15.548746289s |     172.18.0.13 | POST     "/api/generate"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:28 | 200 |   33.342952ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:28 | 200 |   84.643723ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:50:28 | 200 |     1.55992ms |     172.18.0.13 | GET      "/api/tags"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:29 | 200 |   35.486267ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:50:37 | 200 |  8.799378384s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:37 | 200 |    85.08627ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:37 | 200 |   88.612982ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:38 | 200 |   33.463931ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:38 | 200 |   88.409256ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:50:38 | 200 |    2.087909ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:50:38 | 200 |    1.262979ms |     172.18.0.13 | GET      "/api/tags"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:38 | 200 |   33.613333ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:50:46 | 200 |  7.809040089s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:46 | 200 |   83.775151ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:46 | 200 |   89.139106ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:46 | 200 |   33.745172ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:46 | 200 |   85.181089ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:50:47 | 200 |    1.456656ms |     172.18.0.13 | GET      "/api/tags"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:47 | 200 |   36.740098ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:50:53 | 200 |    1.506309ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:50:54 | 200 |  7.644958466s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:54 | 200 |   86.998878ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:54 | 200 |   86.176242ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:54 | 200 |   33.427021ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:55 | 200 |   84.090256ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:50:55 | 200 |    1.518202ms |     172.18.0.13 | GET      "/api/tags"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:50:55 | 200 |   33.577265ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:51:03 | 200 |  7.971520811s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:03 | 200 |   84.475655ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:03 | 200 |   86.120437ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:03 | 200 |   33.714174ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:03 | 200 |   84.353364ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:51:04 | 200 |    1.441527ms |     172.18.0.13 | GET      "/api/tags"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:04 | 200 |   33.279101ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:51:08 | 200 |    1.499186ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:51:12 | 200 |  7.976932724s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:12 | 200 |   86.633446ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:12 | 200 |   88.008247ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:12 | 200 |   33.692904ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:12 | 200 |   84.069276ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:51:12 | 200 |    1.558949ms |     172.18.0.13 | GET      "/api/tags"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:12 | 200 |    32.92993ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:51:20 | 200 |  7.437384558s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:20 | 200 |  100.754908ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:20 | 200 |  101.196844ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:20 | 200 |   33.274051ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:51:23 | 200 |    1.421899ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:51:29 | 200 |  8.668034098s |     172.18.0.13 | POST     "/api/generate"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:29 | 200 |   33.260897ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:51:29 | 200 |    1.364842ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:51:38 | 200 |    1.466715ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:51:40 | 200 | 10.798390631s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:40 | 200 |  100.458587ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:40 | 200 |  106.724149ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:40 | 200 |   33.985818ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:51:40 | 200 |    1.528851ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:51:53 | 200 | 12.300905205s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:53 | 200 |   99.221908ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:53 | 200 |   99.754245ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:51:53 | 200 |   34.180647ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:51:53 | 200 |    1.626857ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:51:53 | 200 |    1.525145ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:52:03 | 200 |   9.49062172s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:03 | 200 |   99.258857ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:03 | 200 |   99.736301ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:03 | 200 |   34.714015ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:52:03 | 200 |    1.414376ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:52:08 | 200 |    2.017737ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:52:11 | 200 |  8.055974789s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:11 | 200 |   99.396729ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:11 | 200 |  101.745391ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:11 | 200 |   33.762065ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:52:12 | 200 |    1.560962ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:52:20 | 200 |  8.263204882s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:20 | 200 |  100.054533ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:20 | 200 |   99.985662ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:20 | 200 |   34.051401ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:52:20 | 200 |    1.717068ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:52:23 | 200 |    1.638499ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:52:30 | 200 |  9.506438242s |     172.18.0.13 | POST     "/api/chat"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:30 | 200 |   89.650302ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:30 | 200 |   90.471045ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:30 | 200 |   90.029019ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:30 | 200 |   33.721146ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:52:38 | 200 |    1.426539ms |     172.18.0.13 | GET      "/api/tags"
+[GIN] 2026/03/08 - 23:52:38 | 200 |  7.959549734s |     172.18.0.13 | POST     "/api/generate"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:38 | 200 |   33.308967ms |      172.18.0.5 | POST     "/api/embeddings"
+[GIN] 2026/03/08 - 23:52:38 | 200 |    1.455824ms |     172.18.0.13 | GET      "/api/tags"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:38 | 200 |   33.115351ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:38 | 200 |  112.795162ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:39 | 200 |   90.001206ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:39 | 200 |   89.918219ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:39 | 200 |   33.399999ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:39 | 200 |   31.478414ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:39 | 200 |  116.578148ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:39 | 200 |   90.499178ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:39 | 200 |   89.894143ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:39 | 200 |   33.627099ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |   33.814944ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |  104.585453ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |   90.351969ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |   89.866962ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |   33.429475ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |   93.573623ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |  114.785737ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |   99.385386ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |   90.044858ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:40 | 200 |   33.464601ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:41 | 200 |   32.682772ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:41 | 200 |  121.120871ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:41 | 200 |   90.229888ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:41 | 200 |   90.039858ms |     172.18.0.13 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:41 | 200 |   33.283579ms |      172.18.0.5 | POST     "/api/embeddings"
+init: embeddings required but some input tokens were not marked as outputs -> overriding
+[GIN] 2026/03/08 - 23:52:41 | 200 |    36.84713ms |      172.18.0.5 | POST     "/api/embeddings"

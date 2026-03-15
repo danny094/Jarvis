@@ -22,6 +22,7 @@ Network naming:
 """
 
 import logging
+import os
 from typing import Optional, List, Dict
 
 import docker
@@ -33,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 TRION_LABEL = "trion.managed"
 SHARED_INTERNAL = "trion-sandbox"
+APPROVAL_REQUIRE_BRIDGE = str(os.environ.get("APPROVAL_REQUIRE_BRIDGE", "1")).strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 def _get_client():
@@ -120,7 +124,7 @@ def resolve_network(mode: NetworkMode, container_name: str = "") -> Dict:
     elif mode == NetworkMode.BRIDGE:
         return {
             "network": "bridge",
-            "requires_approval": False,
+            "requires_approval": APPROVAL_REQUIRE_BRIDGE,
             "isolation_level": "Bridge — host network access",
             "internet_access": False,  # Depends on host iptables
         }

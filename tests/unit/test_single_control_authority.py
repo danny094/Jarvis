@@ -674,6 +674,472 @@ class TestAutonomousControlDecision(unittest.IsolatedAsyncioTestCase):
         self.assertIn(cd["action"], ("approve", "warn"))
         self.assertTrue(cd["passed"])
 
+    async def test_autonomous_fallback_from_broken_existing_skill_to_create(self):
+        """If reused skill fails at runtime, auto-create fallback should recover."""
+        vr = MagicMock()
+        vr.passed = True
+        vr.score = 0.95
+        vr.issues = []
+
+        cim_mock = MagicMock()
+        cim_mock.validate_code = MagicMock(return_value=vr)
+
+        sys_mocks = {
+            "skill_cim_light": MagicMock(
+                SkillCIMLight=MagicMock,
+                ValidationResult=MagicMock,
+                get_skill_cim=MagicMock(return_value=cim_mock),
+            ),
+            "cim_rag": MagicMock(
+                cim_kb=MagicMock(
+                    load=MagicMock(),
+                    get_template_by_intent=MagicMock(return_value=None),
+                    get_persona=MagicMock(return_value=""),
+                )
+            ),
+            "httpx": MagicMock(),
+        }
+
+        with patch.dict(sys.modules, sys_mocks):
+            spec = importlib.util.spec_from_file_location(
+                "ss_mcl",
+                os.path.join(_SKILL_SERVER, "mini_control_layer.py"),
+            )
+            ss_mcl = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ss_mcl)
+
+        ctrl = ss_mcl.SkillMiniControl(cim=cim_mock)
+        ctrl._find_matching_skill = AsyncMock(return_value={"name": "broken_factorial_skill"})
+        ctrl._detect_gaps = MagicMock(return_value=None)
+        ctrl._check_missing_packages = AsyncMock(return_value=[])
+        ctrl._generate_code_with_coder = AsyncMock(return_value="def run(**k): return 1307674368000")
+        ctrl._install_skill = AsyncMock(return_value={"passed": True, "installation": {"success": True}})
+        ctrl._run_skill = AsyncMock(
+            side_effect=[
+                {"success": False, "error": "NameError: name 'math' is not defined"},
+                {"success": True, "result": 1307674368000},
+            ]
+        )
+
+        task = ss_mcl.AutonomousTaskRequest(
+            user_text="Berechne die Fakultät von 15",
+            intent="Mathematik - Fakultät berechnen",
+            complexity=3,
+            allow_auto_create=True,
+            execute_after_create=True,
+        )
+        result = await ctrl.process_autonomous_task(task)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.action_taken, "created_and_ran")
+        self.assertTrue(result.skill_created)
+        self.assertEqual(result.execution_result, 1307674368000)
+        self.assertEqual(ctrl._run_skill.await_count, 2)
+        self.assertIn("Replaced failing skill", result.message)
+
+    async def test_autonomous_broken_existing_skill_no_fallback_when_disallowed(self):
+        """If auto-create is disabled, broken existing skill should fail closed."""
+        vr = MagicMock()
+        vr.passed = True
+        vr.score = 0.95
+        vr.issues = []
+
+        cim_mock = MagicMock()
+        cim_mock.validate_code = MagicMock(return_value=vr)
+
+        sys_mocks = {
+            "skill_cim_light": MagicMock(
+                SkillCIMLight=MagicMock,
+                ValidationResult=MagicMock,
+                get_skill_cim=MagicMock(return_value=cim_mock),
+            ),
+            "cim_rag": MagicMock(
+                cim_kb=MagicMock(
+                    load=MagicMock(),
+                    get_template_by_intent=MagicMock(return_value=None),
+                    get_persona=MagicMock(return_value=""),
+                )
+            ),
+            "httpx": MagicMock(),
+        }
+
+        with patch.dict(sys.modules, sys_mocks):
+            spec = importlib.util.spec_from_file_location(
+                "ss_mcl",
+                os.path.join(_SKILL_SERVER, "mini_control_layer.py"),
+            )
+            ss_mcl = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ss_mcl)
+
+        ctrl = ss_mcl.SkillMiniControl(cim=cim_mock)
+        ctrl._find_matching_skill = AsyncMock(return_value={"name": "broken_factorial_skill"})
+        ctrl._detect_gaps = MagicMock(return_value=None)
+        ctrl._check_missing_packages = AsyncMock(return_value=[])
+        ctrl._generate_code_with_coder = AsyncMock(return_value="def run(**k): return 1")
+        ctrl._install_skill = AsyncMock(return_value={"passed": True, "installation": {"success": True}})
+        ctrl._run_skill = AsyncMock(
+            return_value={"success": False, "error": "NameError: name 'math' is not defined"}
+        )
+
+        task = ss_mcl.AutonomousTaskRequest(
+            user_text="Berechne die Fakultät von 15",
+            intent="Mathematik - Fakultät berechnen",
+            complexity=3,
+            allow_auto_create=False,
+            execute_after_create=True,
+        )
+        result = await ctrl.process_autonomous_task(task)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.action_taken, "used_existing")
+        self.assertFalse(result.skill_created)
+        self.assertIn("auto-create fallback is not allowed", result.message)
+        ctrl._generate_code_with_coder.assert_not_awaited()
+        ctrl._install_skill.assert_not_awaited()
+
+    async def test_autonomous_fallback_when_existing_returns_nested_error_payload(self):
+        """Treat success=true + result.error as failed execution and fallback."""
+        vr = MagicMock()
+        vr.passed = True
+        vr.score = 0.92
+        vr.issues = []
+
+        cim_mock = MagicMock()
+        cim_mock.validate_code = MagicMock(return_value=vr)
+
+        sys_mocks = {
+            "skill_cim_light": MagicMock(
+                SkillCIMLight=MagicMock,
+                ValidationResult=MagicMock,
+                get_skill_cim=MagicMock(return_value=cim_mock),
+            ),
+            "cim_rag": MagicMock(
+                cim_kb=MagicMock(
+                    load=MagicMock(),
+                    get_template_by_intent=MagicMock(return_value=None),
+                    get_persona=MagicMock(return_value=""),
+                )
+            ),
+            "httpx": MagicMock(),
+        }
+
+        with patch.dict(sys.modules, sys_mocks):
+            spec = importlib.util.spec_from_file_location(
+                "ss_mcl",
+                os.path.join(_SKILL_SERVER, "mini_control_layer.py"),
+            )
+            ss_mcl = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ss_mcl)
+
+        ctrl = ss_mcl.SkillMiniControl(cim=cim_mock)
+        ctrl._find_matching_skill = AsyncMock(return_value={"name": "legacy_sum_skill"})
+        ctrl._detect_gaps = MagicMock(return_value=None)
+        ctrl._check_missing_packages = AsyncMock(return_value=[])
+        ctrl._generate_code_with_coder = AsyncMock(return_value="def run(**k): return 5050")
+        ctrl._install_skill = AsyncMock(return_value={"passed": True, "installation": {"success": True}})
+        ctrl._run_skill = AsyncMock(
+            side_effect=[
+                {"success": True, "result": {"error": "n muss 100 sein"}},
+                {"success": True, "result": 5050},
+            ]
+        )
+
+        task = ss_mcl.AutonomousTaskRequest(
+            user_text="Berechne die Summe von 1 bis 100",
+            intent="Mathematik - Summe 1 bis 100",
+            complexity=2,
+            allow_auto_create=True,
+            execute_after_create=True,
+        )
+        result = await ctrl.process_autonomous_task(task)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.action_taken, "created_and_ran")
+        self.assertEqual(result.execution_result, 5050)
+        self.assertEqual(ctrl._run_skill.await_count, 2)
+
+    async def test_autonomous_complexity_uses_deep_codegen_before_failing(self):
+        """Complex tasks should escalate compute (deep model), not fail immediately."""
+        vr = MagicMock()
+        vr.passed = True
+        vr.score = 0.93
+        vr.issues = []
+
+        cim_mock = MagicMock()
+        cim_mock.validate_code = MagicMock(return_value=vr)
+
+        sys_mocks = {
+            "skill_cim_light": MagicMock(
+                SkillCIMLight=MagicMock,
+                ValidationResult=MagicMock,
+                get_skill_cim=MagicMock(return_value=cim_mock),
+            ),
+            "cim_rag": MagicMock(
+                cim_kb=MagicMock(
+                    load=MagicMock(),
+                    get_template_by_intent=MagicMock(return_value=None),
+                    get_persona=MagicMock(return_value=""),
+                )
+            ),
+            "httpx": MagicMock(),
+        }
+
+        env = {
+            "CODE_GEN_MODEL": "fast-model",
+            "CODE_GEN_MODEL_DEEP": "deep-model",
+            "AUTO_CREATE_THRESHOLD": "4",
+            "AUTO_CREATE_DEEP_THRESHOLD": "10",
+            "AUTO_CREATE_ESCALATE_TO_DEEP": "true",
+        }
+        with patch.dict(os.environ, env, clear=False), patch.dict(sys.modules, sys_mocks):
+            spec = importlib.util.spec_from_file_location(
+                "ss_mcl",
+                os.path.join(_SKILL_SERVER, "mini_control_layer.py"),
+            )
+            ss_mcl = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ss_mcl)
+
+        ctrl = ss_mcl.SkillMiniControl(cim=cim_mock)
+        ctrl._find_matching_skill = AsyncMock(return_value=None)
+        ctrl._detect_gaps = MagicMock(return_value=None)
+        ctrl._check_missing_packages = AsyncMock(return_value=[])
+        ctrl._generate_code_with_coder = AsyncMock(return_value="def run(**k): return {'ok': True}")
+        ctrl._install_skill = AsyncMock(return_value={"passed": True, "installation": {"success": True}})
+        ctrl._run_skill = AsyncMock(return_value={"success": True, "result": {"ok": True}})
+
+        task = ss_mcl.AutonomousTaskRequest(
+            user_text="Baue einen komplexeren Daten-Workflow mit mehreren Schritten",
+            intent="complex workflow generation",
+            complexity=7,
+            allow_auto_create=True,
+            execute_after_create=True,
+        )
+        result = await ctrl.process_autonomous_task(task)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.action_taken, "created_and_ran")
+        kwargs = ctrl._generate_code_with_coder.await_args.kwargs
+        self.assertEqual(kwargs.get("model_name"), "deep-model")
+        self.assertEqual(kwargs.get("timeout_s"), 120.0)
+
+    async def test_autonomous_complexity_above_deep_threshold_escalates(self):
+        """Extremely high complexity still escalates when outside deep threshold."""
+        vr = MagicMock()
+        vr.passed = True
+        vr.score = 0.9
+        vr.issues = []
+
+        cim_mock = MagicMock()
+        cim_mock.validate_code = MagicMock(return_value=vr)
+
+        sys_mocks = {
+            "skill_cim_light": MagicMock(
+                SkillCIMLight=MagicMock,
+                ValidationResult=MagicMock,
+                get_skill_cim=MagicMock(return_value=cim_mock),
+            ),
+            "cim_rag": MagicMock(
+                cim_kb=MagicMock(
+                    load=MagicMock(),
+                    get_template_by_intent=MagicMock(return_value=None),
+                    get_persona=MagicMock(return_value=""),
+                )
+            ),
+            "httpx": MagicMock(),
+        }
+
+        env = {
+            "CODE_GEN_MODEL": "fast-model",
+            "CODE_GEN_MODEL_DEEP": "deep-model",
+            "AUTO_CREATE_THRESHOLD": "4",
+            "AUTO_CREATE_DEEP_THRESHOLD": "8",
+            "AUTO_CREATE_ESCALATE_TO_DEEP": "true",
+        }
+        with patch.dict(os.environ, env, clear=False), patch.dict(sys.modules, sys_mocks):
+            spec = importlib.util.spec_from_file_location(
+                "ss_mcl",
+                os.path.join(_SKILL_SERVER, "mini_control_layer.py"),
+            )
+            ss_mcl = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ss_mcl)
+
+        ctrl = ss_mcl.SkillMiniControl(cim=cim_mock)
+        ctrl._find_matching_skill = AsyncMock(return_value=None)
+        ctrl._detect_gaps = MagicMock(return_value=None)
+        ctrl._check_missing_packages = AsyncMock(return_value=[])
+        ctrl._generate_code_with_coder = AsyncMock(return_value="def run(**k): return {}")
+        ctrl._install_skill = AsyncMock(return_value={"passed": True, "installation": {"success": True}})
+        ctrl._run_skill = AsyncMock(return_value={"success": True, "result": {}})
+
+        task = ss_mcl.AutonomousTaskRequest(
+            user_text="Baue ein sehr komplexes autonomes Multi-Agent-System",
+            intent="ultra complex task",
+            complexity=11,
+            allow_auto_create=True,
+            execute_after_create=True,
+        )
+        result = await ctrl.process_autonomous_task(task)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.action_taken, "escalated")
+        self.assertIn("Task too complex for auto-creation", str(result.error))
+        ctrl._generate_code_with_coder.assert_not_awaited()
+
+    async def test_autonomous_validation_failure_auto_repairs_once_and_succeeds(self):
+        """Validation failure should trigger one bounded repair attempt before install."""
+        issue = MagicMock()
+        issue.severity = "high"
+        issue.description = "Potential infinite loop if break condition fails."
+        issue.remediation = "Use bounded loops with clear exit criteria."
+
+        vr_fail = MagicMock()
+        vr_fail.passed = False
+        vr_fail.score = 0.4
+        vr_fail.issues = [issue]
+
+        vr_pass = MagicMock()
+        vr_pass.passed = True
+        vr_pass.score = 0.9
+        vr_pass.issues = []
+
+        cim_mock = MagicMock()
+        cim_mock.validate_code = MagicMock(side_effect=[vr_fail, vr_pass])
+
+        sys_mocks = {
+            "skill_cim_light": MagicMock(
+                SkillCIMLight=MagicMock,
+                ValidationResult=MagicMock,
+                get_skill_cim=MagicMock(return_value=cim_mock),
+            ),
+            "cim_rag": MagicMock(
+                cim_kb=MagicMock(
+                    load=MagicMock(),
+                    get_template_by_intent=MagicMock(return_value=None),
+                    get_persona=MagicMock(return_value=""),
+                )
+            ),
+            "httpx": MagicMock(),
+        }
+
+        env = {
+            "AUTO_CREATE_THRESHOLD": "4",
+            "AUTO_REPAIR_ON_VALIDATION_FAIL": "true",
+            "AUTO_REPAIR_MAX_ATTEMPTS": "1",
+        }
+        with patch.dict(os.environ, env, clear=False), patch.dict(sys.modules, sys_mocks):
+            spec = importlib.util.spec_from_file_location(
+                "ss_mcl",
+                os.path.join(_SKILL_SERVER, "mini_control_layer.py"),
+            )
+            ss_mcl = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ss_mcl)
+
+        ctrl = ss_mcl.SkillMiniControl(cim=cim_mock)
+        ctrl._find_matching_skill = AsyncMock(return_value=None)
+        ctrl._detect_gaps = MagicMock(return_value=None)
+        ctrl._check_missing_packages = AsyncMock(return_value=[])
+        ctrl._generate_code_with_coder = AsyncMock(
+            side_effect=[
+                "def run(**k):\n    while True:\n        break\n    return {'ok': True}",
+                "def run(**k):\n    for _ in range(1):\n        pass\n    return {'ok': True}",
+            ]
+        )
+        ctrl._install_skill = AsyncMock(return_value={"passed": True, "installation": {"success": True}})
+        ctrl._run_skill = AsyncMock(return_value={"success": True, "result": {"ok": True}})
+
+        task = ss_mcl.AutonomousTaskRequest(
+            user_text="Erstelle ein kleines Admin-Werkzeug",
+            intent="admin utility",
+            complexity=3,
+            allow_auto_create=True,
+            execute_after_create=True,
+        )
+        result = await ctrl.process_autonomous_task(task)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.action_taken, "created_and_ran")
+        self.assertEqual(ctrl._generate_code_with_coder.await_count, 2)
+        second_call_kwargs = ctrl._generate_code_with_coder.await_args_list[1].kwargs
+        self.assertIn("repair_context", second_call_kwargs)
+        self.assertIn(
+            "Potential infinite loop if break condition fails.",
+            str(second_call_kwargs["repair_context"].get("validation_issues", "")),
+        )
+        install_code = ctrl._install_skill.await_args.args[1]
+        self.assertIn("for _ in range(1)", install_code)
+
+    async def test_autonomous_validation_failure_repair_exhausted_stays_failed(self):
+        """After max repair attempts, the flow should fail closed with validation_failed."""
+        issue = MagicMock()
+        issue.severity = "high"
+        issue.description = "Potential infinite loop if break condition fails."
+        issue.remediation = "Use bounded loops with clear exit criteria."
+
+        vr_fail = MagicMock()
+        vr_fail.passed = False
+        vr_fail.score = 0.35
+        vr_fail.issues = [issue]
+
+        cim_mock = MagicMock()
+        cim_mock.validate_code = MagicMock(side_effect=[vr_fail, vr_fail])
+
+        sys_mocks = {
+            "skill_cim_light": MagicMock(
+                SkillCIMLight=MagicMock,
+                ValidationResult=MagicMock,
+                get_skill_cim=MagicMock(return_value=cim_mock),
+            ),
+            "cim_rag": MagicMock(
+                cim_kb=MagicMock(
+                    load=MagicMock(),
+                    get_template_by_intent=MagicMock(return_value=None),
+                    get_persona=MagicMock(return_value=""),
+                )
+            ),
+            "httpx": MagicMock(),
+        }
+
+        env = {
+            "AUTO_CREATE_THRESHOLD": "4",
+            "AUTO_REPAIR_ON_VALIDATION_FAIL": "true",
+            "AUTO_REPAIR_MAX_ATTEMPTS": "1",
+        }
+        with patch.dict(os.environ, env, clear=False), patch.dict(sys.modules, sys_mocks):
+            spec = importlib.util.spec_from_file_location(
+                "ss_mcl",
+                os.path.join(_SKILL_SERVER, "mini_control_layer.py"),
+            )
+            ss_mcl = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ss_mcl)
+
+        ctrl = ss_mcl.SkillMiniControl(cim=cim_mock)
+        ctrl._find_matching_skill = AsyncMock(return_value=None)
+        ctrl._detect_gaps = MagicMock(return_value=None)
+        ctrl._check_missing_packages = AsyncMock(return_value=[])
+        ctrl._generate_code_with_coder = AsyncMock(
+            side_effect=[
+                "def run(**k):\n    while True:\n        pass",
+                "def run(**k):\n    while True:\n        pass",
+            ]
+        )
+        ctrl._install_skill = AsyncMock(return_value={"passed": True, "installation": {"success": True}})
+        ctrl._run_skill = AsyncMock(return_value={"success": True, "result": {"ok": True}})
+
+        task = ss_mcl.AutonomousTaskRequest(
+            user_text="Erstelle ein Tool",
+            intent="admin utility",
+            complexity=3,
+            allow_auto_create=True,
+            execute_after_create=True,
+        )
+        result = await ctrl.process_autonomous_task(task)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.action_taken, "validation_failed")
+        self.assertIn("Potential infinite loop if break condition fails.", str(result.error))
+        self.assertEqual(ctrl._generate_code_with_coder.await_count, 2)
+        ctrl._install_skill.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

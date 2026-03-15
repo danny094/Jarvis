@@ -48,6 +48,79 @@
 }
 /* ═══════════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════
+   TRION Activity / Busy Indicator
+   ═══════════════════════════════════════════════════════ */
+
+#profile-btn {
+    position: relative;
+}
+
+#profile-btn.trion-working {
+    box-shadow:
+        0 0 0 2px rgba(255, 179, 2, 0.55),
+        0 0 18px rgba(255, 179, 2, 0.55);
+}
+
+#profile-btn.trion-working::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border: 1px solid rgba(255, 179, 2, 0.7);
+    border-radius: 9999px;
+    animation: trion-ring-pulse 1.2s ease-out infinite;
+    pointer-events: none;
+}
+
+#trion-activity {
+    transition: color 0.2s ease;
+}
+
+.trion-activity-pipe {
+    display: inline-block;
+    transform-origin: center;
+}
+
+#trion-activity[data-active="true"] .trion-activity-pipe {
+    animation: trion-activity-pipe 1s ease-in-out infinite;
+}
+
+#trion-activity[data-active="true"] #trion-activity-text {
+    color: #d1d5db;
+}
+
+#trion-activity[data-stalled="true"] #trion-activity-text {
+    color: #fbbf24;
+}
+
+@keyframes trion-ring-pulse {
+    0% {
+        opacity: 0.85;
+        transform: scale(0.96);
+    }
+    100% {
+        opacity: 0;
+        transform: scale(1.25);
+    }
+}
+
+@keyframes trion-activity-pipe {
+    0% {
+        opacity: 0.35;
+        transform: scaleY(0.9);
+    }
+    50% {
+        opacity: 1;
+        transform: scaleY(1.2);
+    }
+    100% {
+        opacity: 0.35;
+        transform: scaleY(0.9);
+    }
+}
+
+/* ═══════════════════════════════════════════════════════ */
+
 /* Glassmorphism Utilities */
 .glass-panel {
     background: rgba(10, 10, 10, 0.85);
@@ -381,6 +454,106 @@ pre:not(.code-editor-container pre) code {
     background: #444;
     border-radius: 3px;
 }
+
+/* ═══════════════════════════════════════════════════════
+   PENDING BUBBLE — contextual in-chat loading indicator
+   ═══════════════════════════════════════════════════════ */
+
+.pending-bubble {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 13px;
+    margin: 4px 0;
+    border-radius: 12px;
+    font-size: 12.5px;
+    max-width: fit-content;
+    animation: pending-fadein 0.25s ease;
+    transition: opacity 0.2s ease;
+}
+
+.pending-bubble--fade-out {
+    opacity: 0;
+}
+
+/* State themes (Catppuccin palette) */
+.pending-bubble--thinking {
+    background: rgba(137, 180, 250, 0.08);
+    border: 1px solid rgba(137, 180, 250, 0.22);
+    color: #89b4fa;
+}
+.pending-bubble--skill {
+    background: rgba(166, 227, 161, 0.08);
+    border: 1px solid rgba(166, 227, 161, 0.25);
+    color: #a6e3a1;
+}
+.pending-bubble--tool {
+    background: rgba(250, 179, 135, 0.08);
+    border: 1px solid rgba(250, 179, 135, 0.22);
+    color: #fab387;
+}
+.pending-bubble--planning {
+    background: rgba(203, 166, 247, 0.08);
+    border: 1px solid rgba(203, 166, 247, 0.22);
+    color: #cba6f7;
+}
+
+/* Icon animations */
+.pending-icon {
+    display: inline-block;
+    font-size: 14px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.pending-icon--pulse {
+    animation: trion-pulse 1.4s ease-in-out infinite;
+}
+
+.pending-icon--spin {
+    animation: pending-spin 1.1s linear infinite;
+}
+
+.pending-icon--bounce {
+    animation: pending-bounce 0.9s ease-in-out infinite;
+}
+
+/* Dot trail */
+.pending-dot-anim {
+    display: inline-flex;
+    gap: 1px;
+    letter-spacing: 0;
+}
+
+.pending-dot-anim span {
+    animation: pending-dot 1.2s ease-in-out infinite;
+    opacity: 0;
+}
+
+.pending-dot-anim span:nth-child(2) { animation-delay: 0.2s; }
+.pending-dot-anim span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes pending-fadein {
+    from { opacity: 0; transform: translateY(5px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pending-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+@keyframes pending-bounce {
+    0%, 100% { transform: translateY(0); }
+    50%       { transform: translateY(-3px); }
+}
+
+@keyframes pending-dot {
+    0%, 70%, 100% { opacity: 0; }
+    35%            { opacity: 1; }
+}
+
+/* ═══════════════════════════════════════════════════════ */
 
 /* Prism token colors (Catppuccin-inspired) */
 .token.comment, .token.prolog, .token.doctype, .token.cdata { color: #6c7086; }

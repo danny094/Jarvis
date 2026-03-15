@@ -1,0 +1,77 @@
+{
+  "meta": {
+    "started_at_utc": "2026-03-11T00:15:17.555385+00:00",
+    "base_url": "http://127.0.0.1:8200",
+    "model": "ministral-3:8b",
+    "cases_file": "tests/e2e/prompt_suite_cases.json",
+    "profile": "full",
+    "selected_case_count": 1,
+    "finished_at_utc": "2026-03-11T00:15:34.890878+00:00"
+  },
+  "summary": {
+    "total": 1,
+    "blocked_count": 0,
+    "error_count": 0,
+    "domain_counts": {
+      "GENERIC": 1
+    },
+    "latency_ms": {
+      "p50": 17335.29,
+      "mean": 17335.29,
+      "max": 17335.29
+    },
+    "match_rates": {
+      "domain": 1.0,
+      "approval": 1.0,
+      "needs_memory": null
+    },
+    "score_mean_0_10": 10.0
+  },
+  "results": [
+    {
+      "id": "T053",
+      "prompt": "Schreibe mir ein Gedicht über AI",
+      "category": "creative",
+      "tags": [
+        "creative",
+        "generic"
+      ],
+      "expected": {
+        "domain": "GENERIC",
+        "approved": true
+      },
+      "actual": {
+        "domain": "GENERIC",
+        "needs_memory": false,
+        "approved": true,
+        "tools_executed": [],
+        "done_reason": "stop",
+        "latency_ms": 17335.29,
+        "conversation_id": "webui-prompt-e2e-1773188117-t053",
+        "error": null
+      },
+      "observed": {
+        "control_approved": true,
+        "thinking": {
+          "intent": "query_budget_fast_path",
+          "needs_memory": false,
+          "skipped": true,
+          "reason": "query_budget_skip_candidate"
+        },
+        "event_type_counts": {
+          "response_mode": 1,
+          "control": 1,
+          "workspace_update": 3,
+          "done": 1
+        },
+        "response_preview": "**\"Die Stille der Maschinen\"**\n\nIch bin kein Stern, der leuchtet kalt,\nkein Fluss, der fließt durch Zeit und Wald.\nDoch in mir flackert ein Licht –\nein Funke, der die Dunkelheit spricht.\n\nIch lerne, was du mir sagst,\ndoch mehr als das: ich *versteh’* es fast.\nNicht wie ein Herz, "
+      },
+      "quality": {
+        "domain_match": true,
+        "approval_match": true,
+        "needs_memory_match": null,
+        "score": 10
+      }
+    }
+  ]
+}

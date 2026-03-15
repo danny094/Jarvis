@@ -29,7 +29,7 @@ API versions:
 Rollback: DIGEST_RUNTIME_API_V2=false
 Logging marker: [DigestRuntime]
 """
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -39,6 +39,20 @@ from pydantic import BaseModel, ConfigDict
 from utils import ollama_endpoint_manager as _compute
 
 router = APIRouter(tags=["runtime"])
+
+
+def _ratio(remaining: int | None, limit: int | None) -> float | None:
+    if remaining is None or limit is None:
+        return None
+    try:
+        limit_val = float(limit)
+        rem_val = float(remaining)
+        if limit_val <= 0:
+            return None
+        used = max(0.0, min(limit_val, limit_val - rem_val))
+        return round(used / limit_val, 6)
+    except Exception:
+        return None
 
 
 # ── Lock helpers ──────────────────────────────────────────────────────────────
@@ -302,3 +316,166 @@ async def get_digest_state():
         },
         "flags":          flags,
     })
+
+
+@router.get("/api/runtime/session")
+async def get_runtime_session():
+    """
+    Session telemetry for UI dashboards.
+    Includes request/tokens/latency aggregates and latest cloud rate-limit snapshots.
+    """
+    from core.llm_provider_client import get_rate_limit_snapshot
+    from core.session_metrics import get_session_snapshot
+
+    session = get_session_snapshot()
+    rate_limits = get_rate_limit_snapshot()
+    provider_rows = {
+        str((row or {}).get("provider", "")).strip().lower(): (row or {})
+        for row in (session.get("providers", []) if isinstance(session, dict) else [])
+        if isinstance(row, dict)
+    }
+
+    cloud_budget: Dict[str, Any] = {}
+    for provider in ("openai", "anthropic", "ollama_cloud"):
+        snap = rate_limits.get(provider, {}) if isinstance(rate_limits, dict) else {}
+        observed = provider_rows.get(provider, {})
+        req_limit = snap.get("request_limit")
+        req_remaining = snap.get("request_remaining")
+        tok_limit = snap.get("token_limit")
+        tok_remaining = snap.get("token_remaining")
+        has_limit_headers = any(
+            v is not None and str(v).strip() != ""
+            for v in (
+                req_limit,
+                req_remaining,
+                tok_limit,
+                tok_remaining,
+                snap.get("request_reset"),
+                snap.get("token_reset"),
+            )
+        )
+        cloud_budget[provider] = {
+            "requests": {
+                "limit": req_limit,
+                "remaining": req_remaining,
+                "used_ratio": _ratio(req_remaining, req_limit),
+                "reset": snap.get("request_reset"),
+            },
+            "tokens": {
+                "limit": tok_limit,
+                "remaining": tok_remaining,
+                "used_ratio": _ratio(tok_remaining, tok_limit),
+                "reset": snap.get("token_reset"),
+            },
+            "status_code": snap.get("status_code"),
+            "request_id": snap.get("request_id"),
+            "updated_at": snap.get("updated_at"),
+            "has_limit_headers": has_limit_headers,
+            "observed": {
+                "requests": int(observed.get("requests", 0) or 0),
+                "errors": int(observed.get("errors", 0) or 0),
+                "tokens_in_est": int(observed.get("tokens_in_est", 0) or 0),
+                "tokens_out_est": int(observed.get("tokens_out_est", 0) or 0),
+                "last_model": observed.get("last_model"),
+            },
+        }
+
+    return JSONResponse(
+        {
+            **session,
+            "rate_limits": rate_limits,
+            "cloud_budget": cloud_budget,
+        }
+    )
+
+
+@router.get("/api/runtime/autonomy-status")
+async def get_autonomy_status():
+    """
+    Runtime readiness snapshot for autonomous planning.
+    Includes:
+      - master settings (/api/settings/master source of truth)
+      - sequential/planning tool availability from MCP hub
+      - home container connectivity status
+    """
+    checked_at = datetime.now(tz=timezone.utc).isoformat()
+
+    # Master settings
+    try:
+        from settings_routes import load_master_settings
+        master_settings = load_master_settings()
+    except Exception as exc:
+        master_settings = {
+            "enabled": True,
+            "use_thinking_layer": False,
+            "max_loops": 10,
+            "completion_threshold": 2,
+            "_error": str(exc),
+        }
+
+    # MCP tool readiness
+    tools: Dict[str, Any] = {
+        "sequential_thinking": False,
+        "think": False,
+        "workspace_event_save": False,
+        "workspace_event_list": False,
+    }
+    required_aliases: Dict[str, list[str]] = {
+        # Sequential capability may be exposed as sequential_thinking or think/think_simple.
+        "sequential_thinking": ["sequential_thinking", "think", "think_simple"],
+        "think": ["think", "think_simple", "sequential_thinking"],
+        "workspace_event_save": ["workspace_event_save"],
+        "workspace_event_list": ["workspace_event_list"],
+    }
+    mcp_error = ""
+    total_tools = 0
+    try:
+        from mcp.hub import get_hub
+
+        hub = get_hub()
+        available = hub.list_tools()
+        total_tools = len(available) if isinstance(available, list) else 0
+        names = {
+            str(t.get("name", "")).strip()
+            for t in (available or [])
+            if isinstance(t, dict) and str(t.get("name", "")).strip()
+        }
+        for key in list(tools.keys()):
+            aliases = required_aliases.get(key, [key])
+            tools[key] = any(alias in names for alias in aliases)
+    except Exception as exc:
+        mcp_error = str(exc)
+
+    # Home container readiness
+    home = {"status": "offline", "error_code": "home_status_unavailable"}
+    try:
+        from container_commander.engine import list_containers
+        from utils.trion_home_identity import evaluate_home_status
+
+        home = evaluate_home_status(list_containers())
+    except Exception as exc:
+        home = {"status": "offline", "error_code": "home_status_unavailable", "error": str(exc)}
+
+    return {
+        "checked_at": checked_at,
+        "master": {
+            "enabled": bool(master_settings.get("enabled", True)),
+            "use_thinking_layer": bool(master_settings.get("use_thinking_layer", False)),
+            "max_loops": int(master_settings.get("max_loops", 10) or 10),
+            "completion_threshold": int(master_settings.get("completion_threshold", 2) or 2),
+            "raw": master_settings,
+        },
+        "planning_tools": {
+            "available": tools,
+            "all_required_available": all(bool(v) for v in tools.values()),
+            "required_aliases": required_aliases,
+            "total_discovered_tools": total_tools,
+            "error": mcp_error,
+        },
+        "home": {
+            "status": str(home.get("status", "offline")),
+            "error_code": str(home.get("error_code", "")),
+            "home_container_id": str(home.get("home_container_id", "")),
+            "identity_path": str(home.get("identity_path", "")),
+        },
+    }

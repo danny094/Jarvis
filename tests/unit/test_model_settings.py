@@ -12,10 +12,11 @@ Tests:
   MS-8  update_model_settings(no fields) -> 422
   MS-9  ModelSettingsUpdate unknown field -> validation error (extra=forbid)
   MS-10 update_settings(old generic endpoint) still works
-  MS-11..16 Source-inspection: no hardcoded model names in renderModels JS
+  MS-11..13 Provider settings contract
+  MS-14..19 Source-inspection: no hardcoded model names in renderModels JS
 
 Gate: python -m pytest tests/unit/test_model_settings.py -q
-Expected: 19 passed, 0 failures
+Expected: 24 passed, 0 failures
 """
 from __future__ import annotations
 
@@ -190,6 +191,39 @@ class TestModelSettingsAPI(unittest.TestCase):
         self.assertEqual(store.get("THINKING_MODEL"), "new-model:7b")
         self.assertEqual(store.get("CONTROL_MODEL"), "ctrl:3b")
 
+    def test_ms6b_post_models_provider_valid_persists_normalized(self):
+        """Provider values are accepted and normalized to lowercase."""
+        routes, _ms, store = self._build_routes()
+        payload = routes.ModelSettingsUpdate(
+            THINKING_PROVIDER="OpenAI",
+            CONTROL_PROVIDER="anthropic",
+            OUTPUT_PROVIDER="OLLAMA_CLOUD",
+        )
+        result = asyncio.run(routes.update_model_settings(payload))
+        self.assertTrue(result["success"])
+        self.assertEqual(store.get("THINKING_PROVIDER"), "openai")
+        self.assertEqual(store.get("CONTROL_PROVIDER"), "anthropic")
+        self.assertEqual(store.get("OUTPUT_PROVIDER"), "ollama_cloud")
+
+    def test_ms6c_post_models_provider_invalid_returns_422(self):
+        """Unsupported provider values are rejected with HTTP 422."""
+        from fastapi import HTTPException
+
+        routes, _ms, _store = self._build_routes()
+        payload = routes.ModelSettingsUpdate(THINKING_PROVIDER="foobar")
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(routes.update_model_settings(payload))
+        self.assertEqual(ctx.exception.status_code, 422)
+
+    def test_ms6d_get_models_effective_includes_provider_defaults(self):
+        """Effective payload includes provider keys with default source."""
+        routes, _ms, _store = self._build_routes()
+        with patch.dict(os.environ, {k: "" for k in ALLOWED_MODEL_KEYS}):
+            body = asyncio.run(routes.get_model_settings_effective())
+        eff = body["effective"]
+        self.assertEqual(eff["THINKING_PROVIDER"]["value"], "ollama")
+        self.assertEqual(eff["THINKING_PROVIDER"]["source"], "default")
+
     def test_ms7_post_models_empty_value_returns_422(self):
         """update_model_settings() with whitespace-only value raises HTTPException(422)."""
         from fastapi import HTTPException
@@ -253,6 +287,12 @@ class TestJSSourceNoHardcodedDefaults(unittest.TestCase):
 
     def test_saves_to_typed_endpoint(self):
         self.assertIn("/api/settings/models", self._src())
+
+    def test_has_provider_fields_in_models_ui(self):
+        src = self._src()
+        self.assertIn("setting-thinking-provider", src)
+        self.assertIn("setting-control-provider", src)
+        self.assertIn("setting-output-provider", src)
 
 
 if __name__ == "__main__":

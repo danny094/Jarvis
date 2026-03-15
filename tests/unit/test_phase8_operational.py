@@ -27,14 +27,37 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
 # ── Project root on path ──────────────────────────────────────────────────────
-# Compute project root regardless of whether the file is run from /tmp or tests/unit/
-_THIS_FILE = os.path.abspath(__file__)
-if "tests" + os.sep + "unit" in _THIS_FILE:
-    # Deployed: /DATA/.../Jarvis/tests/unit/test_phase8_operational.py
-    _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_THIS_FILE)))
-else:
-    # Running from /tmp — use the known project root
-    _ROOT = "/DATA/AppData/MCP/Jarvis/Jarvis"
+def _detect_project_root() -> str:
+    env_root = str(os.getenv("JARVIS_PROJECT_ROOT") or "").strip()
+    candidates = []
+    if env_root:
+        candidates.append(env_root)
+
+    cur = os.path.abspath(os.path.dirname(__file__))
+    for _ in range(8):
+        candidates.append(cur)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    candidates.append(os.getcwd())
+    candidates.append("/DATA/AppData/MCP/Jarvis/Jarvis")
+
+    seen = set()
+    for cand in candidates:
+        root = os.path.abspath(str(cand or "").strip())
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        if os.path.exists(os.path.join(root, "config.py")) and os.path.exists(
+            os.path.join(root, "core")
+        ):
+            return root
+    return os.path.abspath(candidates[-1])
+
+
+_ROOT = _detect_project_root()
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
@@ -654,7 +677,7 @@ class TestTriggerWindowMapping(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _RUNTIME_ROUTES_PATH = os.path.join(
-    "/DATA/AppData/MCP/Jarvis/Jarvis", "adapters", "admin-api", "runtime_routes.py"
+    _ROOT, "adapters", "admin-api", "runtime_routes.py"
 )
 
 
@@ -713,7 +736,7 @@ class TestFrontendManualChecklist(unittest.TestCase):
 
     def test_index_html_has_digest_panel(self):
         html_path = os.path.join(
-            "/DATA/AppData/MCP/Jarvis/Jarvis", "adapters", "Jarvis", "index.html"
+            _ROOT, "adapters", "Jarvis", "index.html"
         )
         with open(html_path, encoding="utf-8") as f:
             content = f.read()
@@ -724,7 +747,7 @@ class TestFrontendManualChecklist(unittest.TestCase):
 
     def test_settings_js_has_digestui(self):
         js_path = os.path.join(
-            "/DATA/AppData/MCP/Jarvis/Jarvis", "adapters", "Jarvis", "js", "apps", "settings.js"
+            _ROOT, "adapters", "Jarvis", "js", "apps", "settings.js"
         )
         with open(js_path, encoding="utf-8") as f:
             content = f.read()

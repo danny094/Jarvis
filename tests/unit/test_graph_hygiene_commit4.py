@@ -18,6 +18,7 @@ import sys
 import os
 import sqlite3
 import tempfile
+import importlib.util
 import pytest
 from unittest.mock import MagicMock, patch, call
 
@@ -137,8 +138,26 @@ class TestUpdatedAtInSyncPaths:
         except (AttributeError, TypeError):
             pytest.skip("_sync_single_blueprint_to_graph not inspectable (mocked)")
 
-        assert '"updated_at"' in src or "'updated_at'" in src, (
-            "_sync_single_blueprint_to_graph must include 'updated_at' in metadata dict"
+        has_updated_at = '"updated_at"' in src or "'updated_at'" in src
+        if has_updated_at:
+            return
+
+        # Newer implementation may delegate the single-sync alias to the
+        # canonical sync_blueprint_to_graph() function.
+        delegates = "sync_blueprint_to_graph(" in src
+        if not delegates:
+            pytest.fail(
+                "_sync_single_blueprint_to_graph must include 'updated_at' "
+                "or delegate to sync_blueprint_to_graph()"
+            )
+
+        try:
+            src_canonical = inspect.getsource(bs_module.sync_blueprint_to_graph)
+        except (AttributeError, TypeError):
+            pytest.skip("sync_blueprint_to_graph not inspectable (mocked)")
+
+        assert '"updated_at"' in src_canonical or "'updated_at'" in src_canonical, (
+            "sync_blueprint_to_graph must include 'updated_at' in metadata dict"
         )
 
     def test_bulk_sync_includes_updated_at(self):
@@ -166,7 +185,10 @@ class TestUpdatedAtInSyncPaths:
         except (AttributeError, TypeError):
             pytest.skip("Source not inspectable")
 
-        has_single = '"updated_at"' in src_single or "'updated_at'" in src_single
+        has_single_direct = '"updated_at"' in src_single or "'updated_at'" in src_single
+        delegates_single = "sync_blueprint_to_graph(" in src_single
+        has_canonical = '"updated_at"' in src_bulk or "'updated_at'" in src_bulk
+        has_single = has_single_direct or (delegates_single and has_canonical)
         has_bulk   = '"updated_at"' in src_bulk   or "'updated_at'" in src_bulk
         assert has_single and has_bulk, (
             f"updated_at missing in: "
@@ -332,6 +354,19 @@ class TestDeleteRouteTombstone:
 class TestReconcileGraphIndex:
     """reconcile_graph_index.py: identifies stale nodes, dry-run/apply."""
 
+    def _load_reconcile(self):
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        mod_path = os.path.join(repo_root, "tools", "reconcile_graph_index.py")
+        spec = importlib.util.spec_from_file_location(
+            "_reconcile_graph_index_commit4_test", mod_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)  # type: ignore[attr-defined]
+        return module.reconcile
+
     def _make_dbs(self, active_bp_ids: list, graph_nodes: list):
         """
         Create two in-memory SQLite DBs:
@@ -379,7 +414,7 @@ class TestReconcileGraphIndex:
                 {"content": "bp-stale: old", "meta": {"blueprint_id": "bp-stale"}},
             ],
         )
-        from tools.reconcile_graph_index import reconcile
+        reconcile = self._load_reconcile()
         result = reconcile(commander_db=cmd_path, memory_db=mem_path, apply=False)
 
         assert result["active_in_sqlite"] == 1
@@ -398,7 +433,7 @@ class TestReconcileGraphIndex:
                 {"content": "bp-gone: old", "meta": {"blueprint_id": "bp-gone"}},
             ],
         )
-        from tools.reconcile_graph_index import reconcile
+        reconcile = self._load_reconcile()
         result = reconcile(commander_db=cmd_path, memory_db=mem_path, apply=True)
 
         assert result["removed"] == 1
@@ -422,7 +457,7 @@ class TestReconcileGraphIndex:
                 },
             ],
         )
-        from tools.reconcile_graph_index import reconcile
+        reconcile = self._load_reconcile()
         result = reconcile(commander_db=cmd_path, memory_db=mem_path, apply=False)
 
         assert len(result["stale_nodes"]) == 1
@@ -438,7 +473,7 @@ class TestReconcileGraphIndex:
                 {"content": "bp-b: ok", "meta": {"blueprint_id": "bp-b"}},
             ],
         )
-        from tools.reconcile_graph_index import reconcile
+        reconcile = self._load_reconcile()
         result = reconcile(commander_db=cmd_path, memory_db=mem_path, apply=False)
 
         assert len(result["stale_nodes"]) == 0
@@ -452,7 +487,7 @@ class TestReconcileGraphIndex:
                 {"content": "no colon here", "meta": {}},  # unparseable
             ],
         )
-        from tools.reconcile_graph_index import reconcile
+        reconcile = self._load_reconcile()
         result = reconcile(commander_db=cmd_path, memory_db=mem_path, apply=False)
 
         assert len(result["stale_nodes"]) == 1
@@ -469,7 +504,7 @@ class TestReconcileGraphIndex:
                 {"content": "bp-stale: old", "meta": {"blueprint_id": "bp-stale"}},
             ],
         )
-        from tools.reconcile_graph_index import reconcile
+        reconcile = self._load_reconcile()
         result = reconcile(commander_db=cmd_path, memory_db=mem_path, apply=True)
 
         assert result["removed"] == 1

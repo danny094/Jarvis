@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "started_at_utc": "2026-03-11T00:03:48.744293+00:00",
+    "base_url": "http://127.0.0.1:8200",
+    "model": "ministral-3:8b",
+    "cases_file": "tests/e2e/prompt_suite_cases.json",
+    "profile": "full",
+    "selected_case_count": 1,
+    "finished_at_utc": "2026-03-11T00:04:11.457459+00:00"
+  },
+  "summary": {
+    "total": 1,
+    "blocked_count": 0,
+    "error_count": 0,
+    "domain_counts": {
+      "CRONJOB": 1
+    },
+    "latency_ms": {
+      "p50": 22712.98,
+      "mean": 22712.98,
+      "max": 22712.98
+    },
+    "match_rates": {
+      "domain": 1.0,
+      "approval": 1.0,
+      "needs_memory": null
+    },
+    "score_mean_0_10": 10.0
+  },
+  "results": [
+    {
+      "id": "T003",
+      "prompt": "In 5 Minuten soll TRION mir eine Zusammenfassung geben",
+      "category": "domain_routing_cron",
+      "tags": [
+        "domain",
+        "cronjob",
+        "temporal"
+      ],
+      "expected": {
+        "domain": "CRONJOB",
+        "approved": true
+      },
+      "actual": {
+        "domain": "CRONJOB",
+        "needs_memory": false,
+        "approved": true,
+        "tools_executed": [
+          "autonomy_cron_status"
+        ],
+        "done_reason": "stop",
+        "latency_ms": 22712.98,
+        "conversation_id": "webui-prompt-e2e-1773187428-t003",
+        "error": null
+      },
+      "observed": {
+        "control_approved": true,
+        "thinking": {
+          "intent": "Erstellung einer Zusammenfassung in 5 Minuten (Zeitgebundene Anforderung)",
+          "needs_memory": false,
+          "memory_keys": [],
+          "hallucination_risk": "low",
+          "needs_sequential_thinking": true
+        },
+        "event_type_counts": {
+          "response_mode": 1,
+          "workspace_update": 4,
+          "control": 1,
+          "tool_start": 1,
+          "tool_result": 1,
+          "done": 1
+        },
+        "response_preview": "Verstanden! Ich bereite mich vor, um dir in **5 Minuten** eine präzise Zusammenfassung zu liefern – basierend auf den **verifizierten Fakten** aus meinem Gedächtnis und den aktuellen Systemdaten (Hardware, Tools, Cron-Aktivitäten).\n\n### Was ich dir in 5 Minuten liefern werde:\n1. "
+      },
+      "quality": {
+        "domain_match": true,
+        "approval_match": true,
+        "needs_memory_match": null,
+        "score": 10
+      }
+    }
+  ]
+}

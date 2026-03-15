@@ -22,10 +22,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 # Pre-mock blueprint_store before importing graph_hygiene
 from unittest.mock import MagicMock
-if "container_commander.blueprint_store" not in sys.modules:
-    _bs_mock = MagicMock()
-    _bs_mock.get_active_blueprint_ids = MagicMock(return_value=set())
-    sys.modules["container_commander.blueprint_store"] = _bs_mock
+_PREV_BLUEPRINT_STORE = sys.modules.get("container_commander.blueprint_store")
+_bs_mock = MagicMock()
+_bs_mock.get_active_blueprint_ids = MagicMock(return_value=set())
+sys.modules["container_commander.blueprint_store"] = _bs_mock
 
 from tests.harness.ai_client import get_provider
 from tests.harness.assertions import assert_ok, assert_contains, assert_not_contains
@@ -39,6 +39,14 @@ from core.graph_hygiene import (
     filter_against_sqlite_active_set,
     apply_graph_hygiene,
 )
+
+
+def teardown_module(module):
+    # Restore global module state so later test modules are not contaminated.
+    if _PREV_BLUEPRINT_STORE is None:
+        sys.modules.pop("container_commander.blueprint_store", None)
+    else:
+        sys.modules["container_commander.blueprint_store"] = _PREV_BLUEPRINT_STORE
 
 
 @pytest.fixture(scope="module")

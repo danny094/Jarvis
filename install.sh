@@ -7,9 +7,13 @@ set -Eeuo pipefail
 REPO_URL="${JARVIS_REPO_URL:-https://github.com/danny094/Jarvis.git}"
 BRANCH="${JARVIS_BRANCH:-main}"
 INSTALL_DIR="${JARVIS_INSTALL_DIR:-$HOME/Jarvis}"
+FORCE_UPDATE="${JARVIS_FORCE_UPDATE:-0}"
 SKIP_PREREQS="0"
 NO_START="0"
 NO_BUILD="0"
+
+TRION_DEFAULT_NETWORK="big-bear-lobe-chat_default"
+TRION_DEFAULT_VOLUME="trion_home_data"
 
 COLOR_RED='\033[0;31m'
 COLOR_GREEN='\033[0;32m'
@@ -30,16 +34,21 @@ Options:
   --repo-url <url>        Git repository URL (default: ${REPO_URL})
   --branch <name>         Git branch/tag to checkout (default: ${BRANCH})
   --install-dir <path>    Install directory (default: ${INSTALL_DIR})
+  --force-update          Force-sync repo to origin/<branch> (discards local git changes)
   --skip-prereqs          Do not install/check OS prerequisites
   --no-build              Skip docker compose build
   --no-start              Do not start stack (only prepare and pull)
   -h, --help              Show this help
 
 Environment variables:
-  JARVIS_REPO_URL, JARVIS_BRANCH, JARVIS_INSTALL_DIR
+  JARVIS_REPO_URL, JARVIS_BRANCH, JARVIS_INSTALL_DIR, JARVIS_FORCE_UPDATE
+  TRION_SHARED_SKILLS_DIR, TRION_PLUGINS_DIR,
+  TRION_NVIDIA_SMI_PATH, TRION_NVIDIA_ML_LIB_PATH,
+  TRION_NVIDIA_CTL_DEVICE, TRION_NVIDIA0_DEVICE
 
 Examples:
   bash install.sh
+  bash install.sh --force-update
   bash install.sh --install-dir /opt/jarvis
   curl -fsSL https://raw.githubusercontent.com/danny094/Jarvis/main/install.sh | bash
 USAGE
@@ -95,6 +104,8 @@ parse_args() {
         BRANCH="$2"; shift 2 ;;
       --install-dir)
         INSTALL_DIR="$2"; shift 2 ;;
+      --force-update)
+        FORCE_UPDATE="1"; shift ;;
       --skip-prereqs)
         SKIP_PREREQS="1"; shift ;;
       --no-start)
@@ -109,6 +120,33 @@ parse_args() {
         exit 1 ;;
     esac
   done
+}
+
+repo_has_local_changes() {
+  if ! git -C "${INSTALL_DIR}" diff --quiet --ignore-submodules --; then
+    return 0
+  fi
+  if ! git -C "${INSTALL_DIR}" diff --cached --quiet --ignore-submodules --; then
+    return 0
+  fi
+  return 1
+}
+
+auto_stash_local_changes() {
+  local stash_name
+  stash_name="jarvis-install-autostash-$(date +%Y%m%d_%H%M%S)"
+  warn "Local tracked git changes detected in ${INSTALL_DIR}."
+  warn "Creating stash '${stash_name}' so update can continue."
+  run_cmd git -C "${INSTALL_DIR}" stash push -m "${stash_name}"
+  warn "Local changes were stashed."
+  warn "Reapply manually if needed: git -C ${INSTALL_DIR} stash pop"
+}
+
+force_update_repo() {
+  warn "Force update enabled. Discarding local git changes and syncing to origin/${BRANCH}."
+  run_cmd git -C "${INSTALL_DIR}" checkout -f -B "${BRANCH}" "origin/${BRANCH}"
+  run_cmd git -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH}"
+  run_cmd git -C "${INSTALL_DIR}" clean -fd -e .env
 }
 
 install_prereqs_debian() {
@@ -183,8 +221,26 @@ clone_or_update_repo() {
   if [[ -d "${INSTALL_DIR}/.git" ]]; then
     log "Existing git repository found. Updating..."
     run_cmd git -C "${INSTALL_DIR}" fetch --all --prune
-    run_cmd git -C "${INSTALL_DIR}" checkout "${BRANCH}"
-    run_cmd git -C "${INSTALL_DIR}" pull --ff-only origin "${BRANCH}"
+
+    if [[ "${FORCE_UPDATE}" == "1" ]]; then
+      force_update_repo
+    else
+      if repo_has_local_changes; then
+        auto_stash_local_changes
+      fi
+
+      if ! run_cmd git -C "${INSTALL_DIR}" checkout "${BRANCH}"; then
+        err "Failed to checkout branch '${BRANCH}' in ${INSTALL_DIR}."
+        err "Rerun with --force-update to discard local git changes and force-sync."
+        exit 1
+      fi
+
+      if ! run_cmd git -C "${INSTALL_DIR}" pull --ff-only origin "${BRANCH}"; then
+        err "Fast-forward update failed for '${BRANCH}'."
+        err "If you want a hard sync to origin/${BRANCH}, rerun install with --force-update."
+        exit 1
+      fi
+    fi
   elif [[ -d "${INSTALL_DIR}" ]] && [[ -n "$(ls -A "${INSTALL_DIR}" 2>/dev/null || true)" ]]; then
     err "Install directory is not empty and not a git repo: ${INSTALL_DIR}"
     err "Use an empty directory or set --install-dir to another path."
@@ -205,19 +261,104 @@ random_token() {
   fi
 }
 
+upsert_env_var() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp_file
+
+  mkdir -p "$(dirname "${env_file}")"
+  touch "${env_file}"
+  tmp_file="$(mktemp)"
+
+  awk -v k="${key}" -v v="${value}" '
+    BEGIN { replaced=0 }
+    $0 ~ ("^" k "=") {
+      print k "=" v
+      replaced=1
+      next
+    }
+    { print }
+    END {
+      if (!replaced) {
+        print k "=" v
+      }
+    }
+  ' "${env_file}" > "${tmp_file}"
+
+  mv "${tmp_file}" "${env_file}"
+}
+
 ensure_env_token() {
   local env_file="${INSTALL_DIR}/.env"
   local key="INTERNAL_SECRET_RESOLVE_TOKEN"
 
-  if [[ ! -f "${env_file}" ]]; then
-    log "Creating .env with secure internal token"
-    printf "%s=%s\n" "${key}" "$(random_token)" > "${env_file}"
-    return
+  if [[ ! -f "${env_file}" ]] || ! grep -Eq "^${key}=" "${env_file}"; then
+    log "Ensuring secure ${key} in .env"
+    upsert_env_var "${env_file}" "${key}" "$(random_token)"
+  fi
+}
+
+ensure_runtime_mount_defaults() {
+  local env_file="${INSTALL_DIR}/.env"
+  local shared_skills_dir plugins_dir workspace_dir stubs_dir
+  local nvidia_smi_path nvidia_ml_path nvidia_ctl_device nvidia0_device
+
+  shared_skills_dir="${TRION_SHARED_SKILLS_DIR:-${INSTALL_DIR}/shared_skills}"
+  plugins_dir="${TRION_PLUGINS_DIR:-${HOME:-${INSTALL_DIR}}/.trion/plugins}"
+  workspace_dir="${TRION_WORKSPACE_DIR:-/tmp/trion/jarvis/workspace}"
+  stubs_dir="${INSTALL_DIR}/scripts/stubs"
+
+  mkdir -p "${shared_skills_dir}" "${plugins_dir}" "${workspace_dir}" "${stubs_dir}"
+
+  if [[ ! -f "${stubs_dir}/nvidia-smi" ]]; then
+    cat > "${stubs_dir}/nvidia-smi" <<'EOF'
+#!/usr/bin/env bash
+echo "NVIDIA-SMI not available in this environment (stub)." >&2
+exit 1
+EOF
+  fi
+  if [[ ! -f "${stubs_dir}/libnvidia-ml.so.1" ]]; then
+    printf "stub-nvml\n" > "${stubs_dir}/libnvidia-ml.so.1"
+  fi
+  chmod +x "${stubs_dir}/nvidia-smi" 2>/dev/null || true
+
+  if [[ -x "/usr/bin/nvidia-smi" && -f "/lib/x86_64-linux-gnu/libnvidia-ml.so.1" ]]; then
+    nvidia_smi_path="/usr/bin/nvidia-smi"
+    nvidia_ml_path="/lib/x86_64-linux-gnu/libnvidia-ml.so.1"
+    ok "Detected host NVIDIA runtime files; enabling passthrough mounts."
+  else
+    nvidia_smi_path="${stubs_dir}/nvidia-smi"
+    nvidia_ml_path="${stubs_dir}/libnvidia-ml.so.1"
+    warn "Host NVIDIA runtime files not found; using local stubs for portability."
   fi
 
-  if ! grep -Eq "^${key}=" "${env_file}"; then
-    log "Adding missing ${key} to .env"
-    printf "\n%s=%s\n" "${key}" "$(random_token)" >> "${env_file}"
+  if [[ -e "/dev/nvidiactl" && -e "/dev/nvidia0" ]]; then
+    nvidia_ctl_device="/dev/nvidiactl"
+    nvidia0_device="/dev/nvidia0"
+  else
+    nvidia_ctl_device="/dev/null"
+    nvidia0_device="/dev/null"
+    warn "NVIDIA device nodes not found; mapping safe /dev/null fallbacks."
+  fi
+
+  upsert_env_var "${env_file}" "TRION_SHARED_SKILLS_DIR" "${shared_skills_dir}"
+  upsert_env_var "${env_file}" "TRION_PLUGINS_DIR" "${plugins_dir}"
+  upsert_env_var "${env_file}" "TRION_NVIDIA_SMI_PATH" "${nvidia_smi_path}"
+  upsert_env_var "${env_file}" "TRION_NVIDIA_ML_LIB_PATH" "${nvidia_ml_path}"
+  upsert_env_var "${env_file}" "TRION_NVIDIA_CTL_DEVICE" "${nvidia_ctl_device}"
+  upsert_env_var "${env_file}" "TRION_NVIDIA0_DEVICE" "${nvidia0_device}"
+}
+
+ensure_external_compose_resources() {
+  if ! docker_cmd volume inspect "${TRION_DEFAULT_VOLUME}" >/dev/null 2>&1; then
+    log "Creating Docker volume: ${TRION_DEFAULT_VOLUME}"
+    docker_cmd volume create "${TRION_DEFAULT_VOLUME}" >/dev/null
+  fi
+
+  if ! docker_cmd network inspect "${TRION_DEFAULT_NETWORK}" >/dev/null 2>&1; then
+    log "Creating Docker network: ${TRION_DEFAULT_NETWORK}"
+    docker_cmd network create "${TRION_DEFAULT_NETWORK}" >/dev/null
   fi
 }
 
@@ -237,6 +378,9 @@ start_stack() {
     err "docker-compose.yml not found in ${INSTALL_DIR}"
     exit 1
   fi
+
+  ensure_external_compose_resources
+  compose_cmd -f "${compose_file}" config >/dev/null
 
   if [[ "${NO_BUILD}" == "0" ]]; then
     log "Building containers (this may take a while)..."
@@ -292,6 +436,7 @@ main() {
   ensure_prereqs
   clone_or_update_repo
   ensure_env_token
+  ensure_runtime_mount_defaults
   check_ollama_hint
   start_stack
   print_summary

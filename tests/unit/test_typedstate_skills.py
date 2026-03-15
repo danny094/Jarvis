@@ -19,8 +19,9 @@ import os
 import sys
 import types
 import unittest
+from pathlib import Path
 
-_PROJECT_ROOT = "/DATA/AppData/MCP/Jarvis/Jarvis"
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 _MODULE_PATH = os.path.join(_PROJECT_ROOT, "core", "typedstate_skills.py")
 _MODULE_NAME = "_typedstate_skills_standalone"   # avoids core/__init__.py trigger
 

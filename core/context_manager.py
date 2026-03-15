@@ -14,6 +14,7 @@ Part of: CoreBridge Refactoring Phase 1
 import os
 import json
 import time
+import re
 from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -23,6 +24,8 @@ from config import (
     get_context_retrieval_budget_s,
     get_memory_lookup_timeout_s,
     get_memory_keys_max_per_request,
+    get_context_memory_fallback_recall_only_enable,
+    get_context_memory_fallback_recall_only_rollout_pct,
 )
 from mcp.client import (
     get_fact_for_query,
@@ -30,6 +33,7 @@ from mcp.client import (
     semantic_search,
     search_memory_fallback,
 )
+from core.trion_laws_policy import load_trion_laws_policy
 # Constants
 SYSTEM_CONV_ID = "system"
 
@@ -68,11 +72,177 @@ class ContextManager:
     """
 
     PROTOCOL_DIR = Path(os.environ.get("PROTOCOL_DIR", "/app/memory"))
+    _BLUEPRINT_QUERY_HINTS = (
+        "blueprint",
+        "container",
+        "sandbox",
+        "docker",
+        "kubernetes",
+        "k8s",
+        "podman",
+        "exec_in_container",
+        "request_container",
+        "shell-sandbox",
+        "db-sandbox",
+        "python-sandbox",
+        "node-sandbox",
+    )
+    _BLUEPRINT_TOOL_HINTS = {
+        "request_container",
+        "stop_container",
+        "exec_in_container",
+        "blueprint_list",
+        "container_stats",
+        "container_logs",
+    }
 
     def __init__(self):
         self._protocol_cache = {}  # {filepath: (mtime, content)}
         self._retrieval_executor: Optional[ThreadPoolExecutor] = None
         log_info("[ContextManager] Initialized")
+
+    def _should_include_blueprint_context(self, query: str, thinking_plan: Dict[str, Any]) -> bool:
+        """Inject blueprint context only when the request is container/blueprint related."""
+        plan = thinking_plan if isinstance(thinking_plan, dict) else {}
+        suggested = plan.get("suggested_tools", []) or []
+        suggested_names: List[str] = []
+        for item in suggested:
+            if isinstance(item, dict):
+                name = str(item.get("tool") or item.get("name") or "").strip().lower()
+            else:
+                name = str(item or "").strip().lower()
+            if name:
+                suggested_names.append(name)
+
+        if any(name in self._BLUEPRINT_TOOL_HINTS for name in suggested_names):
+            return True
+
+        query_lower = str(query or "").lower()
+        if any(hint in query_lower for hint in self._BLUEPRINT_QUERY_HINTS):
+            return True
+
+        intent_lower = str(plan.get("intent") or "").lower()
+        if any(hint in intent_lower for hint in ("container", "blueprint", "sandbox")):
+            return True
+
+        return False
+
+    @staticmethod
+    def _is_rollout_enabled(rollout_pct: int, seed: str) -> bool:
+        try:
+            pct = int(rollout_pct)
+        except Exception:
+            pct = 100
+        pct = max(0, min(100, pct))
+        if pct >= 100:
+            return True
+        if pct <= 0:
+            return False
+        import hashlib
+        token = str(seed or "global")
+        bucket = int(hashlib.sha1(token.encode("utf-8")).hexdigest()[:8], 16) % 100
+        return bucket < pct
+
+    @staticmethod
+    def _is_container_domain_locked(thinking_plan: Dict[str, Any]) -> bool:
+        route = (thinking_plan or {}).get("_domain_route", {}) if isinstance(thinking_plan, dict) else {}
+        if not isinstance(route, dict):
+            return False
+        return bool(route.get("domain_locked")) and str(route.get("domain_tag") or "").strip().upper() == "CONTAINER"
+
+    @staticmethod
+    def _has_recall_or_personal_memory_signal(query: str, thinking_plan: Dict[str, Any]) -> bool:
+        text = str(query or "").strip().lower()
+        intent = str((thinking_plan or {}).get("intent") or "").strip().lower()
+        recall_markers = (
+            "was mag ich",
+            "was habe ich",
+            "was weißt du",
+            "was weisst du",
+            "weißt du noch",
+            "weisst du noch",
+            "erinnerst du",
+            "hast du dir gemerkt",
+            "gemerkt",
+            "remember",
+            "recall",
+            "über mich",
+            "ueber mich",
+            "mein ",
+            "meine",
+            "mir ",
+            "ich ",
+            "my preference",
+            "my preferences",
+            "personal",
+            "präferenz",
+            "praeferenz",
+            "lieblings",
+        )
+        if any(marker in text for marker in recall_markers):
+            return True
+        if any(marker in intent for marker in ("recall", "memory", "preference", "personal", "user")):
+            return True
+        memory_keys = (thinking_plan or {}).get("memory_keys", []) if isinstance(thinking_plan, dict) else []
+        if isinstance(memory_keys, list) and any(str(k or "").strip() for k in memory_keys):
+            return True
+        return False
+
+    def _should_apply_memory_fallback_keys(
+        self,
+        *,
+        query: str,
+        thinking_plan: Dict[str, Any],
+        conversation_id: str,
+    ) -> bool:
+        if not get_context_memory_fallback_recall_only_enable():
+            return True
+        if not self._is_rollout_enabled(
+            get_context_memory_fallback_recall_only_rollout_pct(),
+            conversation_id or query,
+        ):
+            return True
+        if self._is_container_domain_locked(thinking_plan):
+            return False
+        return self._has_recall_or_personal_memory_signal(query, thinking_plan)
+
+    @staticmethod
+    def _is_noise_law_entry(content: str, metadata: Dict[str, Any]) -> bool:
+        """Filter graph pollution from _trion_laws (tool registry fragments)."""
+        policy = load_trion_laws_policy()
+        text = str(content or "").strip()
+        if not text:
+            return True
+
+        meta = metadata if isinstance(metadata, dict) else {}
+        meta_l = {str(k).strip().lower(): v for k, v in meta.items()}
+        noise_meta_keys = [str(k).strip().lower() for k in (policy.get("noise_metadata_keys") or [])]
+        if any(k in meta_l for k in noise_meta_keys):
+            return True
+
+        lower = text.lower()
+        for prefix in (policy.get("noise_prefixes") or []):
+            p = str(prefix or "").strip().lower()
+            if p and lower.startswith(p):
+                return True
+
+        if ":" in text:
+            lead = text.split(":", 1)[0].strip().lower()
+            if re.fullmatch(r"[a-z][a-z0-9_]{1,63}", lead):
+                if policy.get("allow_name_colon_exec_pattern", True):
+                    noise_fragments = [str(x or "").strip().lower() for x in (policy.get("noise_contains_any") or [])]
+                else:
+                    noise_fragments = []
+                if any(fragment and fragment in lower for fragment in noise_fragments):
+                    return True
+
+        # Keep only normative law-like statements; drop operational/event snippets.
+        if policy.get("require_law_marker", True):
+            law_markers = [str(m).strip().lower() for m in (policy.get("law_markers") or [])]
+            if law_markers and not any(marker and marker in lower for marker in law_markers):
+                return True
+
+        return False
     
     # ═══════════════════════════════════════════════════════════
     # MAIN PUBLIC INTERFACE
@@ -129,7 +299,7 @@ class ContextManager:
             # ── SMALL-MODEL fast path ──────────────────────────────────────
             # Skips: daily_protocol, skills, blueprints (injected as compact NOW/RULES/NEXT).
             # Keeps: TRION laws (safety, non-negotiable) + active containers + memory keys.
-            laws_ctx = self._load_trion_laws()
+            laws_ctx = self._load_trion_laws(query=query)
             if laws_ctx:
                 result.memory_data = laws_ctx + "\n"
                 result.memory_used = True
@@ -148,6 +318,17 @@ class ContextManager:
                 thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query")
             ):
                 memory_keys = self._normalize_memory_keys(thinking_plan.get("memory_keys", []))
+                # Fallback: ThinkingLayer liefert needs_memory=True aber keine keys
+                if not memory_keys and thinking_plan.get("needs_memory"):
+                    if self._should_apply_memory_fallback_keys(
+                        query=query,
+                        thinking_plan=thinking_plan,
+                        conversation_id=conversation_id,
+                    ):
+                        memory_keys = ["user_facts", "personal_info", "preferences"]
+                        log_info("[ContextManager] memory_keys empty despite needs_memory=True → fallback keys")
+                    else:
+                        log_info("[ContextManager] fallback keys skipped (non-recall/runtime turn)")
                 if memory_keys and _budget_ok("small_mode_memory_keys"):
                     key_results = self._search_memory_keys_parallel(
                         keys=memory_keys,
@@ -177,6 +358,21 @@ class ContextManager:
         # Avoids automatic full-protocol dumps on every non-temporal request.
         # Protocol files remain unchanged as truth store; JIT index handles other lookups.
         time_ref = thinking_plan.get("time_reference") if thinking_plan else None
+        if not time_ref:
+            try:
+                from config import get_daily_context_followup_enable
+                if get_daily_context_followup_enable() and bool((thinking_plan or {}).get("needs_chat_history")):
+                    q_lower = str(query or "").strip().lower()
+                    if any(tok in q_lower for tok in ("protokoll", "tagebuch", "was haben wir", "was hatten wir", "was war", "heute", "gestern", "vorgestern")):
+                        if "vorgestern" in q_lower:
+                            time_ref = "day_before_yesterday"
+                        elif "gestern" in q_lower:
+                            time_ref = "yesterday"
+                        else:
+                            time_ref = "today"
+                        log_info(f"[ContextManager] time_reference fallback inferred: {time_ref}")
+            except Exception:
+                pass
         if time_ref:
             protocol_ctx = self._load_daily_protocol(time_reference=time_ref)
             if protocol_ctx:
@@ -201,7 +397,7 @@ class ContextManager:
                         result.sources.append(f"graph_fallback:{time_ref}")
 
         # 0.3. TRION Gesetze (unumstößliche Hardware-Constraints, immer geladen)
-        laws_ctx = self._load_trion_laws() if _budget_ok("trion_laws") else ""
+        laws_ctx = self._load_trion_laws(query=query) if _budget_ok("trion_laws") else ""
         if laws_ctx:
             result.memory_data += laws_ctx + "\n"
             result.memory_used = True
@@ -234,12 +430,15 @@ class ContextManager:
                 result.sources.append("skill_graph")
                 log_info("[ContextManager] Found skills in graph (legacy renderer)")
 
-        # 1.55. Blueprint Graph: semantische Blueprint-Discovery (immer aktiv)
-        blueprint_ctx = self._search_blueprint_graph(query) if _budget_ok("blueprint_graph") else ""
-        if blueprint_ctx:
-            result.system_tools = (result.system_tools + "\n\n" + blueprint_ctx).strip()
-            result.memory_used = True
-            result.sources.append("blueprint_graph")
+        # 1.55. Blueprint Graph: nur bei container/blueprint-relevanten Anfragen
+        if self._should_include_blueprint_context(query, thinking_plan):
+            blueprint_ctx = self._search_blueprint_graph(query) if _budget_ok("blueprint_graph") else ""
+            if blueprint_ctx:
+                result.system_tools = (result.system_tools + "\n\n" + blueprint_ctx).strip()
+                result.memory_used = True
+                result.sources.append("blueprint_graph")
+        else:
+            log_info("[ContextManager] Blueprint context skipped (query not blueprint-related)")
 
         # 1.6. SkillKnowledgeBase Hint (winziger Kontext-Footprint, immer da)
         kb_hint = self._load_skill_knowledge_hint() if _budget_ok("skill_knowledge_hint") else ""
@@ -253,6 +452,17 @@ class ContextManager:
             log_info(f"[ContextManager] Skipping memory search — time_reference={time_ref}, protocol is source")
         elif thinking_plan.get("needs_memory") or thinking_plan.get("is_fact_query"):
             memory_keys = self._normalize_memory_keys(thinking_plan.get("memory_keys", []))
+            # Fallback: ThinkingLayer liefert needs_memory=True aber keine keys
+            if not memory_keys and thinking_plan.get("needs_memory"):
+                if self._should_apply_memory_fallback_keys(
+                    query=query,
+                    thinking_plan=thinking_plan,
+                    conversation_id=conversation_id,
+                ):
+                    memory_keys = ["user_facts", "personal_info", "preferences"]
+                    log_info("[ContextManager] memory_keys empty despite needs_memory=True → fallback keys")
+                else:
+                    log_info("[ContextManager] fallback keys skipped (non-recall/runtime turn)")
             if memory_keys and _budget_ok("memory_keys_loop"):
                 key_results = self._search_memory_keys_parallel(
                     keys=memory_keys,
@@ -907,22 +1117,48 @@ class ContextManager:
     # TRION GESETZE
     # ═══════════════════════════════════════════════════════════
 
-    def _load_trion_laws(self) -> str:
+    def _load_trion_laws(self, query: str = "") -> str:
         """
         Lädt unumstößliche TRION-Gesetze aus dem Graph (_trion_laws).
         Immer im ThinkingLayer-Kontext — kein Caching nötig (selten geändert).
         """
         try:
-            results = graph_search("_trion_laws", "hardware limits laws constraints", depth=0, limit=20)
+            policy = load_trion_laws_policy()
+            if not policy.get("enabled", True):
+                return ""
+
+            seed_query = str(policy.get("query") or "hardware limits laws constraints").strip()
+            graph_limit = int(policy.get("graph_limit", 20))
+            graph_depth = int(policy.get("graph_depth", 0))
+            semantic_limit = int(policy.get("semantic_limit", 8))
+            max_output_lines = int(policy.get("max_output_lines", 8))
+
+            results = graph_search("_trion_laws", seed_query, depth=graph_depth, limit=graph_limit) or []
+            if policy.get("semantic_enable", True):
+                semantic_query = str(query or seed_query).strip() or seed_query
+                semantic_results = semantic_search("_trion_laws", semantic_query, limit=semantic_limit) or []
+                # Semantic hits first: more relevant law snippets for current turn.
+                results = list(semantic_results) + list(results)
+
             if not results:
                 return ""
+            seen = set()
             lines = []
             for r in results:
                 content = r.get("content", "").strip()
-                if content:
-                    lines.append(f"⚖️ {content}")
+                metadata = r.get("metadata", {}) if isinstance(r, dict) else {}
+                if not content or self._is_noise_law_entry(content, metadata):
+                    continue
+                key = content.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(f"⚖️ {content}")
+                if len(lines) >= max_output_lines:
+                    break
             if lines:
                 return "TRION-GESETZE (unumstößlich):\n" + "\n".join(lines)
+            log_warn("[ContextManager] TRION laws retrieval returned only noisy entries; skipping block")
         except Exception as e:
             pass
         return ""

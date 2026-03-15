@@ -8,7 +8,23 @@ class TRIONBridge {
         this.ws = null;
         this.connected = false;
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
+        const cfg = (window.TRION_BRIDGE_CFG && typeof window.TRION_BRIDGE_CFG === "object")
+            ? window.TRION_BRIDGE_CFG
+            : {};
+        this.maxReconnectAttempts = Number.isFinite(Number(cfg.maxReconnectAttempts))
+            ? Number(cfg.maxReconnectAttempts)
+            : 0; // 0 => unlimited
+        this.baseReconnectDelayMs = Number.isFinite(Number(cfg.baseReconnectDelayMs))
+            ? Number(cfg.baseReconnectDelayMs)
+            : 1000;
+        this.maxReconnectDelayMs = Number.isFinite(Number(cfg.maxReconnectDelayMs))
+            ? Number(cfg.maxReconnectDelayMs)
+            : 30000;
+        this.enableClientHeartbeat = String(cfg.enableClientHeartbeat ?? "true").toLowerCase() !== "false";
+        this.clientHeartbeatIntervalMs = Number.isFinite(Number(cfg.clientHeartbeatIntervalMs))
+            ? Number(cfg.clientHeartbeatIntervalMs)
+            : 30000;
+        this.heartbeatTimer = null;
         this.pendingRequests = new Map();
         this.eventHandlers = new Map();
         this.plugins = [];
@@ -45,13 +61,16 @@ class TRIONBridge {
                 console.log("[TRIONBridge] Connected!");
                 self.connected = true;
                 self.reconnectAttempts = 0;
+                self._startHeartbeat();
                 self.emit("connected");
                 resolve();
             };
 
-            self.ws.onclose = function () {
-                console.log("[TRIONBridge] Disconnected");
+            self.ws.onclose = function (ev) {
+                console.log("[TRIONBridge] Disconnected", ev && ev.code, ev && ev.reason);
                 self.connected = false;
+                self._stopHeartbeat();
+                self._rejectPending("Connection closed");
                 self.emit("disconnected");
                 self.attemptReconnect();
             };
@@ -62,7 +81,11 @@ class TRIONBridge {
             };
 
             self.ws.onmessage = function (event) {
-                self.handleMessage(JSON.parse(event.data));
+                try {
+                    self.handleMessage(JSON.parse(event.data));
+                } catch (err) {
+                    console.warn("[TRIONBridge] Invalid message payload:", err && err.message ? err.message : err);
+                }
             };
         });
     }
@@ -89,6 +112,11 @@ class TRIONBridge {
         var p = event.payload;
         
         switch (event.type) {
+            case "bridge:ping":
+                this._sendBridgePong();
+                this.emit("telemetry", { type: "bridge_ping", ts: Date.now() });
+                break;
+
             case "plugin:list":
                 this.plugins = p;
                 this.emit("plugins:updated", p);
@@ -156,6 +184,47 @@ class TRIONBridge {
         });
     }
 
+    _sendRawRequest(type, payload) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({
+            id: Math.random().toString(36).substring(2) + Date.now().toString(36),
+            direction: "request",
+            type: type,
+            payload: payload || {},
+            timestamp: Date.now()
+        }));
+    }
+
+    _sendBridgePong() {
+        this._sendRawRequest("bridge:pong", { ts: Date.now() });
+    }
+
+    _startHeartbeat() {
+        this._stopHeartbeat();
+        if (!this.enableClientHeartbeat) return;
+        var self = this;
+        this.heartbeatTimer = setInterval(function () {
+            if (!self.connected) return;
+            self._sendBridgePong();
+        }, this.clientHeartbeatIntervalMs);
+    }
+
+    _stopHeartbeat() {
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+    }
+
+    _rejectPending(reason) {
+        this.pendingRequests.forEach(function (pending, id) {
+            try {
+                pending.reject(new Error(reason || "Disconnected"));
+            } catch (_) {}
+        });
+        this.pendingRequests.clear();
+    }
+
     getPlugins() { return this.request("plugin:list"); }
     enablePlugin(id) { return this.request("plugin:enable", { id: id }); }
     disablePlugin(id) { return this.request("plugin:disable", { id: id }); }
@@ -183,13 +252,17 @@ class TRIONBridge {
     }
 
     attemptReconnect() {
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        if (this.maxReconnectAttempts > 0 && this.reconnectAttempts >= this.maxReconnectAttempts) {
             console.error("[TRIONBridge] Max reconnect attempts reached");
+            this.emit("telemetry", { type: "reconnect_giveup", attempts: this.reconnectAttempts, ts: Date.now() });
             return;
         }
         this.reconnectAttempts++;
-        var delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        var raw = Math.min(this.baseReconnectDelayMs * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelayMs);
+        var jitter = Math.floor(Math.random() * Math.max(100, Math.floor(raw * 0.2)));
+        var delay = raw + jitter;
         console.log("[TRIONBridge] Reconnecting in " + delay + "ms");
+        this.emit("telemetry", { type: "reconnect_attempt", attempts: this.reconnectAttempts, delay_ms: delay, ts: Date.now() });
         var self = this;
         setTimeout(function () { self.connect(); }, delay);
     }

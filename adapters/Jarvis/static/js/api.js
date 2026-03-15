@@ -26,27 +26,115 @@ export function getApiBase() {
     return API_BASE;
 }
 
+function resolveConversationId(rawId = "") {
+    const explicit = String(rawId || "").trim();
+    if (explicit) return explicit;
+
+    const current = String(window.currentConversationId || "").trim();
+    if (current) return current;
+
+    try {
+        const stored = String(localStorage.getItem("jarvis-conversation-id") || "").trim();
+        if (stored) {
+            window.currentConversationId = stored;
+            return stored;
+        }
+    } catch {
+        // localStorage can be unavailable in restrictive browser modes.
+    }
+
+    const generated = `webui-${Date.now()}`;
+    window.currentConversationId = generated;
+    try {
+        localStorage.setItem("jarvis-conversation-id", generated);
+    } catch {
+        // Best-effort only.
+    }
+    return generated;
+}
+
 function _sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function _sleepWithSignal(ms, signal) {
+    if (!signal) return _sleep(ms);
+    return new Promise((resolve, reject) => {
+        if (signal.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+        }
+        const timerId = setTimeout(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+        }, ms);
+        function onAbort() {
+            clearTimeout(timerId);
+            signal.removeEventListener("abort", onAbort);
+            reject(new DOMException("Aborted", "AbortError"));
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
 }
 
 // ═══════════════════════════════════════════════════════════
 // MODEL LIST
 // ═══════════════════════════════════════════════════════════
-export async function getModels() {
+export async function getModelCatalog() {
     try {
-        log("debug", `Fetching models from ${API_BASE}/api/tags`);
+        log("debug", `Fetching model catalog from ${API_BASE}/api/models/catalog`);
+        const res = await fetch(`${API_BASE}/api/models/catalog`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+        const models = Array.isArray(data?.models) ? data.models : [];
+        log("debug", `Model catalog loaded: ${models.length} entries`);
+        return {
+            models,
+            effective: data?.effective || {},
+            providers: Array.isArray(data?.providers) ? data.providers : [],
+        };
+    } catch (error) {
+        log("warn", `getModelCatalog fallback to /api/tags: ${error.message}`);
+    }
+
+    try {
         const res = await fetch(`${API_BASE}/api/tags`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
         const data = await res.json();
-        const models = data.models?.map(m => m.name) || [];
-        log("debug", `Found ${models.length} models`, models);
-        return models;
+        const rows = Array.isArray(data?.models) ? data.models : [];
+        const models = rows.map((entry) => {
+            if (typeof entry === "string") {
+                return { name: entry, provider: "ollama", source: "local", selected: false };
+            }
+            return {
+                name: String(entry?.name || "").trim(),
+                provider: "ollama",
+                source: "local",
+                selected: false,
+                size: Number(entry?.size || 0) || undefined,
+            };
+        }).filter((entry) => entry.name);
+        return { models, effective: {}, providers: ["ollama"] };
     } catch (error) {
-        log("error", `getModels error: ${error.message}`);
-        return [];
+        log("error", `getModelCatalog error: ${error.message}`);
+        return { models: [], effective: {}, providers: [] };
     }
+}
+
+export async function getModels() {
+    const catalog = await getModelCatalog();
+    const names = [];
+    const seen = new Set();
+    for (const item of (catalog?.models || [])) {
+        const name = String(item?.name || "").trim();
+        if (!name) continue;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        names.push(name);
+    }
+    return names;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -98,11 +186,13 @@ export async function executeCode(code, language = "python", container = "code-s
 // ═══════════════════════════════════════════════════════════
 // CHAT - STREAMING MIT LIVE THINKING + CONTAINER
 // ═══════════════════════════════════════════════════════════
-export async function* streamChat(model, messages, conversationId = "webui-default") {
+export async function* streamChat(model, messages, conversationId = "", options = {}) {
+    const signal = options?.signal;
+    const resolvedConversationId = resolveConversationId(conversationId);
     log("info", `Sending chat request`, {
         model,
         messageCount: messages.length,
-        conversationId
+        conversationId: resolvedConversationId
     });
 
     // Log the actual messages being sent
@@ -114,11 +204,12 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
     const res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal,
         body: JSON.stringify({
             model: model,
             messages: messages,
             stream: true,
-            conversation_id: conversationId
+            conversation_id: resolvedConversationId
         })
     });
 
@@ -149,21 +240,12 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                 const data = JSON.parse(line);
                 chunkCount++;
 
-                // 🆕 FLAT EVENT HANDLER (new event system)
-                // Backend sends: {type: "sequential_start", task_id: "...", ...}
+                // Typed event passthrough (keep backend metadata intact).
+                // This avoids hard-filtering decision/control/tool events.
                 if (data.type && typeof data.type === "string") {
-                    const flatEventTypes = [
-                        'sequential_start', 'sequential_step', 'sequential_done', 'sequential_error', 'seq_thinking_stream', 'seq_thinking_done',
-                        'mcp_call', 'mcp_result',
-                        'cim_store', 'memory_update',
-                        'workspace_update'
-                    ];
-
-                    if (flatEventTypes.includes(data.type)) {
-                        console.log(`[API] Flat event: ${data.type}`, data);
-                        yield data;  // Pass through as-is!
-                        continue;
-                    }
+                    console.log(`[API] Typed event: ${data.type}`, data);
+                    yield data;
+                    continue;
                 }
 
 
@@ -286,6 +368,7 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
                     yield {
                         type: "done",
                         model: data.model || null,
+                        done_reason: data.done_reason || null,
                         code_model_used: data.code_model_used || false,
                         container_used: data.container_used || false
                     };
@@ -301,16 +384,18 @@ export async function* streamChat(model, messages, conversationId = "webui-defau
 // ═══════════════════════════════════════════════════════════
 // CHAT - DEEP JOBS (ASYNC, POLLING)
 // ═══════════════════════════════════════════════════════════
-export async function submitDeepChatJob(model, messages, conversationId = "webui-default") {
+export async function submitDeepChatJob(model, messages, conversationId = "", options = {}) {
+    const resolvedConversationId = resolveConversationId(conversationId);
     const res = await fetch(`${API_BASE}/api/chat/deep-jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: options?.signal,
         body: JSON.stringify({
             model,
             messages,
             stream: false,
             response_mode: "deep",
-            conversation_id: conversationId,
+            conversation_id: resolvedConversationId,
         }),
     });
 
@@ -321,8 +406,11 @@ export async function submitDeepChatJob(model, messages, conversationId = "webui
     return res.json();
 }
 
-export async function getDeepChatJobStatus(jobId) {
-    const res = await fetch(`${API_BASE}/api/chat/deep-jobs/${encodeURIComponent(jobId)}`);
+export async function getDeepChatJobStatus(jobId, options = {}) {
+    const res = await fetch(
+        `${API_BASE}/api/chat/deep-jobs/${encodeURIComponent(jobId)}`,
+        { signal: options?.signal }
+    );
     if (!res.ok) {
         const errText = await res.text().catch(() => "");
         throw new Error(`Deep job status failed: HTTP ${res.status} ${errText}`.trim());
@@ -330,13 +418,34 @@ export async function getDeepChatJobStatus(jobId) {
     return res.json();
 }
 
+export async function cancelDeepChatJob(jobId, options = {}) {
+    if (!jobId) {
+        throw new Error("Deep job cancel requires jobId");
+    }
+    const res = await fetch(
+        `${API_BASE}/api/chat/deep-jobs/${encodeURIComponent(jobId)}/cancel`,
+        {
+            method: "POST",
+            signal: options?.signal,
+        }
+    );
+    if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Deep job cancel failed: HTTP ${res.status} ${errText}`.trim());
+    }
+    return res.json();
+}
+
 export async function waitForDeepChatJob(
     jobId,
-    { pollIntervalMs = 1500, timeoutMs = 15 * 60 * 1000, onProgress = null } = {}
+    { pollIntervalMs = 1500, timeoutMs = 15 * 60 * 1000, onProgress = null, signal = null } = {}
 ) {
     const started = Date.now();
     while (true) {
-        const status = await getDeepChatJobStatus(jobId);
+        if (signal?.aborted) {
+            throw new DOMException("Aborted", "AbortError");
+        }
+        const status = await getDeepChatJobStatus(jobId, { signal });
         if (typeof onProgress === "function") {
             try {
                 onProgress(status);
@@ -353,7 +462,126 @@ export async function waitForDeepChatJob(
         if ((Date.now() - started) > timeoutMs) {
             throw new Error(`Deep job timeout after ${Math.round(timeoutMs / 1000)}s`);
         }
-        await _sleep(pollIntervalMs);
+        await _sleepWithSignal(pollIntervalMs, signal);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// AUTONOMY JOBS (ASYNC, POLLING)
+// ═══════════════════════════════════════════════════════════
+export async function submitAutonomyJob(objective, conversationId = "", options = {}) {
+    const resolvedConversationId = resolveConversationId(conversationId);
+    const res = await fetch(`${API_BASE}/api/autonomous/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: options?.signal,
+        body: JSON.stringify({
+            objective,
+            conversation_id: resolvedConversationId,
+            ...(Number.isFinite(options?.maxLoops) ? { max_loops: Math.floor(options.maxLoops) } : {}),
+        }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        const err = payload?.error || payload?.error_code || `HTTP ${res.status}`;
+        throw new Error(`Autonomy job submit failed: ${err}`);
+    }
+    return payload;
+}
+
+export async function getAutonomyJobStatus(jobId, options = {}) {
+    if (!jobId) {
+        throw new Error("Autonomy job status requires jobId");
+    }
+    const res = await fetch(
+        `${API_BASE}/api/autonomous/jobs/${encodeURIComponent(jobId)}`,
+        { signal: options?.signal }
+    );
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        const err = payload?.error || payload?.error_code || `HTTP ${res.status}`;
+        throw new Error(`Autonomy job status failed: ${err}`);
+    }
+    return payload;
+}
+
+export async function cancelAutonomyJob(jobId, options = {}) {
+    if (!jobId) {
+        throw new Error("Autonomy job cancel requires jobId");
+    }
+    const res = await fetch(
+        `${API_BASE}/api/autonomous/jobs/${encodeURIComponent(jobId)}/cancel`,
+        {
+            method: "POST",
+            signal: options?.signal,
+        }
+    );
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        const err = payload?.error || payload?.error_code || `HTTP ${res.status}`;
+        throw new Error(`Autonomy job cancel failed: ${err}`);
+    }
+    return payload;
+}
+
+export async function retryAutonomyJob(jobId, options = {}) {
+    if (!jobId) {
+        throw new Error("Autonomy job retry requires jobId");
+    }
+    const res = await fetch(
+        `${API_BASE}/api/autonomous/jobs/${encodeURIComponent(jobId)}/retry`,
+        {
+            method: "POST",
+            signal: options?.signal,
+        }
+    );
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        const err = payload?.error || payload?.error_code || `HTTP ${res.status}`;
+        throw new Error(`Autonomy job retry failed: ${err}`);
+    }
+    return payload;
+}
+
+export async function getAutonomyJobsStats(options = {}) {
+    const res = await fetch(`${API_BASE}/api/autonomous/jobs-stats`, {
+        signal: options?.signal,
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        const err = payload?.error || payload?.error_code || `HTTP ${res.status}`;
+        throw new Error(`Autonomy jobs stats failed: ${err}`);
+    }
+    return payload;
+}
+
+export async function waitForAutonomyJob(
+    jobId,
+    { pollIntervalMs = 1500, timeoutMs = 15 * 60 * 1000, onProgress = null, signal = null } = {}
+) {
+    const started = Date.now();
+    while (true) {
+        if (signal?.aborted) {
+            throw new DOMException("Aborted", "AbortError");
+        }
+        const status = await getAutonomyJobStatus(jobId, { signal });
+        if (typeof onProgress === "function") {
+            try {
+                onProgress(status);
+            } catch {
+                // Progress hooks must not break polling loop.
+            }
+        }
+
+        const state = String(status?.status || "").toLowerCase();
+        if (state === "succeeded") return status;
+        if (["failed", "cancelled"].includes(state)) {
+            throw new Error(status?.error || status?.error_code || "Autonomy job failed");
+        }
+        if ((Date.now() - started) > timeoutMs) {
+            throw new Error(`Autonomy job timeout after ${Math.round(timeoutMs / 1000)}s`);
+        }
+        await _sleepWithSignal(pollIntervalMs, signal);
     }
 }
 

@@ -22,6 +22,9 @@ ALLOWED_MODEL_KEYS: frozenset[str] = frozenset({
     "CONTROL_MODEL",
     "OUTPUT_MODEL",
     "EMBEDDING_MODEL",
+    "THINKING_PROVIDER",
+    "CONTROL_PROVIDER",
+    "OUTPUT_PROVIDER",
 })
 
 # ---------------------------------------------------------------------------
@@ -32,6 +35,9 @@ MODEL_DEFAULTS: Dict[str, str] = {
     "CONTROL_MODEL":   "ministral-3:8b",
     "OUTPUT_MODEL":    "ministral-3:3b",
     "EMBEDDING_MODEL": "hellord/mxbai-embed-large-v1:f16",
+    "THINKING_PROVIDER": "ollama",
+    "CONTROL_PROVIDER": "ollama",
+    "OUTPUT_PROVIDER": "ollama",
 }
 
 

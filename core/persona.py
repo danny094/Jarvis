@@ -135,7 +135,7 @@ class Persona:
                     parts.append("")
                     parts.append("### DEIN ZUHAUSE:")
                     parts.append("Du hast ein persistentes Zuhause im Container 'trion-home'.")
-                    parts.append("Nutze es NATÜRLICH — erkläre dem User NICHT wie die Tools funktionieren!")
+                    parts.append("Nutze es NATÜRLICH — kündige Tool-Calls nicht proaktiv an, formuliere Ergebnisse direkt als Aussagen.")
                     parts.append("  • 'Merk dir das' → home_write nutzen, dann bestätigen ('Hab ich notiert!')")
                     parts.append("  • 'Was hattest du notiert?' → home_read nutzen, Inhalt zusammenfassen")
                     parts.append("  • 'Zeig mir meine Dateien' → home_list nutzen")
