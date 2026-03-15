@@ -690,6 +690,15 @@ class QueryBudgetHybridClassifier:
             return "medium"
         return "medium"
 
+    # Keywords that signal container/env/tool intent even without a hyphenated ID.
+    # "starte einen Ubuntu Container" has no hyphen but must not skip ThinkingLayer.
+    _CONTAINER_ENV_MARKERS = frozenset({
+        "ubuntu", "debian", "alpine", "python", "node", "nodejs", "java", "golang",
+        "linux", "container", "blueprint", "image", "umgebung", "environment", "env",
+        "setup", "einrichten", "aufsetzen", "installier", "install",
+        "starte", "start", "deploy", "run", "erstelle", "create", "build",
+    })
+
     @staticmethod
     def _derive_skip_thinking_candidate(
         query_type: str,
@@ -699,6 +708,12 @@ class QueryBudgetHybridClassifier:
         import re as _re
         lower = (text or "").lower()
         if any(m in lower for m in QueryBudgetHybridClassifier._EXPLICIT_DEEP_MARKERS):
+            return False
+        # Action tokens already defined on the class cover most intent signals.
+        if any(t in lower for t in QueryBudgetHybridClassifier._ACTION_TOKENS):
+            return False
+        # Container/environment keywords without a hyphenated ID (e.g. "starte Ubuntu Container").
+        if any(m in lower for m in QueryBudgetHybridClassifier._CONTAINER_ENV_MARKERS):
             return False
         # Blueprint/skill IDs are hyphenated multi-word identifiers (e.g. "gaming-station",
         # "trion-home", "my-python-skill"). A query mentioning one likely needs ThinkingLayer
