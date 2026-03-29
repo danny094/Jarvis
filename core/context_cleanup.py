@@ -785,6 +785,95 @@ def _apply_event(
         except Exception:
             pass  # fail-closed
 
+    # ── shell_session_summary / trion_shell_summary (alias) ─────────────────
+    # Emitted by container_commander/shell_context_bridge.py when a TRION shell
+    # session ends. Makes shell findings visible in subsequent chat compact context.
+    elif event_type in ("shell_session_summary", "trion_shell_summary"):
+        try:
+            cid = str(event_data.get("container_id", "") or "")[:64]
+            goal = str(event_data.get("goal", "") or "")[:120]
+            findings = str(event_data.get("findings", "") or event_data.get("summary", "") or "")[:200]
+            changes = str(event_data.get("changes_applied", "") or "")[:120]
+            blocker = str(event_data.get("open_blocker", "") or "")[:120]
+            step_count = int(event_data.get("step_count", 0) or 0)
+            blueprint_id = str(event_data.get("blueprint_id", "") or "")[:64]
+
+            # Update container entity so NOW block reflects last shell activity
+            if cid:
+                state.upsert_entity("container", cid, {
+                    "last_action": "shell_session_ended",
+                    "last_change_ts": created_at,
+                    "blueprint_id": blueprint_id or None,
+                })
+                state.upsert_container(cid, {
+                    "blueprint_id": blueprint_id or None,
+                    "updated_at": created_at,
+                })
+
+            # Build a compact fact for NOW/NEXT bullets
+            parts = []
+            if goal:
+                parts.append(f"goal={goal}")
+            if findings:
+                parts.append(f"findings={findings}")
+            if changes:
+                parts.append(f"changed={changes}")
+            if blocker:
+                parts.append(f"blocker={blocker}")
+            if step_count:
+                parts.append(f"steps={step_count}")
+            fact_val = (f"shell_session cid={cid[:12]} " + " ".join(parts))[:200]
+
+            state.add_fact(TypedFact(
+                fact_type="SHELL_SESSION_SUMMARY",
+                value=fact_val,
+                confidence=_compute_fact_confidence("workspace_event", conf_cfg=conf_cfg),
+                observed_at=created_at,
+                source=event_type,
+                source_event_ids=[event_id] if event_id else [],
+            ))
+        except Exception:
+            pass  # fail-closed
+
+    # ── shell_checkpoint ─────────────────────────────────────────────────────
+    # Emitted periodically during a TRION shell session (e.g. every 5 steps or
+    # on significant state changes). Lightweight — only updates container entity,
+    # no separate TypedFact to avoid compact context noise.
+    elif event_type == "shell_checkpoint":
+        try:
+            cid = str(event_data.get("container_id", "") or "")[:64]
+            finding = str(event_data.get("finding", "") or "")[:150]
+            action = str(event_data.get("action_taken", "") or "")[:150]
+            blocker = str(event_data.get("blocker", "") or "")[:100]
+            blueprint_id = str(event_data.get("blueprint_id", "") or "")[:64]
+
+            if cid:
+                state.upsert_entity("container", cid, {
+                    "last_action": "shell_checkpoint",
+                    "last_change_ts": created_at,
+                    "last_error": blocker[:120] if blocker else None,
+                    "blueprint_id": blueprint_id or None,
+                })
+
+            if finding or action:
+                chk_val = f"shell_checkpoint cid={cid[:12]}"
+                if action:
+                    chk_val += f" action={action[:80]}"
+                if finding:
+                    chk_val += f" finding={finding[:80]}"
+                if blocker:
+                    chk_val += f" blocker={blocker[:60]}"
+                state.add_fact(TypedFact(
+                    fact_type="SHELL_CHECKPOINT",
+                    value=chk_val[:200],
+                    confidence=_compute_fact_confidence("workspace_event", conf_cfg=conf_cfg),
+                    observed_at=created_at,
+                    source=event_type,
+                    source_event_ids=[event_id] if event_id else [],
+                ))
+        except Exception:
+            pass  # fail-closed
+
 
 # ---------------------------------------------------------------------------
 # Commit 2: Pipeline step 4 — Apply events to state
