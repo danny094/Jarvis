@@ -51,7 +51,7 @@ async def api_list_blueprints(tag: Optional[str] = None):
 
 
 @router.get("/blueprints/{blueprint_id}")
-async def api_get_blueprint(blueprint_id: str, resolve: bool = True):
+async def api_get_blueprint(blueprint_id: str, resolve: bool = True, hardware_preview: bool = False):
     try:
         if resolve:
             from container_commander.blueprint_store import resolve_blueprint
@@ -65,7 +65,23 @@ async def api_get_blueprint(blueprint_id: str, resolve: bool = True):
                 error_code="not_found",
                 details={"blueprint_id": blueprint_id},
             )
-        return bp.model_dump()
+        payload = bp.model_dump()
+        if hardware_preview:
+            try:
+                from commander_api.hardware_preview import build_blueprint_hardware_preview_payload
+
+                preview_payload = await build_blueprint_hardware_preview_payload(
+                    bp,
+                    connector="container",
+                    target_type="blueprint",
+                    target_id=bp.id,
+                )
+                if isinstance(preview_payload, JSONResponse):
+                    return preview_payload
+                payload["hardware_preview"] = preview_payload
+            except Exception as exc:
+                payload["hardware_preview_error"] = str(exc)
+        return payload
     except Exception as e:
         return exception_response(e)
 
@@ -236,6 +252,7 @@ async def api_deploy_container(request: Request):
         mount_overrides = data.get("mount_overrides")
         storage_scope_override = data.get("storage_scope_override")
         device_overrides = data.get("device_overrides")
+        block_apply_handoff_resource_ids = data.get("block_apply_handoff_resource_ids")
 
         instance = start_container(
             blueprint_id,
@@ -245,10 +262,19 @@ async def api_deploy_container(request: Request):
             mount_overrides=mount_overrides,
             storage_scope_override=storage_scope_override,
             device_overrides=device_overrides,
+            block_apply_handoff_resource_ids=block_apply_handoff_resource_ids,
             session_id=session_id,
             conversation_id=conversation_id,
         )
-        return {"deployed": True, "container": instance.model_dump()}
+        return {
+            "deployed": True,
+            "container": instance.model_dump(),
+            "hardware_deploy": {
+                "block_apply_handoff_resource_ids_requested": list(instance.block_apply_handoff_resource_ids_requested or []),
+                "block_apply_handoff_resource_ids_applied": list(instance.block_apply_handoff_resource_ids_applied or []),
+                "hardware_resolution_preview": dict(instance.hardware_resolution_preview or {}),
+            },
+        }
     except PendingApprovalError as e:
         # P6-C parity: response must include correlation IDs.
         return JSONResponse(
@@ -257,6 +283,7 @@ async def api_deploy_container(request: Request):
                 "pending_approval": True,
                 "approval_id": e.approval_id,
                 "reason": e.reason,
+                "block_apply_handoff_resource_ids_requested": list(block_apply_handoff_resource_ids or []),
                 "conversation_id": conversation_id or None,
                 "session_id": session_id or None,
             },
@@ -289,6 +316,7 @@ async def api_deploy_container(request: Request):
 from commander_api.secrets import router as secrets_router
 from commander_api.containers import router as containers_router
 from commander_api.audit import router as audit_router
+from commander_api.hardware import router as hardware_router
 from commander_api.storage import router as storage_router
 from commander_api.operations import router as operations_router
 try:
@@ -300,6 +328,7 @@ except ModuleNotFoundError as e:
 router.include_router(secrets_router)
 router.include_router(containers_router)
 router.include_router(audit_router)
+router.include_router(hardware_router)
 router.include_router(storage_router)
 router.include_router(operations_router)
 if trion_memory_router is not None:

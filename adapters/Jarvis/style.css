@@ -167,8 +167,13 @@
 
 /* App Window Transitions */
 .app-window {
+    min-height: 0;
     opacity: 0;
     transition: opacity 0.2s ease-in-out;
+}
+
+#app-viewport {
+    min-height: 0;
 }
 
 .app-window.active {

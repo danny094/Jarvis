@@ -36,6 +36,92 @@ Basis-Analysen: [[20-TRION-Chat-Shell-Memory-und-Kontext-Analyse]] / [[21-TRION-
 - `tests/unit/test_shell_context_bridge_contract.py` (17 Tests — inkl. Identity + Memory)
 - `tests/unit/test_context_cleanup_shell_events.py` (14 Tests)
 
+### Nachtrag: Live-Flow-Fix (2026-03-29, spaeter)
+
+Die erste Implementierung von Phase 1 + 2 hat die **Kontextbruecke inhaltlich** gebaut, aber zwei operative Luecken offen gelassen:
+
+1. TRION antwortete in `trion-shell` teils wieder auf Englisch
+2. Shell-Unterhaltungen tauchten nicht live im Agent Workspace auf
+
+#### Ursache 1: Sprachwahl war zu instabil
+
+`api_trion_shell_step()` hat die Sprache zwar pro Step neu bewertet, ist aber bei kurzen oder uneindeutigen Follow-ups faktisch leicht auf Englisch zurueckgefallen.
+
+Typische Problemfaelle:
+
+- Shell-Session wurde ohne klares deutsches Startziel gestartet
+- Follow-up war nur `weiter`, `pruef das`, `ok`, `mach weiter`
+- UI-Sprache oder Mission-State wurden nicht als stabile Sprachpraeferenz priorisiert
+
+#### Fix 1: stabiler Shell-Language-Resolver
+
+In `adapters/admin-api/commander_api/containers.py` wurde ein stabilerer Resolver eingefuehrt:
+
+- `_mission_state_prefers_german(...)`
+- `_resolve_shell_language(...)`
+
+Reihenfolge jetzt:
+
+1. bestehende Session-Sprache
+2. UI-Sprache
+3. deutscher Hinweis im `mission_state`
+4. erst danach Heuristik auf dem aktuellen User-Text
+
+Ergebnis:
+
+- kurze Shell-Folgeeingaben kippen nicht mehr unnötig auf Englisch
+- wenn User/UI/Mission-State deutsch sind, bleibt `trion-shell` deutsch
+
+#### Ursache 2: Shell-Events wurden nur gespeichert, nicht live gespiegelt
+
+`workspace_event_save` speichert Events in `workspace_events`, erzeugt aber **selbst kein** `workspace_update`-SSE.
+
+Das ist im Chatpfad unkritisch, weil der Orchestrator nach dem Save selbst ein `workspace_update` erzeugt.
+
+Im `trion-shell`-Pfad fehlte genau diese Rueckspiegelung:
+
+- Shell lief ueber Commander-WebSocket
+- Agent Workspace hoert auf den globalen `sse-event`-Bus
+- Shell-Summary/Checkpoint lagen damit zwar in der DB, aber nicht live im Workspace
+
+#### Fix 2: persistierte Shell-Events live als `workspace_update` spiegeln
+
+In `container_commander/shell_context_bridge.py` wurde nach dem Speichern eine Live-Spiegelung ergaenzt:
+
+- `save_shell_session_summary(...)` speichert weiter in `workspace_events`
+- `save_shell_checkpoint(...)` speichert weiter in `workspace_events`
+- beide emittieren danach zusaetzlich ein Commander-Event `workspace_update`
+
+In `adapters/Jarvis/js/apps/terminal/websocket.js` wird dieses Commander-Event jetzt in den globalen `sse-event`-Bus weitergereicht.
+
+Ergebnis:
+
+- Shell-Summaries erscheinen live im Agent Workspace
+- Shell-Checkpoints koennen ebenfalls sofort sichtbar werden
+- Reload ist fuer die Sichtbarkeit der neuen Events nicht mehr noetig
+
+#### Zusatzfix: Checkpoints sind jetzt im echten Flow aktiv
+
+Die fruehere Notiz, dass `save_shell_checkpoint()` zwar implementiert aber noch nicht aufgerufen wird, ist **ueberholt**.
+
+Aktueller Stand:
+
+- `api_trion_shell_step()` schreibt jetzt pro Shell-Schritt einen `shell_checkpoint`
+- sowohl fuer normale Schritte
+- als auch fuer fruehe Stop-/Blocker-Faelle
+
+Wichtig:
+
+- Das ist operativ hilfreich fuer UI-/Workspace-Sichtbarkeit
+- Fuer spaetere Phase 3 kann die Frequenz immer noch reduziert oder formalisiert werden
+
+#### Verifikation
+
+Geprueft mit:
+
+- `python -m pytest tests/unit/test_shell_context_bridge_contract.py tests/unit/test_frontend_terminal_trion_shell_mode_contract.py tests/unit/test_trion_shell_language_contract.py tests/unit/test_context_cleanup_shell_events.py`
+- `node --check adapters/Jarvis/js/apps/terminal/websocket.js`
+
 ### Noch offen (nächste Phasen aus [[22-TRION-Chat-Shell-Implementationsplan]])
 
 - Phase 3: `exec_in_container` stdout-Snippet ins `container_exec`-Event aufnehmen
@@ -46,7 +132,13 @@ Basis-Analysen: [[20-TRION-Chat-Shell-Memory-und-Kontext-Analyse]] / [[21-TRION-
 
 ### Bekannte Einschränkung
 
-`save_shell_checkpoint()` ist implementiert aber noch nicht aufgerufen — der Aufrufer in `containers.py` muss noch entscheiden bei welchen Steps (z.B. alle 5 oder bei `shell_change_applied`) ein Checkpoint sinnvoll ist. Erst aktivieren wenn Phase 3 (Shell-Control-Modus) steht, damit die Frequenz kontrollierbar bleibt.
+`save_shell_checkpoint()` ist jetzt aktiv im Step-Flow verdrahtet. Die noch offene Frage ist nicht mehr **ob** Checkpoints geschrieben werden, sondern **wie stark sie spaeter gedrosselt oder formalisiert** werden sollen.
+
+Offen fuer Phase 3:
+
+- nur bei Zustandsaenderung statt bei jedem Step
+- nur bei `write_change` / Blocker / signifikanten Verifikationswechseln
+- saubere Kopplung an einen offiziellen Shell-Control-Modus statt pragmatischem Step-Hook
 
 ---
 

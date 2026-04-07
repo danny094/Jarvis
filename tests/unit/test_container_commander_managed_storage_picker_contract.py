@@ -11,10 +11,14 @@ def test_terminal_preflight_contains_managed_storage_picker_and_payload_wiring()
     assert "apiRequest('/storage/managed-paths'" in src
     assert 'id="pf-storage-path"' in src
     assert 'id="pf-devices"' in src
+    assert "findManagedCatalogItem" in src
+    assert "default_mode" in src
     assert "parseDeviceOverrides" in src
     assert "payload.device_overrides = devices;" in src
     assert "payload.mount_overrides = [" in src
+    assert "asset_id: String(selectedManaged?.asset_id" in src
     assert "payload.storage_scope_override = '__auto__';" in src
+    assert "cannot be mounted rw" in src
 
 
 def test_commander_route_forwards_mount_overrides_and_scope_override():
@@ -32,6 +36,8 @@ def test_storage_router_exposes_managed_paths_catalog_endpoint():
     assert "@router.get(\"/storage/managed-paths\")" in src
     assert "storage_list_managed_paths" in src
     assert "\"catalog\":" in src
+    assert "\"source\": \"storage_asset\"" in src
+    assert "\"source_origin\"" in src
 
 
 def test_engine_runtime_mount_override_and_auto_scope_present():
@@ -39,6 +45,9 @@ def test_engine_runtime_mount_override_and_auto_scope_present():
     assert "def _normalize_runtime_mount_overrides" in src
     assert "def _normalize_runtime_device_overrides" in src
     assert "def _compose_runtime_blueprint" in src
+    assert "deploy_auto_asset_" in src
+    assert "storage_asset_not_found" in src
+    assert "storage_asset_read_only" in src
     assert "runtime_device_overrides" in src
     assert "force_auto_scope" in src
     assert "deploy_auto_" in src
@@ -54,3 +63,5 @@ def test_approval_persists_and_replays_mount_override_context():
     assert "\"device_overrides\":" in src
     assert "mount_overrides=approval.mount_overrides" in src
     assert "device_overrides=approval.device_overrides" in src
+    assert "storage_assets:" in _read("adapters/Jarvis/js/apps/terminal.js")
+    assert "storage_scope:" in _read("adapters/Jarvis/js/apps/terminal.js")

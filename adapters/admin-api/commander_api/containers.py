@@ -80,6 +80,36 @@ def _reply_language(user_text: str, ui_language: str = "") -> str:
     return "de" if _looks_german(user_text, ui_language=ui_language) else "en"
 
 
+def _mission_state_prefers_german(mission_state: str) -> bool:
+    text = str(mission_state or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(r"\b(language|sprache):\s*(de|de-de|deutsch|german)\b", text)
+        or re.search(r"\b(reply in|antwort(?:e|en)? in)\s+german\b", text)
+    )
+
+
+def _resolve_shell_language(
+    *,
+    user_text: str = "",
+    ui_language: str = "",
+    session_language: str = "",
+    mission_state: str = "",
+) -> str:
+    """
+    Prefer a stable German preference from UI/session/mission state over a single
+    ambiguous short follow-up like "weiter", "prüf das" or "ok".
+    """
+    if str(session_language or "").strip().lower().startswith("de"):
+        return "de"
+    if str(ui_language or "").strip().lower().startswith("de"):
+        return "de"
+    if _mission_state_prefers_german(mission_state):
+        return "de"
+    return _reply_language(user_text, ui_language=ui_language)
+
+
 def _localized_labels(language: str) -> Dict[str, str]:
     if language == "de":
         return {
@@ -231,6 +261,46 @@ def _save_shell_summary_event(
         })
     except Exception as save_err:
         logger.error("[Commander] Failed to save TRION shell summary: %s", save_err)
+
+
+def _persist_shell_step_checkpoint(
+    *,
+    conversation_id: str,
+    container_id: str,
+    blueprint_id: str,
+    instruction: str,
+    assistant_text: str,
+    command: str,
+    stop_reason: str,
+    blocker_detail: str,
+    step_count: int,
+) -> None:
+    if not conversation_id or conversation_id == "global":
+        return
+    try:
+        from container_commander.shell_context_bridge import save_shell_checkpoint
+
+        summary_lines = []
+        if assistant_text:
+            summary_lines.append(str(assistant_text).strip())
+        if command:
+            summary_lines.append(f"Command: {str(command).strip()}")
+        elif stop_reason:
+            summary_lines.append(f"Stop: {str(stop_reason).strip()}")
+
+        save_shell_checkpoint(
+            conversation_id=conversation_id,
+            container_id=container_id,
+            blueprint_id=blueprint_id,
+            goal=str(instruction or "").strip(),
+            finding=str(assistant_text or "").strip(),
+            action_taken=str(command or stop_reason or "analysis_only").strip(),
+            blocker=str(blocker_detail or "").strip(),
+            step_count=int(step_count or 0),
+            raw_summary="\n".join(summary_lines),
+        )
+    except Exception as checkpoint_err:
+        logger.debug("[Commander] Shell checkpoint persist failed: %s", checkpoint_err)
 
 
 def _shell_command_fingerprint(command: str) -> str:
@@ -639,12 +709,13 @@ async def api_trion_debug_container(container_id: str, request: Request):
         container = client.containers.get(container_id)
         container.reload()
 
+        canonical_container_id = str(getattr(container, "id", "") or container_id).strip()
         blueprint_id = str(container.labels.get("trion.blueprint", "") or "").strip()
         container_name = str(getattr(container, "name", "") or "").strip()
         status = str(getattr(container, "status", "") or "").strip()
 
-        stats = get_container_stats(container_id)
-        logs = str(get_container_logs(container_id, 120) or "")[-12000:]
+        stats = get_container_stats(canonical_container_id)
+        logs = str(get_container_logs(canonical_container_id, 120) or "")[-12000:]
 
         diagnostics = {
             "executed": False,
@@ -655,7 +726,7 @@ async def api_trion_debug_container(container_id: str, request: Request):
         }
         try:
             diag = exec_in_container_detailed(
-                container_id,
+                canonical_container_id,
                 (
                     "sh -lc 'pwd 2>/dev/null || true; printf \"\\n\"; "
                     "(id -un 2>/dev/null || whoami 2>/dev/null || true); printf \"\\n\"; "
@@ -691,7 +762,13 @@ async def api_trion_debug_container(container_id: str, request: Request):
             "ports": stats.get("ports", [])[:8],
         }
 
-        _remember_container_state(conversation_id, container_id, blueprint_id, status, container_name)
+        _remember_container_state(
+            conversation_id,
+            canonical_container_id,
+            blueprint_id,
+            status,
+            container_name,
+        )
 
         messages = [
             {
@@ -758,23 +835,34 @@ async def api_trion_shell_start(container_id: str, request: Request):
         conversation_id = str(data.get("conversation_id", "") or "").strip() or "global"
         ui_language = str(data.get("ui_language", "") or "").strip()
         initial_goal = str(data.get("goal", "") or "").strip()
-        language = _reply_language(initial_goal, ui_language=ui_language)
+        from container_commander.shell_context_bridge import build_mission_state
+        mission_state = await build_mission_state(conversation_id)
+        language = _resolve_shell_language(
+            user_text=initial_goal,
+            ui_language=ui_language,
+            mission_state=mission_state,
+        )
         labels = _localized_labels(language)
 
         client = get_client()
         container = client.containers.get(container_id)
         container.reload()
+        canonical_container_id = str(getattr(container, "id", "") or container_id).strip()
         blueprint_id = str(container.labels.get("trion.blueprint", "") or "").strip()
         container_name = str(getattr(container, "name", "") or "").strip()
         status = str(getattr(container, "status", "") or "").strip()
-        _remember_container_state(conversation_id, container_id, blueprint_id, status, container_name)
+        _remember_container_state(
+            conversation_id,
+            canonical_container_id,
+            blueprint_id,
+            status,
+            container_name,
+        )
 
-        key = _shell_session_key(conversation_id, container_id)
-        from container_commander.shell_context_bridge import build_mission_state
-        mission_state = await build_mission_state(conversation_id)
+        key = _shell_session_key(conversation_id, canonical_container_id)
         session = {
             "conversation_id": conversation_id,
-            "container_id": container_id,
+            "container_id": canonical_container_id,
             "container_name": container_name,
             "blueprint_id": blueprint_id,
             "language": language,
@@ -798,7 +886,7 @@ async def api_trion_shell_start(container_id: str, request: Request):
             "trion_shell_mode_started",
             level="info",
             message=labels["shell_started"],
-            container_id=container_id,
+            container_id=canonical_container_id,
             blueprint_id=blueprint_id,
             conversation_id=conversation_id,
         )
@@ -806,7 +894,7 @@ async def api_trion_shell_start(container_id: str, request: Request):
             "ok": True,
             "active": True,
             "conversation_id": conversation_id,
-            "container_id": container_id,
+            "container_id": canonical_container_id,
             "language": language,
             "message": labels["shell_started"],
         }
@@ -834,30 +922,29 @@ async def api_trion_shell_step(container_id: str, request: Request):
                 details={"active": False, "container_id": container_id},
             )
 
-        key = _shell_session_key(conversation_id, container_id)
-        with _TRION_SHELL_LOCK:
-            session = dict(_TRION_SHELL_SESSIONS.get(key) or {})
-
         client = get_client()
         container = client.containers.get(container_id)
         container.reload()
+        canonical_container_id = str(getattr(container, "id", "") or container_id).strip()
+        key = _shell_session_key(conversation_id, canonical_container_id)
+        with _TRION_SHELL_LOCK:
+            session = dict(_TRION_SHELL_SESSIONS.get(key) or {})
         attrs = container.attrs or {}
         blueprint_id = str(container.labels.get("trion.blueprint", "") or "").strip()
         container_name = str(getattr(container, "name", "") or "").strip()
         status = str(getattr(container, "status", "") or "").strip()
         image_ref = str(((attrs or {}).get("Config") or {}).get("Image") or "").strip()
-        # Re-detect language per step: if current instruction is German, use German
-        # regardless of session default (session may have been started with empty/English goal)
-        _detected = _reply_language(instruction, ui_language=ui_language)
-        language = "de" if _detected == "de" else str(session.get("language") or "en").strip() or "en"
+        mission_state = str(session.get("mission_state") or "").strip()
 
         if not session:
+            from container_commander.shell_context_bridge import build_mission_state
+            mission_state = await build_mission_state(conversation_id)
             session = {
                 "conversation_id": conversation_id,
-                "container_id": container_id,
+                "container_id": canonical_container_id,
                 "container_name": container_name,
                 "blueprint_id": blueprint_id,
-                "language": language,
+                "language": "",
                 "created_at": _utc_now(),
                 "updated_at": _utc_now(),
                 "step_count": 0,
@@ -869,14 +956,28 @@ async def api_trion_shell_step(container_id: str, request: Request):
                 "last_verification": {},
                 "last_stop_reason": "",
                 "step_history": [],
+                "mission_state": mission_state,
             }
+        language = _resolve_shell_language(
+            user_text=instruction,
+            ui_language=ui_language,
+            session_language=str(session.get("language") or ""),
+            mission_state=mission_state,
+        )
         session.setdefault("step_history", [])
         session.setdefault("commands", [])
         session.setdefault("user_requests", [])
         session.setdefault("last_verification", {})
         session.setdefault("last_stop_reason", "")
+        session.setdefault("mission_state", mission_state)
 
-        _remember_container_state(conversation_id, container_id, blueprint_id, status, container_name)
+        _remember_container_state(
+            conversation_id,
+            canonical_container_id,
+            blueprint_id,
+            status,
+            container_name,
+        )
 
         prior_tail = str(session.get("last_shell_tail") or "").strip()
         effective_tail = (shell_tail or prior_tail or "")[-12000:]
@@ -885,7 +986,7 @@ async def api_trion_shell_step(container_id: str, request: Request):
             session=session,
             shell_tail=effective_tail,
             language=language,
-            container_id=container_id,
+            container_id=canonical_container_id,
             container_name=container_name,
             blueprint_id=blueprint_id,
         )
@@ -900,6 +1001,7 @@ async def api_trion_shell_step(container_id: str, request: Request):
             blueprint_id=blueprint_id,
             image_ref=image_ref,
             instruction=instruction,
+            query_class="active_container_capability",
             shell_tail=effective_tail,
             container_tags=addon_tags,
         )
@@ -952,6 +1054,17 @@ async def api_trion_shell_step(container_id: str, request: Request):
             session["step_history"] = list(session["step_history"])[-12:]
             with _TRION_SHELL_LOCK:
                 _TRION_SHELL_SESSIONS[key] = session
+            _persist_shell_step_checkpoint(
+                conversation_id=conversation_id,
+                container_id=container_id,
+                blueprint_id=blueprint_id,
+                instruction=instruction,
+                assistant_text=assistant_text,
+                command="",
+                stop_reason=stop_reason,
+                blocker_detail=str((verification or {}).get("reason") or blocker.get("reason") or ""),
+                step_count=int(session.get("step_count", 0) or 0),
+            )
             return {
                 "ok": True,
                 "active": True,
@@ -1111,6 +1224,22 @@ async def api_trion_shell_step(container_id: str, request: Request):
 
         with _TRION_SHELL_LOCK:
             _TRION_SHELL_SESSIONS[key] = session
+        _persist_shell_step_checkpoint(
+            conversation_id=conversation_id,
+            container_id=container_id,
+            blueprint_id=blueprint_id,
+            instruction=instruction,
+            assistant_text=assistant_text,
+            command=command,
+            stop_reason=stop_reason,
+            blocker_detail=str(
+                verification_reason
+                or (verification or {}).get("reason")
+                or blocker.get("reason")
+                or ""
+            ),
+            step_count=int(session.get("step_count", 0) or 0),
+        )
 
         return {
             "ok": True,
@@ -1138,18 +1267,29 @@ async def api_trion_shell_step(container_id: str, request: Request):
 async def api_trion_shell_stop(container_id: str, request: Request):
     """Stop TRION shell-control mode and persist a compact session summary."""
     try:
+        from container_commander.engine import get_client
         from container_commander.ws_stream import emit_activity
 
         data = await request.json()
         conversation_id = str(data.get("conversation_id", "") or "").strip() or "global"
         shell_tail = str(data.get("shell_tail", "") or "")
         ui_language = str(data.get("ui_language", "") or "").strip()
-        key = _shell_session_key(conversation_id, container_id)
+        canonical_container_id = str(container_id or "").strip()
+        try:
+            container = get_client().containers.get(container_id)
+            canonical_container_id = str(getattr(container, "id", "") or canonical_container_id).strip()
+        except Exception:
+            pass
+        key = _shell_session_key(conversation_id, canonical_container_id)
 
         with _TRION_SHELL_LOCK:
             session = dict(_TRION_SHELL_SESSIONS.pop(key, {}) or {})
 
-        language = str(session.get("language") or _reply_language("", ui_language=ui_language)).strip() or "en"
+        language = _resolve_shell_language(
+            ui_language=ui_language,
+            session_language=str(session.get("language") or ""),
+            mission_state=str(session.get("mission_state") or ""),
+        )
         labels = _localized_labels(language)
         container_name = str(session.get("container_name") or "")
         blueprint_id = str(session.get("blueprint_id") or "")

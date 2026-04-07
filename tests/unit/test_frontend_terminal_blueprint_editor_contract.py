@@ -7,16 +7,16 @@ def _read(path: str) -> str:
 
 
 def test_terminal_blueprint_editor_uses_structured_form_layout():
-    src = _read("adapters/Jarvis/js/apps/terminal.js")
+    src = _read("adapters/Jarvis/js/apps/terminal/blueprint-editor.js")
     assert 'id="bp-editor-form"' in src
     assert 'class="bp-editor-form"' in src
     assert 'class="bp-editor-head"' in src
     assert 'class="bp-editor-grid bp-editor-grid-3"' in src
-    assert 'class="bp-editor-grid bp-editor-grid-5"' in src
+    assert 'class="bp-editor-grid bp-editor-grid-2"' in src
 
 
 def test_terminal_blueprint_editor_exposes_new_runtime_fields():
-    src = _read("adapters/Jarvis/js/apps/terminal.js")
+    src = _read("adapters/Jarvis/js/apps/terminal/blueprint-editor.js")
     assert 'id="bp-ed-image"' in src
     assert 'id="bp-ed-swap"' in src
     assert 'id="bp-ed-pids"' in src
@@ -28,7 +28,7 @@ def test_terminal_blueprint_editor_exposes_new_runtime_fields():
 
 
 def test_terminal_blueprint_editor_validates_and_builds_extended_payload():
-    src = _read("adapters/Jarvis/js/apps/terminal.js")
+    src = _read("adapters/Jarvis/js/apps/terminal/blueprint-editor.js")
     assert "function validateBlueprintFormAndBuildPayload()" in src
     assert "if (!dockerfile && !image) {" in src
     assert "const mountParse = parseBlueprintMounts(mountsRaw);" in src
@@ -42,7 +42,7 @@ def test_terminal_blueprint_editor_validates_and_builds_extended_payload():
 
 
 def test_terminal_blueprint_editor_has_error_summary_and_close_controls():
-    src = _read("adapters/Jarvis/js/apps/terminal.js")
+    src = _read("adapters/Jarvis/js/apps/terminal/blueprint-editor.js")
     assert 'id="bp-editor-errors"' in src
     assert "renderBlueprintEditorErrorSummary(errors);" in src
     assert "id=\"bp-editor-close\"" in src

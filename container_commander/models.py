@@ -56,6 +56,43 @@ class MountDef(BaseModel):
     container: str = Field(..., description="Container mount path")
     type: str = Field(default="bind", description="Mount type: bind or volume")
     mode: str = Field(default="rw", description="ro or rw")
+    asset_id: Optional[str] = Field(default=None, description="Optional published storage asset id backing this mount")
+
+
+class PreStartExec(BaseModel):
+    """Optional pre-start hook executed before the main container launch."""
+    user: str = Field(default="", description="User inside the helper container")
+    command: str = Field(default="", description="Shell command executed before launch")
+
+
+class StorageAsset(BaseModel):
+    """Storage Manager path published for optional Container Commander use."""
+    id: str = Field(..., description="Stable asset identifier")
+    label: str = Field(default="", description="Display label shown in pickers")
+    path: str = Field(..., description="Absolute host path")
+    zone: str = Field(default="managed_services", description="Storage Broker zone")
+    policy_state: str = Field(default="managed_rw", description="Storage Broker policy state")
+    published_to_commander: bool = Field(default=False, description="Whether the asset is selectable in Commander")
+    default_mode: str = Field(default="ro", description="Default mount mode: ro or rw")
+    allowed_for: List[str] = Field(
+        default_factory=list,
+        description="Intended usage hints (appdata/media/backup/workspace/games)",
+    )
+    source_disk_id: Optional[str] = Field(default=None, description="Originating disk or partition id")
+    source_kind: str = Field(default="manual", description="manual | service_dir | existing_path | import")
+    notes: str = Field(default="", description="Operator notes")
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class HardwareIntent(BaseModel):
+    """Structured desired hardware/resource attachment stored on a blueprint."""
+    resource_id: str = Field(..., description="Stable hardware resource identifier")
+    target_type: str = Field(default="container", description="Intended runtime target type")
+    target_id: str = Field(default="", description="Optional target identifier placeholder")
+    attachment_mode: str = Field(default="attach", description="Desired action such as attach/detach")
+    policy: Dict[str, Any] = Field(default_factory=dict, description="Connector-specific desired policy")
+    requested_by: str = Field(default="", description="Optional actor/source marker")
 
 
 # ── Secret Reference ──────────────────────────────────────
@@ -136,6 +173,10 @@ class Blueprint(BaseModel):
         default_factory=list,
         description="Host devices passed through to container (e.g. ['/dev/dri:/dev/dri'])",
     )
+    hardware_intents: List[HardwareIntent] = Field(
+        default_factory=list,
+        description="Structured desired hardware/resource attachments resolved later via runtime-hardware.",
+    )
     environment: Dict[str, str] = Field(
         default_factory=dict,
         description="Static environment variables (non-secret).",
@@ -144,11 +185,35 @@ class Blueprint(BaseModel):
         default_factory=dict,
         description="Docker healthcheck configuration (test/interval/timeout/retries/start_period).",
     )
+    pre_start_exec: Optional[PreStartExec] = Field(
+        default=None,
+        description="Optional pre-start hook executed in a short-lived helper container before launch.",
+    )
     cap_add: List[str] = Field(
         default_factory=list,
         description="Additional Linux capabilities (e.g. ['NET_ADMIN']).",
     )
+    security_opt: List[str] = Field(
+        default_factory=list,
+        description="Docker security options (e.g. ['seccomp=unconfined']).",
+    )
+    cap_drop: List[str] = Field(
+        default_factory=list,
+        description="Linux capabilities to drop explicitly (e.g. ['NET_RAW']).",
+    )
+    privileged: bool = Field(
+        default=False,
+        description="Run container in privileged mode. High risk; requires approval.",
+    )
+    read_only_rootfs: bool = Field(
+        default=False,
+        description="Run container with a read-only root filesystem.",
+    )
     shm_size: str = Field(default="", description="Shared memory size (e.g. '1g').")
+    ipc_mode: str = Field(
+        default="",
+        description="Docker IPC mode (e.g. 'host').",
+    )
     
     # Network
     network: NetworkMode = Field(default=NetworkMode.INTERNAL)
@@ -203,6 +268,12 @@ class ContainerInstance(BaseModel):
     # Session tracking (set at start, persisted in Docker labels)
     session_id: str = ""  # conversation_id that started this container
 
+    # Advisory warnings from package postchecks (e.g. streaming backend not found)
+    deploy_warnings: List[Dict] = Field(default_factory=list)
+    hardware_resolution_preview: Dict[str, Any] = Field(default_factory=dict)
+    block_apply_handoff_resource_ids_requested: List[str] = Field(default_factory=list)
+    block_apply_handoff_resource_ids_applied: List[str] = Field(default_factory=list)
+
 
 # ── Quota ─────────────────────────────────────────────────
 
@@ -247,10 +318,16 @@ class BlueprintCreateRequest(BaseModel):
     ports: List[str] = Field(default_factory=list)
     runtime: str = ""
     devices: List[str] = Field(default_factory=list)
+    hardware_intents: List[HardwareIntent] = Field(default_factory=list)
     environment: Dict[str, str] = Field(default_factory=dict)
     healthcheck: Dict[str, Any] = Field(default_factory=dict)
     cap_add: List[str] = Field(default_factory=list)
+    security_opt: List[str] = Field(default_factory=list)
+    cap_drop: List[str] = Field(default_factory=list)
+    privileged: bool = False
+    read_only_rootfs: bool = False
     shm_size: str = ""
+    ipc_mode: str = ""
     network: NetworkMode = NetworkMode.INTERNAL
     tags: List[str] = Field(default_factory=list)
     icon: str = "📦"

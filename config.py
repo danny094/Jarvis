@@ -1,4 +1,5 @@
 import os
+from utils.service_endpoint_resolver import default_service_endpoint
 
 # ═══════════════════════════════════════════════════════════════
 # CORS
@@ -24,7 +25,7 @@ except (ModuleNotFoundError, ImportError):
 # ═══════════════════════════════════════════════════════════════
 # SERVICES
 # ═══════════════════════════════════════════════════════════════
-OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://host.docker.internal:11434")
+OLLAMA_BASE = os.getenv("OLLAMA_BASE", default_service_endpoint("ollama", 11434))
 MCP_BASE = os.getenv("MCP_BASE", "http://mcp-sql-memory:8081")
 VALIDATOR_URL = os.getenv("VALIDATOR_URL", "http://validator-service:8000")
 # Legacy compatibility: some tests/modules still patch/read config.DB_PATH directly.

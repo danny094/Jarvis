@@ -117,6 +117,9 @@ app.include_router(commander_router, prefix="/api/commander")
 from secrets_routes import router as secrets_router
 app.include_router(secrets_router, prefix="/api/secrets")
 
+from vault_routes import router as vault_router
+app.include_router(vault_router, prefix="/api/vault")
+
 # TRION Home Memory API (optional to avoid hard boot-fail on stale container images)
 try:
     from trion_memory_routes import router as trion_memory_router
@@ -130,6 +133,12 @@ if trion_memory_router is not None:
 # Runtime telemetry (Phase 8 Operational — digest pipeline state)
 from runtime_routes import router as runtime_router
 app.include_router(runtime_router)
+
+try:
+    from runtime_hardware_routes import router as runtime_hardware_router
+    app.include_router(runtime_hardware_router, prefix="/api/runtime-hardware")
+except ModuleNotFoundError as e:
+    logger.warning("Runtime hardware routes unavailable (%s) - /api/runtime-hardware disabled", e)
 
 # Storage Broker Settings (frontend policy config + proxy to storage-broker MCP)
 try:
@@ -2153,7 +2162,7 @@ async def startup_event():
     logger.info("Port: 8200")
     logger.info("Features: Personas, Maintenance, Chat, MCP Hub, Skill-Server")
     logger.info("MCP Hub: /mcp (tools/list, tools/call)")
-    logger.info("Docs: http://localhost:8200/docs")
+    logger.info("Docs: /docs")
     logger.info("=" * 60)
 
     # Daily Auto-Summarize: läuft täglich um 04:00 Uhr
@@ -2222,6 +2231,18 @@ async def startup_event():
         await asyncio.to_thread(backfill_exec_policies)
     except Exception as e:
         logger.warning(f"[Startup] Exec policy backfill fehlgeschlagen (non-critical): {e}")
+
+    try:
+        from container_commander.runtime_hardware_blueprint import ensure_runtime_hardware_blueprint
+        await asyncio.to_thread(ensure_runtime_hardware_blueprint)
+    except Exception as e:
+        logger.warning(f"[Startup] runtime-hardware blueprint init fehlgeschlagen (non-critical): {e}")
+
+    try:
+        from container_commander.filestash_blueprint import ensure_filestash_blueprint
+        await asyncio.to_thread(ensure_filestash_blueprint)
+    except Exception as e:
+        logger.warning(f"[Startup] filestash blueprint init fehlgeschlagen (non-critical): {e}")
 
     # Blueprint Graph Sync: Blueprints aus SQLite → memory graph (_blueprints conv_id)
     async def _sync_blueprints():

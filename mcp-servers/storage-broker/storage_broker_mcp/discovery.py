@@ -31,7 +31,7 @@ _SYSTEM_MOUNTS = frozenset({
 })
 
 # lsblk columns we need
-_LSBLK_COLS = "NAME,PATH,UUID,LABEL,FSTYPE,SIZE,MOUNTPOINTS,RM,RO,TYPE"
+_LSBLK_COLS = "NAME,PATH,UUID,LABEL,PARTLABEL,FSTYPE,SIZE,MOUNTPOINTS,RM,RO,TYPE"
 _MOUNTS_PATH = os.environ.get("STORAGE_MOUNTS_PATH", "/proc/mounts")
 _MOUNTS_FALLBACK_PATHS = [
     p.strip()
@@ -101,7 +101,8 @@ def _parse_lsblk() -> List[Dict]:
                 "name": dev.get("name", ""),
                 "path": dev.get("path", "") or f"/dev/{dev.get('name','')}",
                 "uuid": dev.get("uuid", "") or "",
-                "label": dev.get("label", "") or "",
+                "label": dev.get("label", "") or dev.get("partlabel", "") or "",
+                "partlabel": dev.get("partlabel", "") or "",
                 "fstype": fs,
                 "size": int(dev.get("size", 0) or 0),
                 "mountpoints": mpts,
@@ -113,6 +114,68 @@ def _parse_lsblk() -> List[Dict]:
 
     _walk(data.get("blockdevices", []))
     return flat
+
+
+def _device_symlink_name_map(directory: str) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    try:
+        entries = os.listdir(directory)
+    except Exception:
+        return result
+
+    for entry in entries:
+        link_path = os.path.join(directory, entry)
+        try:
+            real = os.path.realpath(link_path)
+        except Exception:
+            continue
+        if real.startswith("/dev/") and real not in result:
+            result[real] = entry
+    return result
+
+
+def _blkid_info(device: str) -> Dict[str, str]:
+    raw = _run(["blkid", "-o", "export", str(device or "").strip()])
+    if not raw:
+        return {}
+
+    props: Dict[str, str] = {}
+    for line in raw.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = str(key or "").strip()
+        if key:
+            props[key] = str(value or "").strip()
+    return props
+
+
+def _enrich_device_metadata(raw_devs: List[Dict]) -> List[Dict]:
+    by_label = _device_symlink_name_map("/dev/disk/by-label")
+    by_partlabel = _device_symlink_name_map("/dev/disk/by-partlabel")
+
+    enriched: List[Dict] = []
+    for dev in list(raw_devs or []):
+        item = dict(dev or {})
+        device = str(item.get("path") or "").strip()
+        if device.startswith("/dev/"):
+            partlabel = str(item.get("partlabel") or "").strip() or by_partlabel.get(device, "")
+            label = str(item.get("label") or "").strip() or by_label.get(device, "") or partlabel
+            fstype = str(item.get("fstype") or "").strip()
+            uuid = str(item.get("uuid") or "").strip()
+
+            if not uuid or not fstype or not label:
+                blkid = _blkid_info(device)
+                uuid = uuid or str(blkid.get("UUID") or "").strip()
+                fstype = fstype or str(blkid.get("TYPE") or "").strip()
+                label = label or str(blkid.get("LABEL") or "").strip() or partlabel
+
+            item["partlabel"] = partlabel
+            item["label"] = label
+            item["fstype"] = fstype
+            item["uuid"] = uuid
+        enriched.append(item)
+    return enriched
 
 
 def _read_mount_lines(path: str) -> List[str]:
@@ -195,8 +258,51 @@ def _df_map() -> Dict[str, int]:
     return result
 
 
+def _live_mount_targets(device: str) -> List[str]:
+    """
+    Ask findmnt for current live targets of a specific device.
+    This helps suppress stale lsblk mountpoints after an unmount.
+    """
+    dev = str(device or "").strip()
+    if not dev:
+        return []
+    raw = _run(["findmnt", "-rn", "-S", dev, "-o", "TARGET"])
+    if not raw:
+        return []
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def _resolved_mountpoints(dev: Dict, host_mounts: Dict[str, List[str]]) -> List[str]:
+    """
+    Reconcile lsblk mountpoints with stronger sources.
+
+    Priority:
+      1. host /proc mount map when present
+      2. live findmnt targets
+      3. lsblk mountpoints only when confirmed by one of the above
+
+    This prevents the UI from staying in a stale "mounted" state after a device
+    has already been unmounted.
+    """
+    device = str(dev.get("path") or "").strip()
+    lsblk_mpts = dev.get("mountpoints") or []
+    if isinstance(lsblk_mpts, str):
+        lsblk_mpts = [lsblk_mpts] if lsblk_mpts else []
+    lsblk_mpts = [m for m in lsblk_mpts if m]
+
+    host_mpts = [m for m in host_mounts.get(device, []) if m]
+    if host_mpts:
+        return list(dict.fromkeys(host_mpts))
+
+    live_mpts = _live_mount_targets(device)
+    if live_mpts:
+        return list(dict.fromkeys(live_mpts))
+
+    return []
+
+
 # Filesystem types that indicate a system/OS disk partition
-_SYSTEM_FS = frozenset({"LVM2_member"})
+_SYSTEM_FS = frozenset({"LVM2_member", "zfs_member"})
 # Filesystem types that clearly indicate non-system user data
 _DATA_ONLY_FS = frozenset({"ntfs", "exfat"})
 
@@ -233,8 +339,16 @@ def _build_system_disk_set(raw_devs: List[Dict], host_mounts: Optional[Dict[str,
         return [m for m in list(dict.fromkeys(list(lsblk_mpts) + list(host_mpts))) if m]
 
     for disk_name in disk_names:
-        children = [d for d in raw_devs
-                    if d["name"] != disk_name and d["name"].startswith(disk_name)]
+        # Use the lsblk tree structure from raw JSON to find real children,
+        # falling back to prefix matching only when no other disk_name is a
+        # longer prefix (prevents nvme0n1 absorbing nvme0n10, nvme0n11, etc.)
+        other_disks = disk_names - {disk_name}
+        children = [
+            d for d in raw_devs
+            if d["name"] != disk_name
+            and d["name"].startswith(disk_name)
+            and not any(d["name"].startswith(other) for other in other_disks)
+        ]
         child_fs = {c["fstype"] for c in children}
 
         # If any partition has system mountpoints, treat the whole disk as system.
@@ -274,16 +388,15 @@ def list_disks() -> List[DiskInfo]:
     Policy fields are left at defaults here — policy.py enriches them.
     """
     df          = _df_map()
-    raw_devs    = _parse_lsblk()
+    raw_devs    = _enrich_device_metadata(_parse_lsblk())
     host_mounts = _host_mount_map()
     system_set  = _build_system_disk_set(raw_devs, host_mounts)  # heuristic system detection
     disks: List[DiskInfo] = []
 
     for dev in raw_devs:
-        # Merge lsblk mountpoints with host /proc/mounts cross-reference
-        lsblk_mpts = dev["mountpoints"]
-        host_mpts  = host_mounts.get(dev["path"], [])
-        mpts       = list(dict.fromkeys(lsblk_mpts + host_mpts))
+        # Reconcile mount state against stronger live sources so lsblk cannot keep
+        # a partition artificially "mounted" in the UI after an unmount.
+        mpts = _resolved_mountpoints(dev, host_mounts)
 
         primary_mp = mpts[0] if mpts else ""
         avail      = df.get(primary_mp, 0) if primary_mp else 0
@@ -304,6 +417,7 @@ def list_disks() -> List[DiskInfo]:
             device=dev["path"],
             uuid=dev["uuid"],
             label=dev["label"],
+            partlabel=dev.get("partlabel", ""),
             filesystem=dev["fstype"],
             size_bytes=dev["size"],
             available_bytes=avail,

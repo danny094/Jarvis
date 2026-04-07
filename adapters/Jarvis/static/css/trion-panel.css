@@ -165,7 +165,7 @@
     white-space: nowrap;
     min-width: 80px;
     max-width: 180px;
-    font-family: 'Rajdhani', sans-serif;
+    font-family: 'Bahnschrift', 'DIN Alternate', 'Trebuchet MS', 'Segoe UI', sans-serif;
     letter-spacing: 0.5px;
 }
 
@@ -315,7 +315,7 @@
     color: #d1d5db;
     line-height: 1.6;
     font-size: 14px;
-    font-family: 'Rajdhani', sans-serif;
+    font-family: 'Bahnschrift', 'DIN Alternate', 'Trebuchet MS', 'Segoe UI', sans-serif;
 }
 
 .markdown-content h1 {

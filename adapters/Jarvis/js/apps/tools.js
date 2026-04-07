@@ -8,8 +8,15 @@
  * - Config editor for custom MCPs
  */
 
+import {
+    STORAGE_BROKER_BUSY_STATE,
+    createStorageBrokerState,
+    isStorageBroker,
+    renderStorageBrokerPanel,
+} from "./storage-broker.js";
+
 function getApiBase() {
-    if (typeof window.getApiBase === "function") {
+    if (typeof window.getApiBase === "function" && window.getApiBase !== getApiBase) {
         return window.getApiBase();
     }
     if (window.location.port === "3000" || window.location.port === "80" || window.location.port === "") {
@@ -18,10 +25,21 @@ function getApiBase() {
     return `${window.location.protocol}//${window.location.hostname}:8200`;
 }
 
+function getSameHostServiceUrl(port, path = "") {
+    const protocol = String(window.location.protocol || "http:").trim() || "http:";
+    const host = String(window.location.hostname || "127.0.0.1").trim() || "127.0.0.1";
+    const suffix = String(path || "").trim();
+    return `${protocol}//${host}:${port}${suffix}`;
+}
+
 function esc(value) {
     const div = document.createElement("div");
     div.textContent = value == null ? "" : String(value);
     return div.innerHTML;
+}
+
+function normalizeMcpName(name) {
+    return String(name || "").trim().toLowerCase().replace(/[_\s]+/g, "-");
 }
 
 const state = {
@@ -40,9 +58,7 @@ const state = {
         deleteMcp: false,
         installZip: false,
         installPkg: false,
-        sbSave: false,
-        sbLoadDisks: false,
-        sbAction: false,
+        ...STORAGE_BROKER_BUSY_STATE,
         timeSave: false,
         timeTest: false,
         seqLoad: false,
@@ -65,6 +81,9 @@ const state = {
         probeOutput: "",
         probeError: "",
         probeTruncated: false,
+        probeSteps: [],
+        probeProgress: -1,
+        uiTab: "status",
     },
     mem: {
         loaded: false,
@@ -124,31 +143,7 @@ const state = {
             output: "",
         },
     },
-    // Storage Broker specific state
-    sb: {
-        settings: null,
-        disks: [],
-        summary: null,
-        audit: [],
-        managedPaths: [],
-        activeTab: "overview",   // overview | setup | disks | managed_paths | policies | audit
-        mode: "basic",           // basic | advanced
-        loaded: false,
-        selectedDiskId: "",
-        expanded: {},
-        diskSearch: "",
-        diskFilter: "all",       // all | recommended | protected | managed
-        diskTab: "details",      // details | partition | rechte | ordner | sicherheit
-        auditFilter: "all",      // all | allowed | blocked | provisioning | mount | format
-        setup: {
-            open: false,
-            flow: "",            // backup | services | existing_path | import_ro
-            step: 1,
-            values: {},
-            result: "",
-        },
-        preview: null,
-    },
+    sb: createStorageBrokerState(),
     feedbackTimer: null,
 };
 
@@ -337,17 +332,28 @@ function renderDetailActions() {
 
     const isEditable = Boolean(state.configEditable);
     const isCoreProtected = isCoreProtectedMcp(state.selected);
+    const isSb = isStorageBroker(state.selected);
     const toggleDisabled = state.busy.toggle || !isEditable || isCoreProtected;
     const deleteDisabled = state.busy.deleteMcp || !isEditable || isCoreProtected;
     const enableLabel = selected.enabled ? "Disable" : "Enable";
+    const sbFullscreenLabel = state.sb.fullscreen ? "Kleine Ansicht" : "Vollbild";
 
     el.innerHTML = `
+        ${isSb ? `<button id="mcp-sb-fullscreen-btn" class="mcp-btn ghost">${sbFullscreenLabel}</button>` : ""}
         <button id="mcp-toggle-btn" class="mcp-btn" ${toggleDisabled ? "disabled" : ""}>${state.busy.toggle ? "Working..." : enableLabel}</button>
         <button id="mcp-delete-btn" class="mcp-btn danger" ${deleteDisabled ? "disabled" : ""}>${state.busy.deleteMcp ? "Deleting..." : "Delete"}</button>
     `;
 
+    document.getElementById("mcp-sb-fullscreen-btn")?.addEventListener("click", toggleStorageBrokerFullscreen);
     document.getElementById("mcp-toggle-btn")?.addEventListener("click", toggleSelectedMcp);
     document.getElementById("mcp-delete-btn")?.addEventListener("click", deleteSelectedMcp);
+}
+
+function toggleStorageBrokerFullscreen() {
+    if (!isStorageBroker(state.selected)) return;
+    state.sb.fullscreen = !Boolean(state.sb.fullscreen);
+    renderDetailActions();
+    renderDetail();
 }
 
 function renderDetail() {
@@ -358,6 +364,7 @@ function renderDetail() {
     const selected = state.mcps.find((m) => String(m.name || "") === state.selected);
     if (!selected) {
         if (appRoot) appRoot.setAttribute("data-sb-focus", "0");
+        if (appRoot) appRoot.setAttribute("data-sb-fullscreen", "0");
         root.innerHTML = `<div class="mcp-empty">Select an MCP from the left to view details and settings.</div>`;
         return;
     }
@@ -365,19 +372,21 @@ function renderDetail() {
     if (appRoot) {
         const focused = isStorageBroker(state.selected) || isSqlMemoryMcp(state.selected);
         appRoot.setAttribute("data-sb-focus", focused ? "1" : "0");
+        appRoot.setAttribute("data-sb-fullscreen", isStorageBroker(state.selected) && state.sb.fullscreen ? "1" : "0");
     }
 
     // Storage Broker gets its own rich settings panel
     if (isStorageBroker(state.selected)) {
-        if (!state.sb.loaded) {
-            sbLoadAll().then(() => renderDetail());
-            root.innerHTML = `<div class="mcp-empty">Storage Broker wird geladen...</div>`;
-            return;
-        }
-        if (!state.sb.disks.length && !state.busy.sbLoadDisks) {
-            sbLoadDisks();
-        }
-        renderStorageBrokerDetail();
+        renderStorageBrokerPanel({
+            state,
+            apiJson,
+            esc,
+            setBusy,
+            setFeedback,
+            renderDetail,
+            renderMcpList,
+            renderDetailActions,
+        });
         return;
     }
 
@@ -451,7 +460,7 @@ function renderDetail() {
 
 async function refreshMcpList() {
     const data = await apiJson("/api/mcp/list");
-    const rows = Array.isArray(data?.mcps) ? data.mcps : [];
+    const rows = Array.isArray(data?.mcps) ? data.mcps.filter((mcp) => !isHiddenMcp(mcp?.name)) : [];
     rows.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
     state.mcps = rows;
 
@@ -739,19 +748,31 @@ const CORE_PROTECTED_MCPS = new Set([
     "time-mcp",
 ]);
 
+const HIDDEN_MCPS = new Set([
+    "sql-memory",
+    "sequential-thinking",
+    "cim",
+    "skill-server",
+    "time-mcp",
+]);
+
+function isHiddenMcp(name) {
+    return HIDDEN_MCPS.has(normalizeMcpName(name));
+}
+
 function isCoreProtectedMcp(name) {
-    return CORE_PROTECTED_MCPS.has(String(name || "").trim().toLowerCase());
+    return CORE_PROTECTED_MCPS.has(normalizeMcpName(name));
 }
 
 function isTimeMcp(name) {
-    return String(name || "").toLowerCase().replace(/[-_]/g, "") === "timemcp";
+    return normalizeMcpName(name).replace(/-/g, "") === "timemcp";
 }
 
 function tmDefaultConfig() {
     return {
         name: "time-mcp",
         tier: "simple",
-        url: "http://localhost:8090",
+        url: getSameHostServiceUrl(8090),
         description: "Simple MCP server providing current time information",
         timezone: "UTC",
         country: "US",
@@ -816,7 +837,7 @@ async function tmSaveConfigFromForm(root) {
         ...formValues,
         name: "time-mcp",
     };
-    if (!String(nextConfig.url || "").trim()) nextConfig.url = "http://localhost:8090";
+    if (!String(nextConfig.url || "").trim()) nextConfig.url = getSameHostServiceUrl(8090);
     if (!String(nextConfig.description || "").trim()) nextConfig.description = "Simple MCP server providing current time information";
 
     setBusy("timeSave", true);
@@ -1247,94 +1268,189 @@ function renderSequentialMcpDetail(selected, details, tools) {
     const readiness = state.seq.readiness || {};
     const planning = readiness?.planning_tools?.available || {};
     const planningAll = Boolean(readiness?.planning_tools?.all_required_available);
-    const saveRuntimeDisabled = state.busy.seqSave || state.busy.seqLoad;
-    const saveMasterDisabled = state.busy.seqMasterSave || state.busy.seqLoad;
     const probeDisabled = state.busy.seqHealth || !Boolean(selected?.online);
     const probeText = String(state.seq.probeOutput || "").trim();
     const probeSummary = String(state.seq.probeSummary || "").trim();
+    const activeTab = String(state.seq.uiTab || "status");
+
+    // Build probe steps from probe output or summary
+    const probeSteps = state.seq.probeSteps || [];
+    const probeOk = probeText && !state.seq.probeError;
+
+    // Status grid
+    const statusItems = [
+        { label: "MCP Status",       ok: Boolean(selected?.online),             val: selected?.online ? "Online & bereit" : "Offline" },
+        { label: "Planning Tools",   ok: planningAll,                            val: planningAll ? "Vollst\u00e4ndig" : "Teilweise" },
+        { label: "Sequential Tool",  ok: Boolean(planning.sequential_thinking),  val: planning.sequential_thinking ? "Bereit" : "Fehlt" },
+        { label: "Workspace Save",   ok: Boolean(planning.workspace_event_save), val: planning.workspace_event_save ? "Bereit" : "Fehlt" },
+        { label: "Workspace List",   ok: Boolean(planning.workspace_event_list), val: planning.workspace_event_list ? "Bereit" : "Fehlt" },
+        { label: "Master Thinking",  ok: Boolean(master.use_thinking_layer),     val: master.use_thinking_layer ? "Aktiv" : "Inaktiv" },
+    ];
+    const statusGrid = statusItems.map(item => `
+        <div class="sq-stat-card">
+            <div class="sq-stat-label">${esc(item.label)}</div>
+            <div class="sq-stat-val">
+                <span class="sq-dot ${item.ok ? "sq-dot-ok" : "sq-dot-warn"}"></span>
+                ${esc(item.val)}
+            </div>
+        </div>`).join("");
+
+    // Probe steps
+    const defaultProbeSteps = [
+        { title: "Tool-Aufruf: think_simple", sub: "Anfrage an Sequential Thinking Engine senden" },
+        { title: "CIM-Validierung", sub: "Causal Intelligence Module pr\u00fcft den Denkschritt" },
+        { title: "Workspace gespeichert", sub: "workspace_event_save speichert Session-Zustand" },
+        { title: "E2E-Test abgeschlossen", sub: "Alle Pfade gepr\u00fcft \u2014 Engine einsatzbereit" },
+    ];
+    const stepsToRender = probeSteps.length ? probeSteps : defaultProbeSteps;
+    const probeStepsHtml = stepsToRender.map((step, i) => {
+        const isDone = probeOk || (state.seq.probeProgress > i);
+        const isActive = !probeOk && state.seq.probeProgress === i && state.busy.seqHealth;
+        const cls = isDone ? "sq-pstep-ok" : isActive ? "sq-pstep-active" : "sq-pstep-todo";
+        const timeStr = step.time ? `<span class="sq-pstep-time">+${step.time}ms</span>` : "";
+        return `
+            <div class="sq-probe-step">
+                <div class="sq-pstep-num ${cls}">${isDone ? "&#10003;" : String(i+1)}</div>
+                <div class="sq-pstep-body">
+                    <div class="sq-pstep-title">${esc(step.title)}</div>
+                    <div class="sq-pstep-sub">${esc(step.sub)}</div>
+                </div>
+                ${timeStr}
+            </div>`;
+    }).join("");
+
+    const probeStatusText = state.seq.probeError
+        ? `<span style="color:#A32D2D;">Fehler: ${esc(state.seq.probeError)}</span>`
+        : probeOk ? `<span style="color:#3B6D11;">&#10003; Erfolgreich</span>`
+        : `<span style="color:var(--sq-text-muted);">Noch keine Probe ausgef\u00fchrt</span>`;
+
+    // Runtime fields
+    const runtimeFields = SQ_RUNTIME_FIELDS.map(field => {
+        const entry = sqRuntimeEntry(field.key);
+        const safeKey = `sq-rt-${field.key.toLowerCase()}`;
+        const value = entry.value;
+        let control = "";
+        if (field.type === "bool") {
+            control = `<label class="sq-toggle"><input type="checkbox" id="${safeKey}" ${value ? "checked" : ""} /><span class="sq-toggle-slider"></span></label>`;
+        } else if (field.type === "enum") {
+            control = `<select class="sq-field-select" id="${safeKey}">${field.options.map(o => `<option value="${esc(o)}" ${String(value)===o?"selected":""}>${esc(o)}</option>`).join("")}</select>`;
+        } else {
+            const step = field.step || (field.type === "float" ? "0.01" : "1");
+            const min = field.min !== undefined ? `min="${field.min}"` : "";
+            const max = field.max !== undefined ? `max="${field.max}"` : "";
+            control = `<input class="sq-field-input" id="${safeKey}" type="number" step="${step}" ${min} ${max} value="${esc(value)}" />`;
+        }
+        return `
+            <div class="sq-field">
+                <div class="sq-field-label">${esc(field.label)}</div>
+                ${field.hint ? `<div class="sq-field-hint">${esc(field.hint)}</div>` : ""}
+                ${control}
+            </div>`;
+    }).join("");
+
+    // Think-flow diagram
+    const flowSteps = [
+        { cls: "sq-fc-input",  icon: "E", label: "Eingabe / Task",            desc: "TRION empf\u00e4ngt eine komplexe Anfrage die strukturiertes Denken erfordert.", tag: "ThinkingLayer", tagCls: "sq-tag-blue" },
+        { cls: "sq-fc-think",  icon: "1", label: "Schritt 1 \u2014 Problemzerlegung", desc: "think_simple zerlegt die Anfrage in atomare Teilprobleme. Jeder Schritt wird separat verarbeitet.", tag: "think_simple \u00b7 " + esc(String(master.max_loops || 10)) + " Loops max", tagCls: "sq-tag-purple" },
+        { cls: "sq-fc-cim",   icon: "\u2713", label: "CIM-Validierung",            desc: "Das Causal Intelligence Module pr\u00fcft jeden Schritt auf kausale Konsistenz und Anti-Pattern.", tag: "CIM v2 \u00b7 Frank's Module", tagCls: "sq-tag-amber" },
+        { cls: "sq-fc-think",  icon: "N", label: "Weitere Schritte",           desc: "Der Prozess wiederholt sich bis der Completion Threshold erreicht ist. Workspace sichert den Zustand.", tag: "Threshold: " + esc(String(master.completion_threshold || 2)), tagCls: "sq-tag-purple" },
+        { cls: "sq-fc-output", icon: "\u2713", label: "Validierte Ausgabe",        desc: "Das Ergebnis wird an TRION zur\u00fcckgegeben \u2014 vollst\u00e4ndig nachvollziehbar und auditierbar.", tag: "OutputLayer", tagCls: "sq-tag-green" },
+    ];
+    const flowHtml = flowSteps.map((s, i) => `
+        <div class="sq-flow-step">
+            <div class="sq-flow-left">
+                <div class="sq-fc ${s.cls}">${s.icon}</div>
+                ${i < flowSteps.length - 1 ? '<div class="sq-flow-line"></div>' : ""}
+            </div>
+            <div class="sq-flow-content">
+                <div class="sq-flow-label">${s.label}</div>
+                <div class="sq-flow-desc">${s.desc}</div>
+                <span class="sq-tag ${s.tagCls}">${s.tag}</span>
+            </div>
+        </div>`).join("");
+
+    // Tabs
+    const tabs = ["status", "flow", "master", "runtime"];
+    const tabLabels = { status: "Status & Probe", flow: "Think-Flow", master: "Master Orchestrator", runtime: "Runtime Policy" };
+    const tabsHtml = tabs.map(t => `<button class="sq-tab${activeTab === t ? " active" : ""}" data-sq-tab="${t}">${tabLabels[t]}</button>`).join("");
+
+    const tabContent = {
+        status: `
+            <div class="sq-status-grid">${statusGrid}</div>
+            <div class="sq-probe-card">
+                <div class="sq-probe-card-header">
+                    <div style="display:flex;align-items:center;gap:8px;">${probeStatusText}</div>
+                </div>
+                <div class="sq-probe-steps">${probeStepsHtml}</div>
+                ${probeSummary && !state.seq.probeError ? `<div class="sq-probe-summary">${esc(probeSummary)}</div>` : ""}
+            </div>`,
+        flow: `<div class="sq-flow-wrap">${flowHtml}</div>`,
+        master: `
+            <div class="sq-section">
+                <div class="sq-section-hdr"><div class="sq-section-title">Master Orchestrator</div><div class="sq-section-sub">Steuert wann und wie Sequential Thinking aktiviert wird.</div></div>
+                <div class="sq-section-rows">
+                    <div class="sq-section-row">
+                        <div class="sq-row-info"><div class="sq-row-label">Master aktiviert</div><div class="sq-row-hint">Erlaubt TRION Sequential Thinking autonom zu nutzen.</div></div>
+                        <label class="sq-toggle"><input id="sq-master-enabled" type="checkbox" ${master.enabled ? "checked" : ""} /><span class="sq-toggle-slider"></span></label>
+                    </div>
+                    <div class="sq-section-row">
+                        <div class="sq-row-info"><div class="sq-row-label">Thinking Layer nutzen</div><div class="sq-row-hint">Erweiterte Reasoning-F\u00e4higkeiten des Modells aktivieren.</div></div>
+                        <label class="sq-toggle"><input id="sq-master-thinking" type="checkbox" ${master.use_thinking_layer ? "checked" : ""} /><span class="sq-toggle-slider"></span></label>
+                    </div>
+                    <div class="sq-section-row">
+                        <div class="sq-row-info"><div class="sq-row-label">Max Loops</div><div class="sq-row-hint">Maximale Anzahl Denkschritte pro Anfrage.</div></div>
+                        <input id="sq-master-max-loops" class="sq-field-input" type="number" min="1" max="200" value="${esc(master.max_loops ?? 10)}" style="width:80px;" />
+                    </div>
+                    <div class="sq-section-row">
+                        <div class="sq-row-info"><div class="sq-row-label">Completion Threshold</div><div class="sq-row-hint">Wie viele \u00fcbereinstimmende Schritte als fertig gelten.</div></div>
+                        <input id="sq-master-completion-threshold" class="sq-field-input" type="number" min="1" max="10" value="${esc(master.completion_threshold ?? 2)}" style="width:80px;" />
+                    </div>
+                </div>
+                <div class="sq-save-row">
+                    <button id="sq-save-master" class="sq-save-btn" ${state.busy.seqMasterSave ? "disabled" : ""}>${state.busy.seqMasterSave ? "Speichere\u2026" : "Master speichern"}</button>
+                </div>
+            </div>`,
+        runtime: `
+            <div class="sq-section">
+                <div class="sq-section-hdr"><div class="sq-section-title">Runtime Policy</div><div class="sq-section-sub">Feinsteuerung wann Sequential Thinking greift.</div></div>
+                <div class="sq-runtime-grid">${runtimeFields}</div>
+                <div class="sq-save-row">
+                    <button id="sq-save-runtime" class="sq-save-btn" ${state.busy.seqSave ? "disabled" : ""}>${state.busy.seqSave ? "Speichere\u2026" : "Runtime Policy speichern"}</button>
+                </div>
+            </div>`,
+    };
 
     root.innerHTML = `
-        <div class="mcp-detail-block">
-            <div class="mcp-kv"><span>Name</span><strong>${esc(details?.name || selected?.name || "sequential-thinking")}</strong></div>
-            <div class="mcp-kv"><span>Status</span><strong>${statusBadge(selected || {})}</strong></div>
-            <div class="mcp-kv"><span>Tools</span><strong>${Number(Array.isArray(tools) ? tools.length : 0)}</strong></div>
-            <div class="mcp-kv"><span>Planning Readiness</span><strong>${planning.sequential_thinking ? "ready" : "missing"} / workspace=${planning.workspace_event_save && planning.workspace_event_list ? "ready" : "missing"}</strong></div>
-        </div>
+        <div class="sq-panel">
+            <div class="sq-panel-header">
+                <div class="sq-panel-icon">&#129504;</div>
+                <div>
+                    <div class="sq-panel-name">Sequential Thinking</div>
+                    <div class="sq-panel-sub">v2.0 \u2014 Step-by-step reasoning mit CIM-Validierung</div>
+                </div>
+                <div class="sq-panel-badges">
+                    <span class="sq-badge ${selected?.online ? "sq-badge-ok" : "sq-badge-off"}">${selected?.online ? "\u25cf Online" : "\u25cb Offline"}</span>
+                    <span class="sq-badge sq-badge-info">Enabled</span>
+                    ${master.enabled ? `<span class="sq-badge sq-badge-warn">Master aktiv</span>` : ""}
+                </div>
+                <button id="sq-run-probe" class="sq-probe-btn" ${probeDisabled ? "disabled" : ""}>${state.busy.seqHealth ? "&#9203; L\u00e4uft\u2026" : "&#9654; Probe starten"}</button>
+            </div>
+            <div class="sq-panel-tabs">${tabsHtml}</div>
+            <div class="sq-panel-body">
+                ${tabContent[activeTab] || tabContent.status}
+            </div>
+        </div>`;
 
-        <div class="mcp-detail-block sq-panel">
-            <div class="sq-head">
-                <h4>Sequential Readiness</h4>
-                <button id="sq-run-probe" class="mcp-btn" ${probeDisabled ? "disabled" : ""}>${state.busy.seqHealth ? "Pruefe..." : "Probe (think_simple)"}</button>
-            </div>
-            <div class="sq-health-grid">
-                <div><span>MCP Online</span><strong>${selected?.online ? "ja" : "nein"}</strong></div>
-                <div><span>Planning Tools</span><strong>${planningAll ? "vollstaendig" : "teilweise"}</strong></div>
-                <div><span>Sequential Tool</span><strong>${planning.sequential_thinking ? "bereit" : "fehlt"}</strong></div>
-                <div><span>Workspace Save</span><strong>${planning.workspace_event_save ? "bereit" : "fehlt"}</strong></div>
-                <div><span>Workspace List</span><strong>${planning.workspace_event_list ? "bereit" : "fehlt"}</strong></div>
-                <div><span>Master Thinking</span><strong>${master.use_thinking_layer ? "aktiv" : "inaktiv"}</strong></div>
-            </div>
-            ${state.seq.probeError ? `<p class="sq-error">Probe error: ${esc(state.seq.probeError)}</p>` : ""}
-            <p class="sq-probe-summary">
-                ${esc(probeSummary || 'Noch keine Probe ausgefuehrt. "Probe (think_simple)" startet einen kurzen E2E-Test ueber den Sequential-Toolpfad.')}
-            </p>
-            ${
-                probeText
-                    ? `
-                <details class="sq-probe-raw">
-                    <summary>Probe-Rohdaten anzeigen${state.seq.probeTruncated ? " (gekuerzt)" : ""}</summary>
-                    <pre class="sq-probe-output">${esc(probeText)}</pre>
-                </details>
-            `
-                    : ""
-            }
-        </div>
-
-        <div class="mcp-detail-block sq-panel">
-            <h4>Master Orchestrator</h4>
-            <div class="sq-master-grid">
-                <label class="sq-toggle"><input id="sq-master-enabled" type="checkbox" ${master.enabled ? "checked" : ""} /> <span>Master aktiviert</span></label>
-                <label class="sq-toggle"><input id="sq-master-thinking" type="checkbox" ${master.use_thinking_layer ? "checked" : ""} /> <span>Thinking Layer nutzen</span></label>
-                <label class="sq-row">
-                    <span class="sq-field-label">Max Loops</span>
-                    <input id="sq-master-max-loops" class="sq-input" type="number" min="1" max="200" value="${esc(master.max_loops ?? 10)}" />
-                </label>
-                <label class="sq-row">
-                    <span class="sq-field-label">Completion Threshold</span>
-                    <input id="sq-master-completion-threshold" class="sq-input" type="number" min="1" max="10" value="${esc(master.completion_threshold ?? 2)}" />
-                </label>
-            </div>
-            <div class="sq-actions">
-                <button id="sq-save-master" class="mcp-btn primary" ${saveMasterDisabled ? "disabled" : ""}>${state.busy.seqMasterSave ? "Speichere..." : "Master speichern"}</button>
-            </div>
-        </div>
-
-        <div class="mcp-detail-block sq-panel">
-            <h4>Sequential Runtime Policy</h4>
-            <p class="sq-hint">Diese Werte steuern, wann Sequential aktiviert wird und wie aggressiv Budget/Loop-Regeln greifen.</p>
-            <div class="sq-runtime-grid">
-                ${SQ_RUNTIME_FIELDS.map((field) => sqRenderRuntimeField(field)).join("")}
-            </div>
-            <div class="sq-actions">
-                <button id="sq-save-runtime" class="mcp-btn primary" ${saveRuntimeDisabled ? "disabled" : ""}>${state.busy.seqSave ? "Speichere..." : "Runtime Policy speichern"}</button>
-            </div>
-        </div>
-    `;
-
-    root.querySelector("#sq-run-probe")?.addEventListener("click", () => {
-        sqRunProbe();
-    });
-    root.querySelector("#sq-save-runtime")?.addEventListener("click", () => {
-        sqSaveRuntime(root);
-    });
-    root.querySelector("#sq-save-master")?.addEventListener("click", () => {
-        sqSaveMaster(root);
+    root.querySelector("#sq-run-probe")?.addEventListener("click", () => { sqRunProbe(); });
+    root.querySelector("#sq-save-runtime")?.addEventListener("click", () => { sqSaveRuntime(root); });
+    root.querySelector("#sq-save-master")?.addEventListener("click", () => { sqSaveMaster(root); });
+    root.querySelectorAll("[data-sq-tab]").forEach(btn => {
+        btn.addEventListener("click", () => {
+            state.seq.uiTab = String(btn.getAttribute("data-sq-tab") || "status");
+            renderDetail();
+        });
     });
 }
-
-// ══════════════════════════════════════════════════════════
-// SQL MEMORY MCP — Operations Panel
-// ══════════════════════════════════════════════════════════
 
 function isSqlMemoryMcp(name) {
     return String(name || "").toLowerCase().replace(/[-_]/g, "") === "sqlmemory";
@@ -2289,1607 +2405,6 @@ function renderSqlMemoryDetail(selected, details, tools) {
     });
 }
 
-// ══════════════════════════════════════════════════════════
-// STORAGE BROKER — Custom Settings Panel
-// ══════════════════════════════════════════════════════════
-
-function isStorageBroker(name) {
-    return String(name || "").toLowerCase().replace(/[-_]/g, "") === "storagebroker";
-}
-
-const SB_NAV_ITEMS = [
-    { id: "overview", label: "Uebersicht" },
-    { id: "setup", label: "Einrichtung" },
-    { id: "disks", label: "Datentraeger" },
-    { id: "managed_paths", label: "Verwaltete Pfade" },
-    { id: "policies", label: "Richtlinien" },
-    { id: "audit", label: "Audit" },
-];
-
-const SB_POLICY_META = {
-    blocked: { label: "Geschuetzt", className: "sb-policy-blocked", description: "Nicht nutzbar fuer TRION." },
-    read_only: { label: "Nur Lesen", className: "sb-policy-ro", description: "Sicher lesbar, keine Schreibrechte." },
-    managed_rw: { label: "Von TRION verwaltet", className: "sb-policy-rw", description: "Schreiben nur in freigegebenen Bereichen." },
-};
-
-const SB_ZONE_META = {
-    system: "Systemspeicher",
-    managed_services: "Service-Speicher",
-    backup: "Backup-Speicher",
-    external: "Externer Datentraeger",
-    docker_runtime: "Docker-Laufzeit",
-    unzoned: "Noch nicht eingerichtet",
-};
-
-const SB_RISK_META = {
-    critical: { label: "Kritisch", className: "sb-risk-critical" },
-    caution: { label: "Vorsicht", className: "sb-risk-caution" },
-    safe: { label: "Sicher", className: "sb-risk-safe" },
-};
-
-const SB_SETUP_FLOW_META = {
-    backup: { label: "Backup-Speicher", zone: "backup", policy_state: "managed_rw", service_name: "backup", profile: "backup" },
-    services: { label: "Container-Speicher", zone: "managed_services", policy_state: "managed_rw", service_name: "containers", profile: "standard" },
-    existing_path: { label: "Bestehenden Pfad freigeben", zone: "managed_services", policy_state: "managed_rw", service_name: "service", profile: "standard" },
-    import_ro: { label: "Nur-Lesen Import", zone: "external", policy_state: "read_only", service_name: "import", profile: "minimal" },
-};
-
-function sbLabelPolicy(policy) {
-    const meta = SB_POLICY_META[String(policy || "").trim()] || null;
-    return meta ? meta.label : (policy || "Unbekannt");
-}
-
-function sbLabelZone(zone) {
-    return SB_ZONE_META[String(zone || "").trim()] || (zone || "Unbekannt");
-}
-
-function sbSafeIso(ts) {
-    const raw = String(ts || "").trim();
-    if (!raw) return "-";
-    return raw.slice(0, 19).replace("T", " ");
-}
-
-function sbRiskBadge(risk) {
-    const key = String(risk || "caution").trim();
-    const meta = SB_RISK_META[key] || SB_RISK_META.caution;
-    return `<span class="sb-badge ${meta.className}">${esc(meta.label)}</span>`;
-}
-
-function sbPolicyBadge(policy) {
-    const key = String(policy || "blocked").trim();
-    const meta = SB_POLICY_META[key] || SB_POLICY_META.blocked;
-    return `<span class="sb-badge ${meta.className}" title="${esc(key)}">${esc(meta.label)}</span>`;
-}
-
-function sbFormatBytes(b) {
-    if (!b) return "0 B";
-    const units = ["B", "KB", "MB", "GB", "TB"];
-    let i = 0;
-    let v = Number(b);
-    while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-    return `${v.toFixed(1)} ${units[i]}`;
-}
-
-function sbParentDevice(device, id) {
-    const dev = String(device || "").trim() || `/dev/${String(id || "").trim()}`;
-    if (/^\/dev\/nvme\d+n\d+p\d+$/.test(dev) || /^\/dev\/mmcblk\d+p\d+$/.test(dev)) {
-        return dev.replace(/p\d+$/, "");
-    }
-    if (/^\/dev\/[a-z]+[0-9]+$/.test(dev)) {
-        return dev.replace(/[0-9]+$/, "");
-    }
-    return "";
-}
-
-function sbBuildDiskTree(disks) {
-    const items = Array.isArray(disks) ? disks : [];
-    const roots = items.filter((d) => String(d.disk_type || "") === "disk");
-    const rootByDevice = new Map(roots.map((r) => [String(r.device || ""), r]));
-    const childrenByRootId = new Map(roots.map((r) => [String(r.id || ""), []]));
-    const orphans = [];
-
-    items
-        .filter((d) => String(d.disk_type || "") !== "disk")
-        .forEach((part) => {
-            const parentDevice = sbParentDevice(part.device, part.id);
-            const parent = rootByDevice.get(parentDevice);
-            if (!parent) {
-                orphans.push(part);
-                return;
-            }
-            const key = String(parent.id || "");
-            const list = childrenByRootId.get(key) || [];
-            list.push(part);
-            childrenByRootId.set(key, list);
-        });
-
-    roots.sort((a, b) => String(a.device || a.id || "").localeCompare(String(b.device || b.id || "")));
-    for (const list of childrenByRootId.values()) {
-        list.sort((a, b) => String(a.device || a.id || "").localeCompare(String(b.device || b.id || "")));
-    }
-    orphans.sort((a, b) => String(a.device || a.id || "").localeCompare(String(b.device || b.id || "")));
-    return { roots, childrenByRootId, orphans };
-}
-
-function sbDiskHumanSummary(disk) {
-    if (!disk) return "Kein Datentraeger ausgewaehlt.";
-    if (disk.is_system) {
-        return "Diese Festplatte gehoert zum Host-System und bleibt dauerhaft geschuetzt.";
-    }
-    if (String(disk.policy_state || "") === "managed_rw") {
-        return "Diese Festplatte ist fuer TRION freigegeben. Schreibzugriffe sind auf verwaltete Bereiche beschraenkt.";
-    }
-    if (String(disk.policy_state || "") === "read_only") {
-        return "Diese Festplatte ist erkannt und aktuell nur lesbar. Du kannst sie sicher fuer Setup-Schritte vorbereiten.";
-    }
-    return "Diese Festplatte ist aktuell geschuetzt. Du kannst sie pruefen und gezielt konfigurieren.";
-}
-
-function sbDiskRecommendedRole(disk) {
-    if (!disk || disk.is_system) return "Geschuetzt";
-    if (disk.is_external || disk.is_removable) return "Backup-Ziel";
-    if (String(disk.policy_state || "") === "managed_rw") return "Service-Speicher";
-    return "Zur Einrichtung pruefen";
-}
-
-function sbDiskAllowedActions(disk) {
-    if (!disk) return [];
-    if (disk.is_system) return ["Pruefen", "Audit anzeigen"];
-    const actions = ["Pruefen", "Rolle zuweisen", "Dry-Run starten"];
-    if (String(disk.policy_state || "") === "managed_rw") actions.push("Verwalteten Ordner erstellen");
-    return actions;
-}
-
-function sbDiskFilterMatch(disk, filter) {
-    const f = String(filter || "all");
-    if (f === "recommended") return !disk.is_system && (disk.policy_state === "read_only" || disk.zone === "unzoned");
-    if (f === "protected") return Boolean(disk.is_system || disk.policy_state === "blocked");
-    if (f === "managed") return String(disk.policy_state || "") === "managed_rw";
-    return true;
-}
-
-function sbDiskSearchMatch(disk, query) {
-    const q = String(query || "").trim().toLowerCase();
-    if (!q) return true;
-    const hay = [
-        disk.id, disk.device, disk.device_path, disk.label, disk.model, disk.device_model,
-        disk.filesystem, disk.zone, disk.policy_state, disk.mountpoint, disk.mount_path,
-    ].map((v) => String(v || "").toLowerCase()).join(" ");
-    return hay.includes(q);
-}
-
-function sbDefaultSetupValues(flow) {
-    const meta = SB_SETUP_FLOW_META[flow] || SB_SETUP_FLOW_META.services;
-    return {
-        disk_id: state.sb.selectedDiskId || "",
-        zone: meta.zone,
-        policy_state: meta.policy_state,
-        service_name: meta.service_name,
-        profile: meta.profile,
-        existing_path: "",
-        do_format: false,
-        filesystem: "ext4",
-        label: "",
-        do_mount: false,
-        mountpoint: "",
-        mount_options: "",
-    };
-}
-
-function sbOpenSetup(flow, preset = {}) {
-    const values = { ...sbDefaultSetupValues(flow), ...preset };
-    state.sb.setup = {
-        open: true,
-        flow,
-        step: 1,
-        values,
-        result: "",
-    };
-    state.sb.activeTab = "setup";
-    renderDetail();
-}
-
-function sbCloseSetup() {
-    state.sb.setup = {
-        open: false,
-        flow: "",
-        step: 1,
-        values: {},
-        result: "",
-    };
-    renderDetail();
-}
-
-function sbReadSetupFields(root) {
-    if (!state.sb.setup?.open) return;
-    const values = { ...(state.sb.setup.values || {}) };
-    root.querySelectorAll("[data-sb-field]").forEach((el) => {
-        const key = String(el.getAttribute("data-sb-field") || "").trim();
-        if (!key) return;
-        if (el.type === "checkbox") {
-            values[key] = Boolean(el.checked);
-        } else {
-            values[key] = String(el.value || "");
-        }
-    });
-    state.sb.setup.values = values;
-}
-
-function sbFindDiskById(diskId) {
-    const id = String(diskId || "").trim();
-    return (state.sb.disks || []).find((d) => String(d.id || "") === id) || null;
-}
-
-function sbBuildSetupPreview() {
-    const flow = String(state.sb.setup?.flow || "");
-    const values = state.sb.setup?.values || {};
-    const disk = sbFindDiskById(values.disk_id);
-    let risk = "Low";
-    if (values.do_format) risk = "High";
-    else if (values.do_mount) risk = "Medium";
-    const target = flow === "existing_path"
-        ? (values.existing_path || "-")
-        : (disk?.device || disk?.id || "-");
-    const actionLabel = SB_SETUP_FLOW_META[flow]?.label || "Einrichtung";
-    return {
-        target,
-        actionLabel,
-        writeScope: flow === "import_ro" ? "Keine Schreibrechte auf Datentraeger" : "Nur verwaltete Zielpfade",
-        formatting: values.do_format ? `Ja (${values.filesystem || "ext4"})` : "Nein",
-        mountChange: values.do_mount ? `Ja (${values.mountpoint || "ohne Ziel"})` : "Nein",
-        risk,
-    };
-}
-
-function sbResultLabel(result) {
-    const r = result?.result || result || {};
-    if (r.error) return `Fehler: ${r.error}`;
-    if (r.ok === true && r.executed) return "Erfolgreich ausgefuehrt";
-    if (r.ok === true && r.dry_run) return "Dry-Run Vorschau bereit";
-    if (r.ok === true) return "Erfolgreich";
-    return "Unbekanntes Ergebnis";
-}
-
-async function sbLoadAll() {
-    try {
-        const [settingsRes, summaryRes, auditRes, managedRes] = await Promise.allSettled([
-            apiJson("/api/storage-broker/settings"),
-            apiJson("/api/storage-broker/summary"),
-            apiJson("/api/storage-broker/audit?limit=80"),
-            apiJson("/api/storage-broker/managed-paths"),
-        ]);
-        if (settingsRes.status === "fulfilled") state.sb.settings = settingsRes.value?.settings || null;
-        if (summaryRes.status === "fulfilled") state.sb.summary = summaryRes.value?.summary || null;
-        if (auditRes.status === "fulfilled") state.sb.audit = auditRes.value?.entries || [];
-        if (managedRes.status === "fulfilled") state.sb.managedPaths = managedRes.value?.managed_paths || [];
-        state.sb.loaded = true;
-        renderDetail();
-    } catch (e) {
-        setFeedback(`Storage Broker Ladefehler: ${e.message}`, "err");
-    }
-}
-
-async function sbLoadDisks() {
-    setBusy("sbLoadDisks", true);
-    try {
-        const data = await apiJson("/api/storage-broker/disks");
-        state.sb.disks = data?.disks || data?.result?.disks || [];
-        const hasSelected = state.sb.disks.some((d) => String(d.id || "") === state.sb.selectedDiskId);
-        if (!hasSelected) {
-            const firstDisk = state.sb.disks.find((d) => String(d.disk_type || "") === "disk") || state.sb.disks[0];
-            state.sb.selectedDiskId = String(firstDisk?.id || "");
-        }
-        renderDetail();
-    } catch (e) {
-        setFeedback(`Datentraeger konnten nicht geladen werden: ${e.message}`, "err");
-    } finally {
-        setBusy("sbLoadDisks", false);
-    }
-}
-
-async function sbSaveSettings(updates) {
-    setBusy("sbSave", true);
-    try {
-        const data = await apiJson("/api/storage-broker/settings", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(updates),
-        });
-        state.sb.settings = data?.settings || state.sb.settings;
-        setFeedback("Storage Broker Einstellungen gespeichert", "ok");
-        renderDetail();
-    } catch (e) {
-        setFeedback(`Speichern fehlgeschlagen: ${e.message}`, "err");
-    } finally {
-        setBusy("sbSave", false);
-    }
-}
-
-async function sbSaveDiskPolicy(diskId, updates) {
-    const id = String(diskId || "").trim();
-    if (!id) return { ok: false, error: "disk_id fehlt" };
-    const data = await apiJson(`/api/storage-broker/disks/${encodeURIComponent(id)}/policy`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updates || {}),
-    });
-    if (data?.ok === false) {
-        const msg = Array.isArray(data?.errors) && data.errors.length ? data.errors.join("; ") : "Datentraeger-Update fehlgeschlagen";
-        throw new Error(msg);
-    }
-    return data;
-}
-
-async function sbValidatePath(path) {
-    return apiJson("/api/storage-broker/validate-path", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-    });
-}
-
-async function sbProvisionServiceDir(args) {
-    return apiJson("/api/storage-broker/provision/service-dir", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(args || {}),
-    });
-}
-
-async function sbMountDevice(args) {
-    return apiJson("/api/storage-broker/mount", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(args || {}),
-    });
-}
-
-async function sbFormatDevice(args) {
-    return apiJson("/api/storage-broker/format", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(args || {}),
-    });
-}
-
-async function sbExecuteSetup(dryRun) {
-    const flow = String(state.sb.setup?.flow || "");
-    const values = state.sb.setup?.values || {};
-    const disk = sbFindDiskById(values.disk_id);
-    const messages = [];
-
-    setBusy("sbAction", true);
-    try {
-        if (flow === "existing_path") {
-            const path = String(values.existing_path || "").trim();
-            if (!path) throw new Error("Bitte einen Pfad angeben.");
-            const validation = await sbValidatePath(path);
-            const vr = validation?.validation || {};
-            messages.push(`Pfadpruefung: ${vr.valid ? "ok" : "blockiert"} (${vr.reason || "kein Grund"})`);
-            if (!dryRun) {
-                const existing = Array.isArray(state.sb.settings?.managed_bases) ? [...state.sb.settings.managed_bases] : [];
-                if (!existing.includes(path)) existing.push(path);
-                await sbSaveSettings({ managed_bases: existing });
-                messages.push("Pfad in managed_bases aufgenommen.");
-            }
-        } else {
-            if (!disk) throw new Error("Bitte einen Datentraeger waehlen.");
-            if (disk.is_system) throw new Error("Systemdatentraeger kann nicht neu zugewiesen werden.");
-
-            if (!dryRun) {
-                await sbSaveDiskPolicy(String(disk.id || ""), {
-                    zone: values.zone || "managed_services",
-                    policy_state: values.policy_state || "managed_rw",
-                });
-                messages.push(`Disk ${disk.id}: zone=${values.zone} policy=${values.policy_state} gesetzt.`);
-            } else {
-                messages.push(`Vorschau: Disk ${disk.id} -> zone=${values.zone}, policy=${values.policy_state}`);
-            }
-
-            if (values.do_format) {
-                const formatRes = await sbFormatDevice({
-                    device: disk.device,
-                    filesystem: values.filesystem || "ext4",
-                    label: values.label || "",
-                    dry_run: dryRun,
-                });
-                messages.push(`Format: ${sbResultLabel(formatRes)}`);
-            }
-
-            if (values.do_mount) {
-                const mountpoint = String(values.mountpoint || "").trim();
-                if (!mountpoint) {
-                    messages.push("Mount uebersprungen: mountpoint fehlt.");
-                } else {
-                    const mountRes = await sbMountDevice({
-                        device: disk.device,
-                        mountpoint,
-                        filesystem: "",
-                        options: values.mount_options || "",
-                        dry_run: dryRun,
-                    });
-                    messages.push(`Mount: ${sbResultLabel(mountRes)}`);
-                }
-            }
-
-            if (flow !== "import_ro") {
-                const serviceName = String(values.service_name || "").trim() || "service";
-                const provisionRes = await sbProvisionServiceDir({
-                    service_name: serviceName,
-                    zone: values.zone || "managed_services",
-                    profile: values.profile || "standard",
-                    dry_run: dryRun,
-                });
-                const pr = provisionRes?.result || {};
-                if (pr?.errors?.length) {
-                    messages.push(`Provisioning: Fehler (${pr.errors.join("; ")})`);
-                } else {
-                    const createdCount = Array.isArray(pr.created) ? pr.created.length : 0;
-                    const planCount = Array.isArray(pr.paths_to_create) ? pr.paths_to_create.length : 0;
-                    messages.push(`Provisioning: ${dryRun ? "Vorschau" : "Fertig"} (${dryRun ? planCount : createdCount} Pfad(e)).`);
-                }
-            }
-        }
-
-        state.sb.setup.step = 5;
-        state.sb.setup.result = messages.join("\n");
-        await Promise.all([sbLoadAll(), sbLoadDisks()]);
-        setFeedback(dryRun ? "Dry-Run abgeschlossen" : "Einrichtung angewendet", "ok");
-    } catch (e) {
-        setFeedback(`Einrichtung fehlgeschlagen: ${e.message}`, "err");
-        state.sb.setup.step = 5;
-        state.sb.setup.result = `Fehler: ${e.message}`;
-    } finally {
-        setBusy("sbAction", false);
-        renderDetail();
-    }
-}
-
-function sbRenderOverview(disks, summary, managedPaths) {
-    const tree = sbBuildDiskTree(disks);
-    const physicalDisks = tree.roots;
-    const systemCount = physicalDisks.filter((d) => d.is_system).length;
-    const availableCount = physicalDisks.filter((d) => !d.is_system).length;
-    const warnings = physicalDisks.filter((d) => !d.is_system && String(d.risk_level || "") !== "safe").length;
-    const managedCount = managedPaths.length || Number(summary.managed_rw_count || 0);
-
-    const recent = (state.sb.audit || []).slice(0, 4);
-
-    return `
-        <section class="sb-view-head">
-            <h4>Speicher-Uebersicht</h4>
-            <p>So sieht TRION auf einen Blick, was sicher nutzbar ist.</p>
-        </section>
-
-        <div class="sb-summary-grid">
-            <article class="sb-summary-card">
-                <h5>System geschuetzt</h5>
-                <strong>${systemCount}</strong>
-                <small>Host-Speicher hart blockiert</small>
-            </article>
-            <article class="sb-summary-card">
-                <h5>Verfuegbare Datentraeger</h5>
-                <strong>${availableCount}</strong>
-                <small>Erkannt und pruefbar</small>
-            </article>
-            <article class="sb-summary-card">
-                <h5>Verwalteter Speicher</h5>
-                <strong>${managedCount}</strong>
-                <small>Verwaltete Pfade / RW-Eintraege</small>
-            </article>
-            <article class="sb-summary-card">
-                <h5>Warnungen</h5>
-                <strong>${warnings}</strong>
-                <small>Bitte pruefen</small>
-            </article>
-        </div>
-
-        <div class="sb-recommended">
-            <h5>Empfohlene naechste Schritte</h5>
-            <div class="sb-chip-row">
-                <button class="sb-btn" data-sb-setup-start="backup">Backup-Ziel einrichten</button>
-                <button class="sb-btn" data-sb-setup-start="services">Container-Speicher vorbereiten</button>
-                <button class="sb-btn" data-sb-nav="disks">Datentraeger-Sicherheit pruefen</button>
-            </div>
-        </div>
-
-        <div class="sb-overview-grid">
-            <article class="sb-summary-panel">
-                <h5>Datentraeger-Status</h5>
-                <ul>
-                    <li>Systemdatentraeger-Schutz ist aktiv.</li>
-                    <li>${availableCount} Datentraeger fuer gefuehrtes Setup verfuegbar.</li>
-                    <li>Keine unbeschraenkten Schreibrechte ausserhalb verwalteter Bereiche.</li>
-                </ul>
-            </article>
-            <article class="sb-summary-panel">
-                <h5>Letzte Aktivitaet</h5>
-                ${recent.length ? `
-                    <ul>
-                        ${recent.map((e) => `<li>${esc(e.operation || "op")} auf <code>${esc(e.target || "-")}</code> (${esc(e.error ? "blockiert" : (e.result || "ok"))})</li>`).join("")}
-                    </ul>
-                ` : `<p class="sb-hint">Keine aktuellen Audit-Eintraege.</p>`}
-            </article>
-        </div>
-    `;
-}
-
-function sbRenderSetupWizard(disks) {
-    const setup = state.sb.setup || {};
-    const values = setup.values || {};
-    const flow = String(setup.flow || "");
-    const step = Number(setup.step || 1);
-    const preview = sbBuildSetupPreview();
-    const diskOptions = (disks || [])
-        .filter((d) => String(d.disk_type || "") === "disk")
-        .map((d) => `<option value="${esc(d.id)}" ${String(values.disk_id || "") === String(d.id || "") ? "selected" : ""}>${esc(d.id)} · ${esc(d.device)} · ${sbFormatBytes(d.size_bytes)}</option>`)
-        .join("");
-
-    return `
-        <section class="sb-wizard">
-            <header class="sb-wizard-head">
-                <div>
-                    <h5>${esc(SB_SETUP_FLOW_META[flow]?.label || "Einrichtung")}</h5>
-                    <small>Schritt ${step} von 5</small>
-                </div>
-                <button class="sb-btn" data-sb-setup-cancel="1">Schliessen</button>
-            </header>
-
-            <div class="sb-wizard-steps">
-                <span class="${step >= 1 ? "active" : ""}">1 Auswahl</span>
-                <span class="${step >= 2 ? "active" : ""}">2 Sicherheit</span>
-                <span class="${step >= 3 ? "active" : ""}">3 Konfiguration</span>
-                <span class="${step >= 4 ? "active" : ""}">4 Vorschau</span>
-                <span class="${step >= 5 ? "active" : ""}">5 Ausfuehren</span>
-            </div>
-
-            <div class="sb-wizard-body">
-                ${step === 1 ? `
-                    ${flow === "existing_path" ? `
-                        <label>Pfad freigeben</label>
-                        <input class="sb-input" data-sb-field="existing_path" value="${esc(values.existing_path || "")}" placeholder="/mnt/trion-data" />
-                    ` : `
-                        <label>Datentraeger waehlen</label>
-                        <select data-sb-field="disk_id">
-                            <option value="">Bitte waehlen</option>
-                            ${diskOptions}
-                        </select>
-                    `}
-                ` : ""}
-
-                ${step === 2 ? `
-                    <div class="sb-safety-review">
-                        <p>Systemdatentraeger? <strong>${sbFindDiskById(values.disk_id)?.is_system ? "ja (blockiert)" : "nein"}</strong></p>
-                        <p>Aktuelle Richtlinie: <strong>${esc(sbLabelPolicy(sbFindDiskById(values.disk_id)?.policy_state || values.policy_state))}</strong></p>
-                        <p>Formatierung noetig? <strong>${values.do_format ? "ja" : "optional / nein"}</strong></p>
-                        <p>Mount-Aenderung noetig? <strong>${values.do_mount ? "ja" : "nein"}</strong></p>
-                    </div>
-                ` : ""}
-
-                ${step === 3 ? `
-                    <div class="sb-form sb-form-compact">
-                        ${flow !== "existing_path" ? `
-                            <div class="sb-form-row">
-                                <label>Zone</label>
-                                <select data-sb-field="zone">
-                                    ${["managed_services", "backup", "external", "unzoned"].map((z) => `<option value="${z}" ${values.zone === z ? "selected" : ""}>${esc(sbLabelZone(z))}</option>`).join("")}
-                                </select>
-                            </div>
-                            <div class="sb-form-row">
-                                <label>Richtlinie</label>
-                                <select data-sb-field="policy_state">
-                                    ${["blocked", "read_only", "managed_rw"].map((p) => `<option value="${p}" ${values.policy_state === p ? "selected" : ""}>${esc(sbLabelPolicy(p))}</option>`).join("")}
-                                </select>
-                            </div>
-                        ` : ""}
-                        ${flow !== "import_ro" && flow !== "existing_path" ? `
-                            <div class="sb-form-row">
-                                <label>Service-Name</label>
-                                <input class="sb-input" data-sb-field="service_name" value="${esc(values.service_name || "")}" />
-                            </div>
-                            <div class="sb-form-row">
-                                <label>Profil</label>
-                                <select data-sb-field="profile">
-                                    ${["standard", "full", "minimal", "backup"].map((p) => `<option value="${p}" ${values.profile === p ? "selected" : ""}>${esc(p)}</option>`).join("")}
-                                </select>
-                            </div>
-                        ` : ""}
-                        ${flow !== "existing_path" ? `
-                            <div class="sb-form-row sb-toggle-row">
-                                <label>Vor Nutzung formatieren</label>
-                                <label class="sb-toggle">
-                                    <input type="checkbox" data-sb-field="do_format" ${values.do_format ? "checked" : ""} />
-                                    <span class="sb-toggle-slider"></span>
-                                </label>
-                            </div>
-                            ${values.do_format ? `
-                                <div class="sb-form-row">
-                                    <label>Filesystem</label>
-                                    <select data-sb-field="filesystem">
-                                        ${["ext4", "xfs", "vfat", "btrfs"].map((fs) => `<option value="${fs}" ${values.filesystem === fs ? "selected" : ""}>${fs}</option>`).join("")}
-                                    </select>
-                                </div>
-                                <div class="sb-form-row">
-                                    <label>Label</label>
-                                    <input class="sb-input" data-sb-field="label" value="${esc(values.label || "")}" />
-                                </div>
-                            ` : ""}
-                            <div class="sb-form-row sb-toggle-row">
-                                <label>Nach Setup mounten</label>
-                                <label class="sb-toggle">
-                                    <input type="checkbox" data-sb-field="do_mount" ${values.do_mount ? "checked" : ""} />
-                                    <span class="sb-toggle-slider"></span>
-                                </label>
-                            </div>
-                            ${values.do_mount ? `
-                                <div class="sb-form-row">
-                                    <label>Mountpoint</label>
-                                    <input class="sb-input" data-sb-field="mountpoint" value="${esc(values.mountpoint || "")}" placeholder="/mnt/trion-data" />
-                                </div>
-                                <div class="sb-form-row">
-                                    <label>Mount Options</label>
-                                    <input class="sb-input" data-sb-field="mount_options" value="${esc(values.mount_options || "")}" placeholder="rw,noexec" />
-                                </div>
-                            ` : ""}
-                        ` : ""}
-                    </div>
-                ` : ""}
-
-                ${step === 4 ? `
-                    <div class="sb-preview-card">
-                        <h6>Sicherheits-Vorschau</h6>
-                        <p><strong>Ziel:</strong> ${esc(preview.target)}</p>
-                        <p><strong>Geplante Aktion:</strong> ${esc(preview.actionLabel)}</p>
-                        <p><strong>Schreibzugriff nach Aktion:</strong> ${esc(preview.writeScope)}</p>
-                        <p><strong>Formatierung:</strong> ${esc(preview.formatting)}</p>
-                        <p><strong>Mount-Aenderung:</strong> ${esc(preview.mountChange)}</p>
-                        <p><strong>Risiko:</strong> ${esc(preview.risk)}</p>
-                        <p><strong>Audit-Eintrag:</strong> Ja</p>
-                    </div>
-                ` : ""}
-
-                ${step === 5 ? `
-                    <div class="sb-exec-result">
-                        <h6>Ausfuehrungsergebnis</h6>
-                        <pre>${esc(setup.result || "Noch kein Ergebnis.")}</pre>
-                    </div>
-                ` : ""}
-            </div>
-
-            <footer class="sb-wizard-actions">
-                ${step > 1 && step < 5 ? `<button class="sb-btn" data-sb-setup-back="1">Zurueck</button>` : `<span></span>`}
-                <div class="sb-wizard-actions-right">
-                    ${step < 4 ? `<button class="sb-btn primary" data-sb-setup-next="1">Weiter</button>` : ""}
-                    ${step === 4 ? `
-                        <button class="sb-btn" data-sb-setup-run="dry">Dry-Run starten</button>
-                        <button class="sb-btn primary" data-sb-setup-run="apply" ${state.busy.sbAction ? "disabled" : ""}>Jetzt anwenden</button>
-                    ` : ""}
-                    ${step === 5 ? `<button class="sb-btn primary" data-sb-setup-done="1">Fertig</button>` : ""}
-                </div>
-            </footer>
-        </section>
-    `;
-}
-
-function sbRenderSetup(disks) {
-    const setupOpen = Boolean(state.sb.setup?.open);
-    return `
-        <section class="sb-view-head">
-            <h4>Speicher-Einrichtung</h4>
-            <p>Waehle eine Aufgabe, statt rohe Policy-Werte manuell zu setzen.</p>
-        </section>
-        <div class="sb-setup-grid">
-            <article class="sb-setup-card">
-                <h5>Backup-Speicher einrichten</h5>
-                <p>Datentraeger oder Ordner fuer Backups vorbereiten.</p>
-                <button class="sb-btn" data-sb-setup-start="backup">Starten</button>
-            </article>
-            <article class="sb-setup-card">
-                <h5>Container-Speicher vorbereiten</h5>
-                <p>Verwaltete Service-Struktur erstellen.</p>
-                <button class="sb-btn" data-sb-setup-start="services">Starten</button>
-            </article>
-            <article class="sb-setup-card">
-                <h5>Bestehenden Pfad freigeben</h5>
-                <p>Einen vorhandenen Pfad sicher erlauben.</p>
-                <button class="sb-btn" data-sb-setup-start="existing_path">Starten</button>
-            </article>
-            <article class="sb-setup-card">
-                <h5>Nur-Lesen Importquelle</h5>
-                <p>Datentraeger ohne Schreibrechte einbinden.</p>
-                <button class="sb-btn" data-sb-setup-start="import_ro">Starten</button>
-            </article>
-        </div>
-        ${setupOpen ? sbRenderSetupWizard(disks) : ""}
-    `;
-}
-
-function sbDiskDevicePath(disk) {
-    return String(disk?.device_path || disk?.device || "").trim() || `/dev/${String(disk?.id || "-").trim()}`;
-}
-
-function sbDiskSizeLabel(disk) {
-    const direct = String(disk?.size_human || "").trim();
-    if (direct) return direct;
-    return sbFormatBytes(disk?.size_bytes || 0);
-}
-
-function sbDiskDisplayName(disk) {
-    const explicit = String(disk?.model || disk?.device_model || disk?.label || "").trim();
-    if (explicit) return explicit;
-    const device = sbDiskDevicePath(disk);
-    const short = device.split("/").filter(Boolean).pop();
-    return short || String(disk?.id || "Unbekannt");
-}
-
-function sbDiskPolicyKey(disk) {
-    return String(disk?.policy_state || "").trim() || (disk?.is_system ? "blocked" : "read_only");
-}
-
-function sbDiskStatusClass(disk) {
-    const policy = sbDiskPolicyKey(disk);
-    if (policy === "blocked") return "protected";
-    if (policy === "managed_rw") return "managed";
-    return "readonly";
-}
-
-function sbDiskStatusLabel(disk) {
-    const policy = sbDiskPolicyKey(disk);
-    if (policy === "blocked") return "Geschützt";
-    if (policy === "managed_rw") return "Verwaltet";
-    return "Nur Lesen";
-}
-
-function sbDiskIconClass(disk) {
-    const policy = sbDiskPolicyKey(disk);
-    if (disk?.is_system || String(disk?.zone || "") === "system" || policy === "blocked") return "system";
-    if (policy === "managed_rw") return "managed";
-    return "external";
-}
-
-function sbLocaleInt(value) {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return "-";
-    return num.toLocaleString("de-DE");
-}
-
-function sbPartitionListForDisk(selectedDisk, tree) {
-    if (!selectedDisk) return [];
-    if (Array.isArray(selectedDisk.partitions) && selectedDisk.partitions.length) {
-        return selectedDisk.partitions;
-    }
-    return tree.childrenByRootId.get(String(selectedDisk.id || "")) || [];
-}
-
-function sbRenderDisks(disks) {
-    const query = String(state.sb.diskSearch || "").trim().toLowerCase();
-    const mode = String(state.sb.mode || "basic");
-    const tree = sbBuildDiskTree(disks);
-    const filteredRoots = tree.roots.filter((d) => sbDiskFilterMatch(d, state.sb.diskFilter) && sbDiskSearchMatch(d, query));
-    const selectedDisk = filteredRoots.find((d) => String(d.id || "") === String(state.sb.selectedDiskId || ""))
-        || filteredRoots[0]
-        || tree.roots.find((d) => String(d.id || "") === String(state.sb.selectedDiskId || ""))
-        || tree.roots[0]
-        || null;
-
-    if (selectedDisk && String(state.sb.selectedDiskId || "") !== String(selectedDisk.id || "")) {
-        state.sb.selectedDiskId = String(selectedDisk.id || "");
-    }
-
-    const diskTab = String(state.sb.diskTab || "details");
-    const filterLabel = (f) => (f === "all" ? "Alle" : f === "recommended" ? "Empfohlen" : f === "protected" ? "Geschützt" : "Verwaltet");
-    const policyKey = selectedDisk ? sbDiskPolicyKey(selectedDisk) : "blocked";
-    const isSystemDisk = Boolean(selectedDisk?.is_system || String(selectedDisk?.zone || "") === "system" || policyKey === "blocked");
-    const partitionRows = sbPartitionListForDisk(selectedDisk, tree);
-    const partitionPalette = ["#22c55e", "#38bdf8", "#a78bfa", "#f59e0b", "#ef4444", "#14b8a6"];
-    const rawManaged = Array.from(new Set([...(state.sb.summary?.managed_paths || []), ...(state.sb.managedPaths || [])]));
-    const mountpoint = String(selectedDisk?.mountpoint || selectedDisk?.mount_path || "").trim();
-    const managedForDisk = rawManaged.filter((path) => {
-        const p = String(path || "").trim();
-        if (!p) return false;
-        if (mountpoint && mountpoint !== "/" && p.startsWith(mountpoint)) return true;
-        if (selectedDisk?.id && p.includes(String(selectedDisk.id))) return true;
-        const devToken = sbDiskDevicePath(selectedDisk).replace("/dev/", "");
-        return devToken && p.includes(devToken);
-    });
-    const securityRows = [
-        { label: "System-Disk", ok: isSystemDisk },
-        { label: "Schreibschutz aktiv", ok: policyKey !== "managed_rw" },
-        { label: "Pfad-Escape blockiert", ok: true },
-        { label: "Audit-Logging", ok: true },
-    ];
-    const diskAudit = (state.sb.audit || []).filter((entry) => {
-        const target = String(entry?.target || "").toLowerCase();
-        const dev = sbDiskDevicePath(selectedDisk).toLowerCase();
-        const id = String(selectedDisk?.id || "").toLowerCase();
-        const mount = String(mountpoint || "").toLowerCase();
-        if (!target) return false;
-        return (dev && target.includes(dev)) || (id && target.includes(id)) || (mount && mount !== "/" && target.includes(mount));
-    }).slice(0, 8);
-    const statusBadgeClass = sbDiskStatusClass(selectedDisk);
-    const encryptionLabel = String(selectedDisk?.encryption || selectedDisk?.crypto || "").trim()
-        || (String(selectedDisk?.filesystem || "").toLowerCase().includes("luks") ? "LUKS" : "Keine");
-    const tableType = String(selectedDisk?.partition_table || selectedDisk?.partition_type || selectedDisk?.table_type || "gpt");
-    const sectorCount = sbLocaleInt(selectedDisk?.sectors || selectedDisk?.sector_count || 0);
-    const sectorSize = String(selectedDisk?.sector_size || selectedDisk?.logical_sector_size || "512 B");
-    const detailsCards = [
-        { label: "Gerät", value: `<code>${esc(sbDiskDevicePath(selectedDisk))}</code>` },
-        { label: "Größe", value: esc(sbDiskSizeLabel(selectedDisk)) },
-        { label: "Typ", value: esc(tableType || "-") },
-        { label: "Sektoren", value: esc(sectorCount) },
-        { label: "Sektorgröße", value: esc(sectorSize) },
-        { label: "Zone", value: esc(sbLabelZone(selectedDisk?.zone)) },
-        { label: "Richtlinie", value: esc(sbLabelPolicy(policyKey)) },
-        { label: "Risiko", value: esc((SB_RISK_META[String(selectedDisk?.risk_level || "").trim()] || SB_RISK_META.caution).label) },
-    ];
-
-    if (mode === "advanced") {
-        detailsCards.push(
-            { label: "Raw Zone-ID", value: `<code>${esc(String(selectedDisk?.zone || "-"))}</code>` },
-            { label: "Raw Policy-ID", value: `<code>${esc(String(policyKey || "-"))}</code>` },
-        );
-    }
-
-    const detailsTabBody = `
-        <div class="sb-gd-info-grid">
-            ${detailsCards.map((row) => `
-                <article class="sb-gd-info-card">
-                    <span class="sb-gd-info-label">${esc(row.label)}</span>
-                    <div class="sb-gd-info-value">${row.value}</div>
-                </article>
-            `).join("")}
-        </div>
-        ${isSystemDisk ? `
-            <div class="sb-gd-system-notice">
-                Systemspeicher — dauerhaft geschützt, keine Änderungen möglich.
-            </div>
-        ` : `
-            <div class="sb-gd-actions">
-                <button class="sb-btn primary" data-sb-setup-start="backup" data-sb-disk="${esc(selectedDisk?.id || "")}">Als Backup nutzen</button>
-                <button class="sb-btn" data-sb-setup-start="services" data-sb-disk="${esc(selectedDisk?.id || "")}">Für Services vorbereiten</button>
-            </div>
-        `}
-    `;
-
-    const opPreviewBlock = state.sb.preview ? `
-        <div class="sb-gd-op-result">
-            <h5>Letztes Ergebnis</h5>
-            <pre>${esc(String(state.sb.preview || ""))}</pre>
-        </div>
-    ` : "";
-    const partitionOpsPanel = selectedDisk ? `
-        <div class="sb-gd-action-grid">
-            <article class="sb-gd-action-card">
-                <h5>Formatieren</h5>
-                <p>Nur mit Bestätigung ausführen. Dry-Run wird empfohlen.</p>
-                <div class="sb-gd-inline-fields">
-                    <select id="sb-gd-format-fs" class="sb-input">
-                        ${["ext4", "xfs", "vfat", "btrfs"].map((fs) => `<option value="${fs}">${fs}</option>`).join("")}
-                    </select>
-                    <input id="sb-gd-format-label" class="sb-input" placeholder="Label (optional)" />
-                </div>
-                <div class="sb-gd-actions">
-                    <button class="sb-btn" data-sb-disk-op="format_dry" ${isSystemDisk ? "disabled" : ""}>Dry-Run</button>
-                    <button class="sb-btn primary" data-sb-disk-op="format_apply" ${isSystemDisk ? "disabled" : ""}>Format anwenden</button>
-                </div>
-            </article>
-            <article class="sb-gd-action-card">
-                <h5>Mount setzen</h5>
-                <p>Mountpoint definieren und optional mit Dry-Run prüfen.</p>
-                <div class="sb-gd-inline-fields">
-                    <input id="sb-gd-mountpoint" class="sb-input" placeholder="/mnt/trion-data" />
-                    <input id="sb-gd-mountopts" class="sb-input" placeholder="rw,noexec (optional)" />
-                </div>
-                <div class="sb-gd-actions">
-                    <button class="sb-btn" data-sb-disk-op="mount_dry" ${isSystemDisk ? "disabled" : ""}>Dry-Run</button>
-                    <button class="sb-btn primary" data-sb-disk-op="mount_apply" ${isSystemDisk ? "disabled" : ""}>Mount anwenden</button>
-                </div>
-            </article>
-        </div>
-        ${isSystemDisk ? `
-            <div class="sb-gd-system-notice">
-                System-Datenträger können nicht formatiert oder gemountet werden.
-            </div>
-        ` : ""}
-        ${opPreviewBlock}
-    ` : "";
-    const partitionTabBody = partitionRows.length ? `
-        <div class="sb-gd-partition-bar">
-            ${partitionRows.map((part, idx) => {
-                const size = Math.max(1, Number(part?.size_bytes || 0));
-                const total = Math.max(1, partitionRows.reduce((acc, p) => acc + Math.max(1, Number(p?.size_bytes || 0)), 0));
-                const width = Math.max(6, Math.round((size / total) * 100));
-                return `
-                    <div
-                        class="sb-gd-partition-seg"
-                        style="width:${width}%; background:${partitionPalette[idx % partitionPalette.length]};"
-                        title="${esc(part?.device || part?.id || `Partition ${idx + 1}`)} · ${esc(part?.filesystem || "-")} · ${esc(sbFormatBytes(part?.size_bytes || 0))}">
-                    </div>
-                `;
-            }).join("")}
-        </div>
-        <div class="sb-advanced-table-wrap">
-            <table class="sb-advanced-table">
-                <thead>
-                    <tr>
-                        <th>Partition</th>
-                        <th>Typ</th>
-                        <th>Mount</th>
-                        <th>Label</th>
-                        <th>Größe</th>
-                        <th>Belegt</th>
-                        ${mode === "advanced" ? "<th>UUID</th><th>Mount-Optionen</th>" : ""}
-                    </tr>
-                </thead>
-                <tbody>
-                    ${partitionRows.map((part) => `
-                        <tr>
-                            <td><code>${esc(part?.device || part?.id || "-")}</code></td>
-                            <td>${esc(part?.filesystem || part?.fs_type || "-")}</td>
-                            <td><code>${esc(part?.mountpoint || part?.mount_path || "-")}</code></td>
-                            <td>${esc(part?.label || "-")}</td>
-                            <td>${esc(part?.size_human || sbFormatBytes(part?.size_bytes || 0))}</td>
-                            <td>${esc(part?.used_human || sbFormatBytes(part?.used_bytes || 0))}</td>
-                            ${mode === "advanced" ? `<td><code>${esc(part?.uuid || "-")}</code></td><td><code>${esc(part?.mount_options || "-")}</code></td>` : ""}
-                        </tr>
-                    `).join("")}
-                </tbody>
-            </table>
-        </div>
-        ${partitionOpsPanel}
-    ` : `
-        <div class="sb-gd-empty-state">
-            <p><strong>Partitionsinformationen nicht verfügbar</strong></p>
-            <p>Die API liefert für diesen Datenträger derzeit keine Partitionen.</p>
-        </div>
-        ${partitionOpsPanel}
-    `;
-
-    const canWrite = !isSystemDisk && policyKey === "managed_rw";
-    const rightsRows = [
-        { label: "Schreibzugriff", ok: canWrite, on: "Erlaubt", off: "Blockiert" },
-        { label: "TRION darf ändern", ok: canWrite, on: "Ja", off: "Nein" },
-        { label: "Format erlaubt", ok: false, on: "Ja", off: "Nein" },
-        { label: "Mount ändern", ok: false, on: "Ja", off: "Nein" },
-    ];
-    const rightsTabBody = `
-        <div class="sb-gd-policy-info">
-            <h4>Aktuelle Richtlinie: ${esc(sbLabelPolicy(policyKey))}</h4>
-            <p>Zone: ${esc(sbLabelZone(selectedDisk?.zone))}</p>
-        </div>
-        <div class="sb-gd-permission-list">
-            ${rightsRows.map((row) => `
-                <div class="sb-gd-perm-row">
-                    <span>${esc(row.label)}</span>
-                    <span class="sb-gd-perm-state ${row.ok ? "ok" : "off"}">${row.ok ? "●" : "○"} ${esc(row.ok ? row.on : row.off)}</span>
-                </div>
-            `).join("")}
-        </div>
-        ${!isSystemDisk ? `
-            <div class="sb-gd-action-card">
-                <h5>Rechte ändern</h5>
-                <div class="sb-gd-inline-fields">
-                    <select id="sb-gd-rights-zone" class="sb-input">
-                        ${["managed_services", "backup", "external", "unzoned", "docker_runtime"]
-                            .map((z) => `<option value="${z}" ${selectedDisk?.zone === z ? "selected" : ""}>${esc(sbLabelZone(z))}</option>`).join("")}
-                    </select>
-                    <select id="sb-gd-rights-policy" class="sb-input">
-                        ${["blocked", "read_only", "managed_rw"]
-                            .map((p) => `<option value="${p}" ${policyKey === p ? "selected" : ""}>${esc(sbLabelPolicy(p))}</option>`).join("")}
-                    </select>
-                </div>
-                <div class="sb-gd-actions">
-                    <button id="sb-gd-rights-save" class="sb-btn primary" ${state.busy.sbSave ? "disabled" : ""}>Rechte speichern</button>
-                </div>
-            </div>
-        ` : `
-            <div class="sb-gd-system-notice">
-                Systemspeicher — Rechte können hier nicht verändert werden.
-            </div>
-        `}
-        ${opPreviewBlock}
-    `;
-
-    const foldersTabBody = `
-        ${managedForDisk.length ? `
-            <div class="sb-gd-folder-list">
-                ${managedForDisk.map((path) => `
-                    <div class="sb-gd-folder-item">
-                        <span class="sb-gd-folder-icon">📁</span>
-                        <code>${esc(path)}</code>
-                        <span class="sb-badge sb-policy-rw">Verwaltet</span>
-                    </div>
-                `).join("")}
-            </div>
-        ` : `
-            <div class="sb-gd-empty-state">
-                <p><strong>Noch keine verwalteten Ordner</strong></p>
-                <p>Richte zuerst einen Backup- oder Service-Speicher ein.</p>
-                <button class="sb-btn primary" data-sb-setup-start="services" data-sb-disk="${esc(selectedDisk?.id || "")}">
-                    Pfad einrichten
-                </button>
-            </div>
-        `}
-        <div class="sb-gd-action-card">
-            <h5>Ordner für Service vorbereiten</h5>
-            <div class="sb-gd-inline-fields">
-                <input id="sb-gd-folder-service" class="sb-input" placeholder="service-name" value="${esc(String(selectedDisk?.id || "service").replace(/[^a-zA-Z0-9._-]/g, "-"))}" />
-                <select id="sb-gd-folder-profile" class="sb-input">
-                    ${["standard", "full", "minimal", "backup"].map((p) => `<option value="${p}">${p}</option>`).join("")}
-                </select>
-            </div>
-            <div class="sb-gd-actions">
-                <button class="sb-btn" data-sb-folder-op="dry">Dry-Run</button>
-                <button class="sb-btn primary" data-sb-folder-op="apply">Pfad erstellen</button>
-            </div>
-        </div>
-        ${opPreviewBlock}
-    `;
-
-    const securityTabBody = `
-        <div class="sb-gd-security-grid">
-            <article class="sb-gd-security-card">
-                <h4>Verschlüsselung</h4>
-                <p>${esc(encryptionLabel)}</p>
-                <div class="sb-gd-actions">
-                    <button class="sb-btn" data-sb-encryption-info="1">Verschlüsselung einrichten</button>
-                </div>
-            </article>
-            <article class="sb-gd-security-card">
-                <h4>Audit-Status</h4>
-                <p>${esc(sbLabelPolicy(policyKey))}</p>
-            </article>
-            <article class="sb-gd-security-card">
-                <h4>Sicherheits-Übersicht</h4>
-                ${securityRows.map((row) => `
-                    <div class="sb-gd-perm-row">
-                        <span>${esc(row.label)}</span>
-                        <span class="sb-gd-perm-state ${row.ok ? "ok" : "off"}">${row.ok ? "● Ja" : "● Nein"}</span>
-                    </div>
-                `).join("")}
-            </article>
-        </div>
-        <div class="sb-gd-empty-state">
-            <p><strong>Hinweis zur Verschlüsselung</strong></p>
-            <p>Der Storage-Broker unterstützt aktuell noch keine direkte LUKS-Erstellung per API. Format/Mount ist verfügbar, Verschlüsselung folgt als nächster Schritt.</p>
-        </div>
-        ${opPreviewBlock}
-        ${mode === "advanced" ? `
-            <div class="sb-raw-block">
-                <h5>Audit-Einträge für diesen Datenträger</h5>
-                <pre>${esc(JSON.stringify(diskAudit, null, 2))}</pre>
-            </div>
-            <details class="sb-tech-details">
-                <summary>Disk-Rohdaten anzeigen</summary>
-                <pre>${esc(JSON.stringify(selectedDisk, null, 2))}</pre>
-            </details>
-        ` : ""}
-    `;
-
-    const tabContent = {
-        details: detailsTabBody,
-        partition: partitionTabBody,
-        rechte: rightsTabBody,
-        ordner: foldersTabBody,
-        sicherheit: securityTabBody,
-    };
-
-    return `
-        <section class="sb-view-head">
-            <h4>Datenträger</h4>
-            <p>Sichere Erkennung und geführte Zuweisung für TRION.</p>
-        </section>
-
-        <div class="sb-toolbar">
-            <input id="sb-disk-search" class="sb-input" value="${esc(state.sb.diskSearch || "")}" placeholder="Datenträger suchen..." />
-            <div class="sb-filter-row">
-                ${["all", "recommended", "protected", "managed"].map((f) => `
-                    <button class="sb-filter-btn ${state.sb.diskFilter === f ? "active" : ""}" data-sb-disk-filter="${f}">
-                        ${filterLabel(f)}
-                    </button>
-                `).join("")}
-            </div>
-            <button class="sb-btn" data-sb-refresh="disks" ${state.busy.sbLoadDisks ? "disabled" : ""}>
-                ${state.busy.sbLoadDisks ? "Lädt..." : "Erkennung aktualisieren"}
-            </button>
-        </div>
-
-        <div class="sb-gd-layout">
-            <aside class="sb-gd-dev-list">
-                <div class="sb-gd-dev-title">Geräte</div>
-                ${filteredRoots.length ? filteredRoots.map((disk) => {
-                    const active = String(disk?.id || "") === String(selectedDisk?.id || "");
-                    return `
-                        <button class="sb-gd-dev-item ${active ? "active" : ""}" data-sb-select="${esc(disk?.id || "")}">
-                            <span class="sb-gd-dev-icon ${sbDiskIconClass(disk)}">
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <rect x="3" y="5" width="18" height="14" rx="2"></rect>
-                                    <line x1="7" y1="15" x2="17" y2="15"></line>
-                                    <circle cx="8" cy="11" r="1"></circle>
-                                    <circle cx="16" cy="11" r="1"></circle>
-                                </svg>
-                            </span>
-                            <span class="sb-gd-dev-info">
-                                <span class="sb-gd-dev-name">${esc(sbDiskDisplayName(disk))}</span>
-                                <span class="sb-gd-dev-sub">${esc(sbDiskDevicePath(disk))} · ${esc(sbDiskSizeLabel(disk))}</span>
-                            </span>
-                        </button>
-                    `;
-                }).join("") : `<p class="sb-hint">Keine Datenträger für den Filter gefunden.</p>`}
-            </aside>
-
-            <section class="sb-gd-detail">
-                ${selectedDisk ? `
-                    <header class="sb-gd-detail-header">
-                        <h3>${esc(sbDiskDisplayName(selectedDisk))}</h3>
-                        <span class="sb-gd-status ${statusBadgeClass}">${esc(sbDiskStatusLabel(selectedDisk))}</span>
-                        <span class="sb-gd-size">${esc(sbDiskSizeLabel(selectedDisk))}</span>
-                    </header>
-                    <div class="sb-gd-tabs">
-                        ${[
-                            ["details", "Details"],
-                            ["partition", "Partition"],
-                            ["rechte", "Rechte"],
-                            ["ordner", "Ordner"],
-                            ["sicherheit", "Sicherheit"],
-                        ].map(([tabId, label]) => `
-                            <button class="sb-gd-tab ${diskTab === tabId ? "active" : ""}" data-sb-disk-tab="${tabId}">
-                                ${label}
-                            </button>
-                        `).join("")}
-                    </div>
-                    <div class="sb-gd-tab-body">
-                        ${tabContent[diskTab] || tabContent.details}
-                    </div>
-                ` : `
-                    <div class="sb-gd-empty-state">
-                        <p><strong>Keine Datenträger gefunden</strong></p>
-                        <p>Bitte aktualisiere die Erkennung oder passe den Filter an.</p>
-                    </div>
-                `}
-            </section>
-        </div>
-    `;
-}
-
-function sbRenderManagedPaths(summary) {
-    const merged = Array.from(new Set([...(summary.managed_paths || []), ...(state.sb.managedPaths || [])]));
-    return `
-        <section class="sb-view-head">
-            <h4>Verwaltete Pfade</h4>
-            <p>Alle von TRION verwalteten Speicherorte im Ueberblick.</p>
-        </section>
-        ${merged.length ? `
-            <div class="sb-advanced-table-wrap">
-                <table class="sb-advanced-table">
-                    <thead>
-                        <tr>
-                            <th>Pfad</th>
-                            <th>Rolle</th>
-                            <th>Zugriff</th>
-                            <th>Service</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${merged.map((p) => {
-                            const role = p.includes("backup") ? "Backup-Ziel" : "Service-Speicher";
-                            const service = p.split("/").filter(Boolean).slice(-1)[0] || "unbekannt";
-                            return `
-                                <tr>
-                                    <td><code>${esc(p)}</code></td>
-                                    <td>${esc(role)}</td>
-                                    <td>${esc(sbLabelPolicy("managed_rw"))}</td>
-                                    <td>${esc(service)}</td>
-                                </tr>
-                            `;
-                        }).join("")}
-                    </tbody>
-                </table>
-            </div>
-        ` : `
-            <article class="sb-empty-state">
-                <h5>Noch keine verwalteten Pfade</h5>
-                <p>Richte zuerst einen Backup- oder Service-Speicher ein. Danach erscheinen die Pfade hier automatisch.</p>
-                <div class="sb-chip-row">
-                    <button class="sb-btn primary" data-sb-setup-start="services">Ersten Service-Pfad einrichten</button>
-                    <button class="sb-btn" data-sb-setup-start="backup">Backup-Ziel einrichten</button>
-                </div>
-            </article>
-        `}
-    `;
-}
-
-function sbRenderPolicies(summary) {
-    const s = state.sb.settings || {};
-    return `
-        <section class="sb-view-head">
-            <h4>Sicherheitsrichtlinien</h4>
-            <p>Verstaendliche Regeln mit erweiterten Einstellungen.</p>
-        </section>
-
-        <div class="sb-policy-cards">
-            <article class="sb-policy-card">
-                <h5>System geschuetzt</h5>
-                <p>Host- und Systemspeicher sind dauerhaft blockiert und in der UI nicht aenderbar.</p>
-            </article>
-            <article class="sb-policy-card">
-                <h5>Nur-Lesen Speicher</h5>
-                <p>Datentraeger koennen sicher geprueft werden, ohne Schreibzugriff.</p>
-            </article>
-            <article class="sb-policy-card">
-                <h5>Verwalteter Speicher</h5>
-                <p>TRION darf nur in freigegebenen verwalteten Pfaden schreiben.</p>
-            </article>
-            <article class="sb-policy-card">
-                <h5>Gesperrte Pfade</h5>
-                <p>Diese Pfade sind niemals gueltige Provisioning-Ziele.</p>
-            </article>
-        </div>
-
-        <div class="sb-form">
-            <div class="sb-form-row">
-                <label>Standard fuer externe Datentraeger</label>
-                <select id="sb-ext-policy">
-                    ${["blocked", "read_only", "managed_rw"].map((p) => `<option value="${p}" ${s.external_default_policy === p ? "selected" : ""}>${esc(sbLabelPolicy(p))}</option>`).join("")}
-                </select>
-            </div>
-            <div class="sb-form-row">
-                <label>Standard fuer unbekannte Mounts</label>
-                <select id="sb-unknown-policy">
-                    ${["blocked", "read_only"].map((p) => `<option value="${p}" ${s.unknown_mount_default === p ? "selected" : ""}>${esc(sbLabelPolicy(p))}</option>`).join("")}
-                </select>
-            </div>
-            <div class="sb-form-row sb-toggle-row">
-                <label>Dry-Run standardmaessig aktiv</label>
-                <label class="sb-toggle">
-                    <input type="checkbox" id="sb-dry-run" ${s.dry_run_default ? "checked" : ""}>
-                    <span class="sb-toggle-slider"></span>
-                </label>
-            </div>
-            <div class="sb-form-row sb-toggle-row">
-                <label>Freigabe fuer Schreibzugriffe erzwingen</label>
-                <label class="sb-toggle">
-                    <input type="checkbox" id="sb-req-approval" ${s.requires_approval_for_writes ? "checked" : ""}>
-                    <span class="sb-toggle-slider"></span>
-                </label>
-            </div>
-
-            <h5 class="sb-section-title">Gesperrte Pfade</h5>
-            <ul class="sb-path-list">
-                ${(s.blacklist_extra || []).map((p, i) => `
-                    <li class="sb-path sb-removable">
-                        <code>${esc(p)}</code>
-                        <button class="sb-btn-xs danger" data-sb-remove-bl="${i}">x</button>
-                    </li>
-                `).join("") || '<li class="sb-hint">Keine zusaetzlichen gesperrten Pfade.</li>'}
-            </ul>
-            <div class="sb-add-row">
-                <input id="sb-bl-input" type="text" placeholder="/pfad/zum-sperren" class="sb-input" />
-                <button id="sb-bl-add-btn" class="sb-btn">Hinzufuegen</button>
-            </div>
-            <div class="sb-form-actions">
-                <button id="sb-save-btn" class="sb-btn primary" ${state.busy.sbSave ? "disabled" : ""}>
-                    ${state.busy.sbSave ? "Speichert..." : "Richtlinien speichern"}
-                </button>
-            </div>
-        </div>
-
-        ${state.sb.mode === "advanced" ? `
-            <div class="sb-raw-block">
-                <h5>Erweiterte Rohdaten</h5>
-                <pre>${esc(JSON.stringify({ settings: s, zones: summary.zones || {} }, null, 2))}</pre>
-            </div>
-        ` : ""}
-    `;
-}
-
-function sbAuditMatch(entry, filter) {
-    const op = String(entry?.operation || "").toLowerCase();
-    const hasError = Boolean(entry?.error);
-    if (filter === "allowed") return !hasError;
-    if (filter === "blocked") return hasError || String(entry?.result || "").toLowerCase().includes("blocked");
-    if (filter === "provisioning") return op.includes("service") || op.includes("provision");
-    if (filter === "mount") return op.includes("mount");
-    if (filter === "format") return op.includes("format");
-    return true;
-}
-
-function sbRenderAudit() {
-    const filter = String(state.sb.auditFilter || "all");
-    const entries = (state.sb.audit || []).filter((e) => sbAuditMatch(e, filter));
-    const filterLabel = (f) => ({
-        all: "Alle",
-        allowed: "Erlaubt",
-        blocked: "Blockiert",
-        provisioning: "Provisioning",
-        mount: "Mount",
-        format: "Format",
-    }[f] || f);
-    return `
-        <section class="sb-view-head">
-            <h4>Audit</h4>
-            <p>Nachvollziehen, welche Speicheraktionen erlaubt oder blockiert wurden.</p>
-        </section>
-        <div class="sb-filter-row">
-            ${["all", "allowed", "blocked", "provisioning", "mount", "format"].map((f) => `
-                <button class="sb-filter-btn ${filter === f ? "active" : ""}" data-sb-audit-filter="${f}">
-                    ${esc(filterLabel(f))}
-                </button>
-            `).join("")}
-        </div>
-        <div class="sb-advanced-table-wrap">
-            <table class="sb-advanced-table">
-                <thead>
-                    <tr>
-                        <th>Zeit</th>
-                        <th>Aktion</th>
-                        <th>Ziel</th>
-                        <th>Ergebnis</th>
-                        <th>Grund</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${entries.length ? entries.map((e) => `
-                        <tr>
-                            <td>${esc(sbSafeIso(e.created_at))}</td>
-                            <td>${esc(e.operation || "-")}</td>
-                            <td><code>${esc(e.target || "-")}</code></td>
-                            <td class="${e.error ? "sb-txt-danger" : "sb-txt-ok"}">${esc(e.error ? "blockiert" : (e.result || "ok"))}</td>
-                            <td>${esc(e.error || e.after_state || "-")}</td>
-                        </tr>
-                    `).join("") : `<tr><td colspan="5">Keine Audit-Eintraege vorhanden.</td></tr>`}
-                </tbody>
-            </table>
-        </div>
-    `;
-}
-
-function renderStorageBrokerDetail() {
-    const root = document.getElementById("mcp-detail");
-    if (!root) return;
-
-    const mode = String(state.sb.mode || "basic");
-    const summary = state.sb.summary || {};
-    const disks = Array.isArray(state.sb.disks) ? state.sb.disks : [];
-
-    if (!disks.length && !state.busy.sbLoadDisks) {
-        sbLoadDisks();
-    }
-
-    const body = sbRenderDisks(disks);
-
-    root.innerHTML = `
-        <div class="sb-panel sb-panel-modern">
-            <div class="sb-header">
-                <span class="sb-icon">SB</span>
-                <div>
-                    <small class="sb-breadcrumb">MCP Tools / Storage Broker</small>
-                    <h3 class="sb-title">Storage Broker</h3>
-                    <small class="sb-subtitle">Sichere Speicherverwaltung f\u00fcr TRION</small>
-                </div>
-                <span class="sb-status-badge ${state.sb.loaded ? "online" : "offline"}">
-                    ${state.sb.loaded ? "Online" : "L\u00e4dt..."}
-                </span>
-                <button id="sb-exit-btn" class="sb-btn" type="button">Zur\u00fcck zu MCP Tools</button>
-                <div class="sb-mode-toggle">
-                    <button class="sb-mode-btn ${mode === "basic" ? "active" : ""}" data-sb-mode="basic">Basis</button>
-                    <button class="sb-mode-btn ${mode === "advanced" ? "active" : ""}" data-sb-mode="advanced">Erweitert</button>
-                </div>
-            </div>
-
-            <main class="sb-body" style="padding: 0;">
-                ${body}
-            </main>
-        </div>
-    `;
-
-    root.querySelector("#sb-exit-btn")?.addEventListener("click", () => {
-        state.selected = "";
-        state.details = null;
-        state.tools = [];
-        state.configEditable = false;
-        state.configText = "";
-        state.sb.setup = { open: false, flow: "", step: 1, values: {}, result: "" };
-        renderMcpList();
-        renderDetailActions();
-        renderDetail();
-    });
-
-    root.querySelectorAll("[data-sb-mode]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            state.sb.mode = String(btn.getAttribute("data-sb-mode") || "basic");
-            renderDetail();
-        });
-    });
-
-    root.querySelectorAll("[data-sb-select]").forEach((el) => {
-        el.addEventListener("click", () => {
-            state.sb.selectedDiskId = String(el.getAttribute("data-sb-select") || "");
-            state.sb.diskTab = "details";
-            state.sb.preview = null;
-            renderDetail();
-        });
-    });
-
-    root.querySelectorAll("[data-sb-disk-tab]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            state.sb.diskTab = String(btn.getAttribute("data-sb-disk-tab") || "details");
-            renderDetail();
-        });
-    });
-
-    root.querySelectorAll("[data-sb-refresh]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            sbLoadAll();
-            sbLoadDisks();
-        });
-    });
-
-    root.querySelector("#sb-disk-search")?.addEventListener("input", (e) => {
-        state.sb.diskSearch = String(e.target?.value || "");
-        renderDetail();
-    });
-
-    root.querySelectorAll("[data-sb-disk-filter]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            state.sb.diskFilter = String(btn.getAttribute("data-sb-disk-filter") || "all");
-            renderDetail();
-        });
-    });
-
-    root.querySelectorAll("[data-sb-audit-filter]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            state.sb.auditFilter = String(btn.getAttribute("data-sb-audit-filter") || "all");
-            renderDetail();
-        });
-    });
-
-    root.querySelectorAll("[data-sb-setup-start]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            const flow = String(btn.getAttribute("data-sb-setup-start") || "services");
-            const diskId = String(btn.getAttribute("data-sb-disk") || state.sb.selectedDiskId || "");
-            sbOpenSetup(flow, { disk_id: diskId });
-        });
-    });
-
-    root.querySelector("#sb-gd-rights-save")?.addEventListener("click", () => {
-        const selectedDisk = sbFindDiskById(state.sb.selectedDiskId);
-        if (!selectedDisk) return;
-        const zone = String(root.querySelector("#sb-gd-rights-zone")?.value || "").trim();
-        const policy_state = String(root.querySelector("#sb-gd-rights-policy")?.value || "").trim();
-        if (!zone && !policy_state) {
-            setFeedback("Bitte Zone oder Richtlinie wählen.", "warn");
-            return;
-        }
-        setBusy("sbSave", true);
-        sbSaveDiskPolicy(String(selectedDisk.id || ""), { zone, policy_state })
-            .then((res) => {
-                state.sb.preview = JSON.stringify(res, null, 2);
-                setFeedback(`Rechte für ${selectedDisk.id} gespeichert`, "ok");
-                return Promise.all([sbLoadDisks(), sbLoadAll()]);
-            })
-            .catch((e) => setFeedback(`Rechte konnten nicht gespeichert werden: ${e.message}`, "err"))
-            .finally(() => {
-                setBusy("sbSave", false);
-                renderDetail();
-            });
-    });
-
-    root.querySelectorAll("[data-sb-folder-op]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            const selectedDisk = sbFindDiskById(state.sb.selectedDiskId);
-            const modeValue = String(btn.getAttribute("data-sb-folder-op") || "dry");
-            const dryRun = modeValue !== "apply";
-            const serviceName = String(root.querySelector("#sb-gd-folder-service")?.value || "").trim() || "service";
-            const profile = String(root.querySelector("#sb-gd-folder-profile")?.value || "standard").trim() || "standard";
-            const zone = String(selectedDisk?.zone || "") === "backup" ? "backup" : "managed_services";
-            setBusy("sbAction", true);
-            sbProvisionServiceDir({
-                service_name: serviceName,
-                zone,
-                profile,
-                dry_run: dryRun,
-            })
-                .then((res) => {
-                    state.sb.preview = JSON.stringify(res, null, 2);
-                    setFeedback(dryRun ? "Ordner-Dry-Run abgeschlossen" : "Ordner erstellt", "ok");
-                    if (!dryRun) return Promise.all([sbLoadAll(), sbLoadDisks()]);
-                    return null;
-                })
-                .catch((e) => setFeedback(`Ordner-Aktion fehlgeschlagen: ${e.message}`, "err"))
-                .finally(() => {
-                    setBusy("sbAction", false);
-                    renderDetail();
-                });
-        });
-    });
-
-    root.querySelectorAll("[data-sb-disk-op]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            const selectedDisk = sbFindDiskById(state.sb.selectedDiskId);
-            if (!selectedDisk) return;
-            const op = String(btn.getAttribute("data-sb-disk-op") || "").trim();
-            const device = sbDiskDevicePath(selectedDisk);
-            const fs = String(root.querySelector("#sb-gd-format-fs")?.value || "ext4").trim() || "ext4";
-            const label = String(root.querySelector("#sb-gd-format-label")?.value || "").trim();
-            const mountpoint = String(root.querySelector("#sb-gd-mountpoint")?.value || "").trim();
-            const options = String(root.querySelector("#sb-gd-mountopts")?.value || "").trim();
-            const dryRun = op.endsWith("_dry");
-            setBusy("sbAction", true);
-
-            let task = Promise.resolve(null);
-            if (op.startsWith("format")) {
-                task = sbFormatDevice({ device, filesystem: fs, label, dry_run: dryRun });
-            } else if (op.startsWith("mount")) {
-                if (!mountpoint) {
-                    setBusy("sbAction", false);
-                    setFeedback("Bitte Mountpoint angeben.", "warn");
-                    return;
-                }
-                task = sbMountDevice({ device, mountpoint, filesystem: "", options, dry_run: dryRun });
-            }
-
-            task
-                .then((res) => {
-                    state.sb.preview = JSON.stringify(res, null, 2);
-                    setFeedback(dryRun ? "Operation als Dry-Run ausgeführt" : "Operation ausgeführt", "ok");
-                    if (!dryRun) return Promise.all([sbLoadAll(), sbLoadDisks()]);
-                    return null;
-                })
-                .catch((e) => setFeedback(`Disk-Operation fehlgeschlagen: ${e.message}`, "err"))
-                .finally(() => {
-                    setBusy("sbAction", false);
-                    renderDetail();
-                });
-        });
-    });
-
-    root.querySelectorAll("[data-sb-encryption-info]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            state.sb.preview = "Verschlüsselung via API ist aktuell noch nicht implementiert (kein LUKS-Endpoint verfügbar).";
-            setFeedback("Verschlüsselung folgt als nächster Backend-Schritt.", "warn");
-            renderDetail();
-        });
-    });
-
-    root.querySelectorAll("[data-sb-quick]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            const flow = String(btn.getAttribute("data-sb-quick") || "services");
-            const diskId = String(btn.getAttribute("data-sb-disk") || state.sb.selectedDiskId || "");
-            sbOpenSetup(flow, { disk_id: diskId });
-        });
-    });
-
-    root.querySelector("[data-sb-setup-cancel]")?.addEventListener("click", () => { sbCloseSetup(); });
-    root.querySelector("[data-sb-setup-back]")?.addEventListener("click", () => {
-        sbReadSetupFields(root);
-        state.sb.setup.step = Math.max(1, Number(state.sb.setup.step || 1) - 1);
-        renderDetail();
-    });
-    root.querySelector("[data-sb-setup-next]")?.addEventListener("click", () => {
-        sbReadSetupFields(root);
-        state.sb.setup.step = Math.min(4, Number(state.sb.setup.step || 1) + 1);
-        renderDetail();
-    });
-    root.querySelectorAll("[data-sb-setup-run]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            sbReadSetupFields(root);
-            const modeValue = String(btn.getAttribute("data-sb-setup-run") || "dry");
-            sbExecuteSetup(modeValue !== "apply");
-        });
-    });
-    root.querySelector("[data-sb-setup-done]")?.addEventListener("click", () => { sbCloseSetup(); });
-
-    root.querySelectorAll("[data-sb-toggle]").forEach((btn) => {
-        btn.addEventListener("click", (ev) => {
-            ev.preventDefault(); ev.stopPropagation();
-            const id = String(btn.getAttribute("data-sb-toggle") || "").trim();
-            if (!id) return;
-            state.sb.expanded[id] = !state.sb.expanded[id];
-            renderDetail();
-        });
-    });
-}
 export function initToolsApp() {
     const root = document.getElementById("app-tools");
     if (!root) return;

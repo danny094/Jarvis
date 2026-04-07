@@ -9,14 +9,11 @@
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- Font: Rajdhani for Tech Look -->
-    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
-
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <!-- TR/ON Styles -->
-    <link rel="stylesheet" href="./static/css/trion-panel.css">
+    <link rel="stylesheet" href="./static/css/trion-panel.css?v=20260321b">
     <link rel="stylesheet" href="./static/css/workspace.css?v=2">
     <link rel="stylesheet" href="./static/css/protocol.css?v=1">
     <link rel="stylesheet" href="./static/css/code-blocks.css?v=1769799786">
@@ -28,7 +25,7 @@
             theme: {
                 extend: {
                     fontFamily: {
-                        sans: ['Rajdhani', 'sans-serif'],
+                        sans: ['Bahnschrift', 'DIN Alternate', 'Trebuchet MS', 'Segoe UI', 'sans-serif'],
                     },
                     colors: {
                         dark: {
@@ -56,10 +53,10 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
     <!-- Markdown Parser -->
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
-    <link rel="stylesheet" href="./static/css/terminal.css">
+    <link rel="stylesheet" href="./static/css/terminal.css?v=20260322k">
     <link rel="stylesheet" href="./static/css/cron.css">
     <link rel="stylesheet" href="./static/css/settings-models.css">
-    <link rel="stylesheet" href="./static/css/tools.css?v=20260312e">
+    <link rel="stylesheet" href="./static/css/tools.css?v=20260321e">
     <link rel="stylesheet" href="./static/css/marketplace.css">
     <link rel="stylesheet" href="./static/css/session.css">
 </head>
@@ -110,6 +107,10 @@
             </button>
             <button class="launcher-icon" data-app="terminal" title="Container Commander">
                 <i data-lucide="terminal" class="w-4 h-4"></i>
+            </button>
+            <button class="launcher-icon" data-app="vault" title="TRION Vault">
+                <i data-lucide="lock" class="w-4 h-4"></i>
+                <i data-lucide="lock" class="w-5 h-5"></i>
             </button>
             <button class="launcher-icon" data-app="cron" title="Autonomy Cron">
                 <i data-lucide="calendar-clock" class="w-4 h-4"></i>
@@ -261,6 +262,8 @@
         </div>
         <div id="app-marketplace" class="app-window flex flex-col h-full hidden">
         </div>
+        <div id="app-vault" class="app-window flex flex-col h-full hidden">
+        </div>
 
     </main>
 
@@ -330,6 +333,13 @@
                     <i data-lucide="store" class="w-10 h-10 text-white"></i>
                 </div>
                 <span class="app-name">Marketplace</span>
+            </div>
+
+            <div class="launchpad-app group" data-action="app:vault">
+                <div class="app-icon bg-gradient-to-br from-amber-500 to-yellow-700">
+                    <i data-lucide="lock" class="w-10 h-10 text-white"></i>
+                </div>
+                <span class="app-name">Vault</span>
             </div>
 
             <!-- Future Apps / Placeholders -->
@@ -1097,7 +1107,7 @@
     <!-- TRION Plugin System -->
     <script src="./static/js/trion-panel.js?v=2"></script>
     <script src="./static/js/trion-bridge.js?v=3"></script>
-    <script src="./static/js/workspace.js?v=3"></script>
+    <script src="./static/js/workspace.js?v=4"></script>
     <script>
         // Initialize TRION Bridge after DOM ready
         document.addEventListener("DOMContentLoaded", () => {
@@ -1112,17 +1122,16 @@
         });
     </script>
 
-    <script type="module" src="js/shell.js?v=999"></script>
+    <script type="module" src="js/shell.js?v=1030"></script>
     <script>
         // Temporary: Lucide auto-icon
         lucide.createIcons();
     </script>
     <!-- xterm.js for Container Commander -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
-    <script src="./js/apps/terminal.js" type="module"></script>
-    <script src="./js/apps/secrets.js"></script>
+    <link rel="stylesheet" href="static/vendor/xterm/xterm.css?v=20260322a">
+    <script src="static/vendor/xterm/xterm.js?v=20260322a"></script>
+    <script src="static/vendor/xterm/xterm-addon-fit.js?v=20260322a"></script>
+    <script src="./js/apps/secrets.js?v=20260321b"></script>
     <script>
         // Load secrets when API Keys category is clicked in settings
         document.querySelectorAll('.settings-category[data-category="api"]').forEach(el => {

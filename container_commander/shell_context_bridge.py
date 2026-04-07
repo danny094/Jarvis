@@ -14,6 +14,7 @@ Bewusst NICHT hier:
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -25,6 +26,96 @@ _MISSION_STATE_MAX_CHARS = 800
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _extract_saved_event_id(result: Any) -> int | str | None:
+    """Parse the event id returned by workspace_event_save across result shapes."""
+    if hasattr(result, "content"):
+        try:
+            content = result.content
+            if isinstance(content, str):
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    return parsed.get("id")
+        except Exception:
+            return None
+    if isinstance(result, dict):
+        raw = result.get("structuredContent", result)
+        if isinstance(raw, dict):
+            return raw.get("id")
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, dict):
+                return parsed.get("id")
+        except Exception:
+            return None
+    return None
+
+
+def _emit_workspace_update(
+    *,
+    conversation_id: str,
+    entry_id: int | str | None,
+    content: str,
+    entry_type: str,
+    event_data: dict[str, Any],
+    source_layer: str = "shell",
+) -> None:
+    """
+    Mirror a persisted workspace event into the live terminal/web UI path.
+
+    The chat UI already emits `workspace_update` over its SSE stream. TRION shell
+    runs over the Commander websocket, so we emit the same normalized payload via
+    Commander activity events and let the terminal frontend bridge it into the
+    global `sse-event` bus.
+    """
+    if entry_id is None:
+        return
+    try:
+        from container_commander.ws_stream import emit_activity
+
+        emit_activity(
+            "workspace_update",
+            level="info",
+            message="workspace update",
+            source="event",
+            entry_id=entry_id,
+            content=str(content or "").strip(),
+            entry_type=entry_type,
+            event_data=event_data,
+            conversation_id=conversation_id,
+            source_layer=source_layer,
+            timestamp=_utc_now(),
+        )
+    except Exception as exc:
+        logger.debug("[ShellContextBridge] Failed to emit workspace_update mirror: %s", exc)
+
+
+def _build_shell_checkpoint_content(
+    *,
+    goal: str,
+    finding: str,
+    action_taken: str,
+    blocker: str,
+    step_count: int,
+    raw_summary: str = "",
+) -> str:
+    text = str(raw_summary or "").strip()
+    if text:
+        return text[:600]
+    parts: list[str] = []
+    if goal:
+        parts.append(f"Goal: {str(goal).strip()[:160]}")
+    if finding:
+        parts.append(f"Assessment: {str(finding).strip()[:260]}")
+    if action_taken:
+        parts.append(f"Action: {str(action_taken).strip()[:220]}")
+    if blocker:
+        parts.append(f"Blocker: {str(blocker).strip()[:180]}")
+    if step_count:
+        parts.append(f"Step: {int(step_count)}")
+    return "\n".join(parts)[:600]
 
 
 # ---------------------------------------------------------------------------
@@ -139,29 +230,29 @@ def save_shell_session_summary(
     ('shell_session_summary' und altes 'trion_shell_summary').
     """
     try:
-        from mcp.hub import get_hub
-        hub = get_hub()
-        hub.initialize()
-        hub.call_tool("workspace_event_save", {
-            "conversation_id": conversation_id,
-            "event_type": "shell_session_summary",
-            "event_data": {
-                "container_id": container_id,
-                "blueprint_id": blueprint_id,
-                "container_name": container_name,
-                "goal": str(goal or "").strip()[:300],
-                "findings": str(findings or "").strip()[:400],
-                "changes_applied": str(changes_applied or "").strip()[:300],
-                "open_blocker": str(open_blocker or "").strip()[:200],
-                "step_count": int(step_count or 0),
-                "commands": list(commands or [])[:12],
-                "user_requests": list(user_requests or [])[:12],
-                "final_stop_reason": str(final_stop_reason or "").strip(),
-                "summary_parts": dict(summary_parts or {}),
-                "content": str(raw_summary or "").strip()[:600],
-                "saved_at": _utc_now(),
-            },
-        })
+        event_data = {
+            "container_id": container_id,
+            "blueprint_id": blueprint_id,
+            "container_name": container_name,
+            "goal": str(goal or "").strip()[:300],
+            "findings": str(findings or "").strip()[:400],
+            "changes_applied": str(changes_applied or "").strip()[:300],
+            "open_blocker": str(open_blocker or "").strip()[:200],
+            "step_count": int(step_count or 0),
+            "commands": list(commands or [])[:12],
+            "user_requests": list(user_requests or [])[:12],
+            "final_stop_reason": str(final_stop_reason or "").strip(),
+            "summary_parts": dict(summary_parts or {}),
+            "content": str(raw_summary or "").strip()[:600],
+            "saved_at": _utc_now(),
+        }
+        from core.workspace_event_emitter import get_workspace_emitter
+        get_workspace_emitter().persist_and_broadcast(
+            conversation_id=conversation_id,
+            event_type="shell_session_summary",
+            event_data=event_data,
+            content=str(event_data.get("content") or ""),
+        )
         logger.debug(
             "[ShellContextBridge] shell_session_summary saved for conv=%s container=%s",
             conversation_id, container_id,
@@ -180,6 +271,7 @@ def save_shell_checkpoint(
     action_taken: str,
     blocker: str = "",
     step_count: int = 0,
+    raw_summary: str = "",
 ) -> None:
     """
     Speichert shell_checkpoint als leichtgewichtiges Workspace-Event.
@@ -189,23 +281,32 @@ def save_shell_checkpoint(
     Compact Context nicht mit Shell-Telemetrie zu überfluten.
     """
     try:
-        from mcp.hub import get_hub
-        hub = get_hub()
-        hub.initialize()
-        hub.call_tool("workspace_event_save", {
-            "conversation_id": conversation_id,
-            "event_type": "shell_checkpoint",
-            "event_data": {
-                "container_id": container_id,
-                "blueprint_id": blueprint_id,
-                "goal": str(goal or "").strip()[:200],
-                "finding": str(finding or "").strip()[:300],
-                "action_taken": str(action_taken or "").strip()[:200],
-                "blocker": str(blocker or "").strip()[:200],
-                "step_count": int(step_count or 0),
-                "saved_at": _utc_now(),
-            },
-        })
+        content = _build_shell_checkpoint_content(
+            goal=goal,
+            finding=finding,
+            action_taken=action_taken,
+            blocker=blocker,
+            step_count=step_count,
+            raw_summary=raw_summary,
+        )
+        event_data = {
+            "container_id": container_id,
+            "blueprint_id": blueprint_id,
+            "goal": str(goal or "").strip()[:200],
+            "finding": str(finding or "").strip()[:300],
+            "action_taken": str(action_taken or "").strip()[:200],
+            "blocker": str(blocker or "").strip()[:200],
+            "step_count": int(step_count or 0),
+            "content": content,
+            "saved_at": _utc_now(),
+        }
+        from core.workspace_event_emitter import get_workspace_emitter
+        get_workspace_emitter().persist_and_broadcast(
+            conversation_id=conversation_id,
+            event_type="shell_checkpoint",
+            event_data=event_data,
+            content=content,
+        )
         logger.debug(
             "[ShellContextBridge] shell_checkpoint saved for conv=%s container=%s step=%d",
             conversation_id, container_id, step_count,

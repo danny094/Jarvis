@@ -209,6 +209,12 @@ def get_enabled_tools() -> list:
     # ─────────────────────────────────────────────────────────────
     tools.extend([
         {
+            "name": "home_start",
+            "mcp": "container-commander",
+            "description": "Startet oder reused den persistenten TRION Home Container direkt, ohne generischen Blueprint-Router.",
+            "arguments": "keine"
+        },
+        {
             "name": "request_container",
             "mcp": "container-commander",
             "description": "Startet einen isolierten Container aus einem Blueprint (z.B. python-sandbox, node-sandbox, db-sandbox). Nutze dies wenn Code ausgefuehrt, Daten verarbeitet oder Tools installiert werden sollen.",

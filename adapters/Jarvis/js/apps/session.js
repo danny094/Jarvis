@@ -3,7 +3,7 @@
  */
 
 function getApiBase() {
-    if (typeof window.getApiBase === "function") {
+    if (typeof window.getApiBase === "function" && window.getApiBase !== getApiBase) {
         return window.getApiBase();
     }
     if (window.location.port === "3000" || window.location.port === "80" || window.location.port === "") {

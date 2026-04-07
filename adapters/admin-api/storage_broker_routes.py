@@ -84,7 +84,7 @@ def _save(cfg: dict):
 
 # ── Proxy helper — MCP JSON-RPC over POST ─────────────────
 
-async def _mcp_call(tool_name: str, args: dict | None = None) -> dict:
+async def _mcp_call(tool_name: str, args: dict | None = None, timeout: int = 15) -> dict:
     """
     Call a storage-broker MCP tool via JSON-RPC 2.0 POST.
     FastMCP streamable-http returns SSE lines: 'data: {...}'.
@@ -96,7 +96,7 @@ async def _mcp_call(tool_name: str, args: dict | None = None) -> dict:
         "id": 1,
     }
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.post(
                 f"{BROKER_URL}/mcp",
                 json=payload,
@@ -279,6 +279,9 @@ async def provision_service_dir_route(request: Request):
     zone = str((data or {}).get("zone") or "managed_services").strip() or "managed_services"
     profile = str((data or {}).get("profile") or "standard").strip() or "standard"
     dry_run = bool((data or {}).get("dry_run", True))
+    base_path = str((data or {}).get("base_path") or "").strip()
+    owner = str((data or {}).get("owner") or "").strip()
+    group = str((data or {}).get("group") or "").strip()
 
     if not service_name:
         return JSONResponse({"error": "service_name is required"}, status_code=400)
@@ -290,6 +293,9 @@ async def provision_service_dir_route(request: Request):
             "zone": zone,
             "profile": profile,
             "dry_run": dry_run,
+            "base_path": base_path,
+            "owner": owner,
+            "group": group,
         },
     )
 
@@ -307,6 +313,8 @@ async def mount_device_route(request: Request):
     filesystem = str((data or {}).get("filesystem") or "").strip()
     options = str((data or {}).get("options") or "").strip()
     dry_run = bool((data or {}).get("dry_run", True))
+    create_mountpoint = bool((data or {}).get("create_mountpoint", False))
+    persist = bool((data or {}).get("persist", False))
 
     if not device or not mountpoint:
         return JSONResponse(
@@ -321,6 +329,34 @@ async def mount_device_route(request: Request):
             "mountpoint": mountpoint,
             "filesystem": filesystem,
             "options": options,
+            "dry_run": dry_run,
+            "create_mountpoint": create_mountpoint,
+            "persist": persist,
+        },
+    )
+
+
+@router.post("/unmount")
+async def unmount_device_route(request: Request):
+    """Proxy: preview/apply device unmount action."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    device = str((data or {}).get("device") or "").strip()
+    dry_run = bool((data or {}).get("dry_run", True))
+
+    if not device:
+        return JSONResponse(
+            {"error": "device is required"},
+            status_code=400,
+        )
+
+    return await _mcp_call(
+        "storage_unmount_device",
+        {
+            "device": device,
             "dry_run": dry_run,
         },
     )
@@ -353,6 +389,36 @@ async def format_device_route(request: Request):
             "label": label,
             "dry_run": dry_run,
         },
+    )
+
+
+@router.post("/partition")
+async def partition_disk_route(request: Request):
+    """Proxy: preview/apply partition table creation (destructive)."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    device = str((data or {}).get("device") or "").strip()
+    table_type = str((data or {}).get("table_type") or "gpt").strip()
+    partitions = (data or {}).get("partitions")
+    dry_run = bool((data or {}).get("dry_run", True))
+
+    if not device:
+        return JSONResponse({"error": "device is required"}, status_code=400)
+    if not isinstance(partitions, list) or not partitions:
+        return JSONResponse({"error": "partitions must be a non-empty list"}, status_code=400)
+
+    return await _mcp_call(
+        "storage_partition_disk",
+        {
+            "device": device,
+            "table_type": table_type,
+            "partitions": partitions,
+            "dry_run": dry_run,
+        },
+        timeout=300,
     )
 
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Host Xorg + Sunshine Session
+
+[Service]
+Type=simple
+Environment=SUNSHINE_BIN={{SUNSHINE_BIN}}
+ExecStart={{HOST_START_SCRIPT_PATH}}
+Restart=always
+RestartSec=2
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

@@ -43,6 +43,7 @@ def _default_config() -> dict:
         "unknown_mount_default": "blocked",
         "dry_run_default": True,
         "blacklist_extra": [],
+        "managed_bases": [],
         "zone_overrides": {},
         "policy_overrides": {},
     }
@@ -103,7 +104,7 @@ def get_policy() -> PolicyConfig:
 def set_policy(updates: dict) -> PolicyConfig:
     allowed_keys = {
         "external_default_policy", "unknown_mount_default",
-        "dry_run_default", "blacklist_extra",
+        "dry_run_default", "blacklist_extra", "managed_bases",
     }
     with _LOCK:
         cfg = _load()
@@ -287,12 +288,16 @@ def validate_path(path: str) -> ValidationResult:
             reason="path is in user blacklist",
         )
 
-    # Find matching managed scope from admin-api (via env variable base path check)
-    managed_bases = [
+    # Find matching managed scope from persisted policy config first, then env fallbacks.
+    with _LOCK:
+        cfg = _load()
+    config_bases = [_safe_realpath(p) for p in cfg.get("managed_bases", []) if p]
+    env_bases = [
         _safe_realpath(p)
         for p in os.environ.get("STORAGE_MANAGED_BASES", "").split(":")
         if p.strip()
     ]
+    managed_bases = list(dict.fromkeys(config_bases + env_bases))
     for base in managed_bases:
         if real == base or real.startswith(base + "/"):
             return ValidationResult(

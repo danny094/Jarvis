@@ -28,3 +28,13 @@ def test_terminal_approval_center_can_resolve_requests_from_list():
     assert "async function resolveApprovalRequest(approvalId, action, reason = '')" in src
     assert "window.termApproveRequest = async function(approvalId)" in src
     assert "window.termRejectRequest = async function(approvalId)" in src
+
+
+def test_terminal_approval_center_uses_structured_runtime_risk_fields():
+    src = _read("adapters/Jarvis/js/apps/terminal.js")
+    assert "function approvalReason(item)" in src
+    assert "approval_reason || item?.reason" in src
+    assert "requested_cap_add" in src
+    assert "requested_security_opt" in src
+    assert "requested_cap_drop" in src
+    assert "read_only_rootfs" in src

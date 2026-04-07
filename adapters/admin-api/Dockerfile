@@ -15,6 +15,7 @@ COPY config.py /app/config.py
 
 # Copy lobechat adapter (needed for chat endpoint)
 COPY adapters/lobechat /app/adapters/lobechat
+COPY adapters/runtime-hardware /app/adapters/runtime-hardware
 COPY adapters/base.py /app/adapters/base.py
 COPY adapters/__init__.py /app/adapters/__init__.py
 

@@ -359,16 +359,16 @@ export async function handleUserMessage(text, options = {}) {
             }
 
             // ═══════════════════════════════════════════
-            // BOX 1: CONTROL (Classifier / Thinking Plan)
-            // Label: "Control", Icon: shield-check
+            // BOX 1: THINKING (Layer 1 planning trace)
+            // Label: "Thinking", Icon: brain
             // ═══════════════════════════════════════════
 
             if (chunk.type === "thinking_stream") {
                 touchActivity("I'm analyzing your request...");
                 if (!controlThinkingId) {
-                    controlThinkingId = Thinking.createThinkingBox(baseMsgId, "Control", "shield-check");
+                    controlThinkingId = Thinking.createThinkingBox(baseMsgId, "Thinking", "brain");
                 }
-                Thinking.updateThinkingStream(controlThinkingId, chunk.chunk);
+                Thinking.updateThinkingStream(controlThinkingId, chunk.chunk || chunk.thinking_chunk || "");
                 continue;
             }
 
@@ -417,6 +417,16 @@ export async function handleUserMessage(text, options = {}) {
                     UI.showMemoryIndicator();
                 }
                 Pending.createPendingBubble("thinking");
+                continue;
+            }
+
+            if (chunk.type === "thinking_trace") {
+                if (!controlThinkingId) {
+                    controlThinkingId = Thinking.createThinkingBox(baseMsgId, "Thinking", "brain");
+                }
+                if (chunk.thinking) {
+                    Thinking.finalizeThinking(controlThinkingId, chunk.thinking);
+                }
                 continue;
             }
 

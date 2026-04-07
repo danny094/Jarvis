@@ -1,6 +1,5 @@
 from core.control_contract import ControlDecision, persist_control_decision
 from core.plan_runtime_bridge import (
-    LEGACY_RUNTIME_KEYS,
     get_policy_final_instruction,
     get_policy_warnings,
     get_runtime_direct_response,
@@ -13,28 +12,17 @@ from core.plan_runtime_bridge import (
 )
 
 
-def test_runtime_tool_results_no_legacy_mirror_by_default():
+def test_runtime_tool_results_no_legacy_mirror():
     plan = {}
     set_runtime_tool_results(plan, "abc")
     assert "_tool_results" not in plan
     assert plan["_execution_result"]["metadata"]["tool_results"] == "abc"
 
 
-def test_runtime_tool_results_dual_write_and_read_prefer_contract():
+def test_runtime_evidence_and_direct_response():
     plan = {}
-    set_runtime_tool_results(plan, "abc", dual_write=True)
-    assert plan["_tool_results"] == "abc"
-    assert plan["_execution_result"]["metadata"]["tool_results"] == "abc"
-
-    plan["_tool_results"] = "legacy-only"
-    plan["_execution_result"]["metadata"]["tool_results"] = "contract"
-    assert get_runtime_tool_results(plan) == "contract"
-
-
-def test_runtime_evidence_and_direct_response_bridge():
-    plan = {}
-    set_runtime_grounding_evidence(plan, [{"tool_name": "x", "status": "ok"}], dual_write=True)
-    set_runtime_direct_response(plan, "done", dual_write=True)
+    set_runtime_grounding_evidence(plan, [{"tool_name": "x", "status": "ok"}])
+    set_runtime_direct_response(plan, "done")
 
     assert get_runtime_grounding_evidence(plan)[0]["tool_name"] == "x"
     assert get_runtime_direct_response(plan) == "done"
@@ -56,33 +44,20 @@ def test_policy_reads_prefer_control_decision():
     assert get_policy_warnings(plan) == ["c1", "c2"]
 
 
-def test_runtime_grounding_value_no_legacy_fallback_by_default():
-    plan = {"_grounding_hybrid_mode": True}
-    assert (
-        get_runtime_grounding_value(
-            plan,
-            key="hybrid_mode",
-            legacy_key="_grounding_hybrid_mode",
-            default=False,
-        )
-        is False
-    )
+def test_runtime_grounding_value_returns_default_when_not_set():
+    plan = {}
+    assert get_runtime_grounding_value(plan, key="hybrid_mode", default=False) is False
 
 
-def test_runtime_grounding_value_fallback_can_be_enabled_via_env(monkeypatch):
-    monkeypatch.setenv("TRION_LEGACY_RUNTIME_COMPAT", "1")
-    plan = {"_grounding_hybrid_mode": True}
-    assert (
-        get_runtime_grounding_value(
-            plan,
-            key="hybrid_mode",
-            legacy_key="_grounding_hybrid_mode",
-            default=False,
-        )
-        is True
-    )
+def test_runtime_grounding_value_reads_from_execution_result():
+    plan = {}
+    set_runtime_grounding_evidence(plan, [])
+    plan["_execution_result"]["grounding"]["hybrid_mode"] = True
+    assert get_runtime_grounding_value(plan, key="hybrid_mode", default=False) is True
 
 
-def test_runtime_key_set_contains_critical_keys():
-    for key in ["_tool_results", "_grounding_evidence", "_direct_response", "_tool_failure"]:
-        assert key in LEGACY_RUNTIME_KEYS
+def test_runtime_tool_results_prefer_contract_over_stale_legacy():
+    plan = {}
+    set_runtime_tool_results(plan, "contract")
+    plan["_tool_results"] = "stale-legacy"
+    assert get_runtime_tool_results(plan) == "contract"

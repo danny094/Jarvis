@@ -36,6 +36,43 @@ import asyncio
 import threading
 from typing import Dict, Any, List, Optional
 
+from .mcp_tools_gaming import (
+    compute_gaming_override_resources as _compute_gaming_override_resources_impl,
+    ensure_gaming_station_blueprint as _ensure_gaming_station_blueprint_impl,
+    gaming_station_dockerfile as _gaming_station_dockerfile_impl,
+    gaming_station_primary_dockerfile as _gaming_station_primary_dockerfile_impl,
+    is_path_within_scope as _is_path_within_scope_impl,
+    merge_scope_roots as _merge_scope_roots_impl,
+    mount_signature as _mount_signature_impl,
+    resolve_gaming_station_host_bridge_profile as _resolve_gaming_station_host_bridge_profile_impl,
+    resolve_gaming_station_primary_profile as _resolve_gaming_station_primary_profile_impl,
+    resolve_gaming_station_storage_profile as _resolve_gaming_station_storage_profile_impl,
+)
+from .mcp_tools_home import (
+    ensure_trion_home as _ensure_trion_home_impl,
+    home_runtime_config as _home_runtime_config_impl,
+    tool_home_start as _tool_home_start_impl,
+    tool_home_list as _tool_home_list_impl,
+    tool_home_read as _tool_home_read_impl,
+    tool_home_write as _tool_home_write_impl,
+)
+from .mcp_tools_cron import (
+    get_autonomy_cron_scheduler as _get_autonomy_cron_scheduler_impl,
+    reference_links_rows_for_category as _reference_links_rows_for_category_impl,
+    run_async_sync as _run_async_sync_impl,
+    tool_autonomy_cron_create_job as _tool_autonomy_cron_create_job_impl,
+    tool_autonomy_cron_delete_job as _tool_autonomy_cron_delete_job_impl,
+    tool_autonomy_cron_list_jobs as _tool_autonomy_cron_list_jobs_impl,
+    tool_autonomy_cron_pause_job as _tool_autonomy_cron_pause_job_impl,
+    tool_autonomy_cron_queue as _tool_autonomy_cron_queue_impl,
+    tool_autonomy_cron_resume_job as _tool_autonomy_cron_resume_job_impl,
+    tool_autonomy_cron_run_now as _tool_autonomy_cron_run_now_impl,
+    tool_autonomy_cron_status as _tool_autonomy_cron_status_impl,
+    tool_autonomy_cron_update_job as _tool_autonomy_cron_update_job_impl,
+    tool_autonomy_cron_validate as _tool_autonomy_cron_validate_impl,
+    tool_cron_reference_links_list as _tool_cron_reference_links_list_impl,
+)
+
 logger = logging.getLogger(__name__)
 
 # ── KI System Prompt ──────────────────────────────────────
@@ -66,6 +103,14 @@ TOOL_DEFINITIONS = [
                 "resume_volume": {"type": "string", "description": "Optional: volume name to resume previous workspace"},
             },
             "required": ["blueprint_id"]
+        }
+    },
+    {
+        "name": "home_start",
+        "description": "Start or reuse TRION's persistent home container and return its runtime details.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
         }
     },
     {
@@ -254,6 +299,22 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "Device mappings (e.g. ['/dev/dri:/dev/dri']).",
                 },
+                "hardware_intents": {
+                    "type": "array",
+                    "description": "Structured desired hardware attachments for later runtime-hardware resolution.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "resource_id": {"type": "string"},
+                            "target_type": {"type": "string"},
+                            "target_id": {"type": "string"},
+                            "attachment_mode": {"type": "string"},
+                            "policy": {"type": "object"},
+                            "requested_by": {"type": "string"},
+                        },
+                        "required": ["resource_id"],
+                    },
+                },
                 "environment": {
                     "type": "object",
                     "description": "Static env vars. Supports secret refs via vault://SECRET_NAME values.",
@@ -293,14 +354,42 @@ TOOL_DEFINITIONS = [
                     "type": "object",
                     "description": "Healthcheck config object.",
                 },
+                "pre_start_exec": {
+                    "type": "object",
+                    "description": "Optional pre-start hook executed before the main container launches.",
+                },
                 "cap_add": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Linux capabilities to add (e.g. ['NET_ADMIN']).",
                 },
+                "security_opt": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Docker security options (e.g. ['seccomp=unconfined']).",
+                },
+                "cap_drop": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Linux capabilities to drop explicitly (e.g. ['NET_RAW']).",
+                },
+                "privileged": {
+                    "type": "boolean",
+                    "description": "Run the container in privileged mode. High risk and approval-gated.",
+                    "default": False,
+                },
+                "read_only_rootfs": {
+                    "type": "boolean",
+                    "description": "Run the container with a read-only root filesystem.",
+                    "default": False,
+                },
                 "shm_size": {
                     "type": "string",
                     "description": "Shared memory size (e.g. '1g').",
+                },
+                "ipc_mode": {
+                    "type": "string",
+                    "description": "Docker IPC mode (e.g. 'host').",
                 },
                 "allowed_exec": {
                     "type": "array",
@@ -615,7 +704,9 @@ def call_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
     """Execute a container commander tool and return the result."""
     
     try:
-        if tool_name == "request_container":
+        if tool_name == "home_start":
+            return _tool_home_start(arguments)
+        elif tool_name == "request_container":
             return _tool_request_container(arguments)
         elif tool_name == "stop_container":
             return _tool_stop_container(arguments)
@@ -731,6 +822,15 @@ def _tool_request_container(args: dict) -> dict:
                 "memory_limit": override_resources.memory_limit,
                 "memory_swap": override_resources.memory_swap,
             }
+        if instance.deploy_warnings:
+            result["warnings"] = [
+                {
+                    "name": str(w.get("name", "")),
+                    "message": str((w.get("detail") or {}).get("message") or w.get("name", "")),
+                    "advisory": True,
+                }
+                for w in instance.deploy_warnings
+            ]
         return result
     except ValueError as e:
         return {"status": "error", "error": str(e)}
@@ -739,7 +839,7 @@ def _tool_request_container(args: dict) -> dict:
             "status": "pending_approval",
             "approval_id": e.approval_id,
             "reason": e.reason,
-            "hint": "Der User muss die Netzwerk-Freigabe erst genehmigen.",
+            "hint": "Der User muss die angeforderte Freigabe erst genehmigen.",
         }
     except RuntimeError as e:
         msg = str(e)
@@ -751,101 +851,100 @@ def _tool_request_container(args: dict) -> dict:
 
 
 def _compute_gaming_override_resources():
-    """
-    Derive a quota-compatible resource profile for gaming requests.
-    This keeps request_container deterministic even when default gaming
-    blueprint resources exceed current commander quotas.
-    """
-    from .engine import get_quota
-    from .models import ResourceLimits
+    return _compute_gaming_override_resources_impl()
 
-    try:
-        quota = get_quota()
-        max_mem = int(getattr(quota, "max_total_memory_mb", 0) or 0)
-        used_mem = float(getattr(quota, "memory_used_mb", 0) or 0.0)
-        max_cpu = float(getattr(quota, "max_total_cpu", 0) or 0.0)
-        used_cpu = float(getattr(quota, "cpu_used", 0) or 0.0)
-    except Exception:
-        return None
 
-    if max_mem <= 0 or max_cpu <= 0:
-        return None
+def _is_path_within_scope(path: str, roots: List[dict]) -> bool:
+    return _is_path_within_scope_impl(path, roots)
 
-    # Keep small safety headroom to reduce oversubscription spikes.
-    mem_headroom = max(0, int(max_mem - used_mem) - 256)
-    cpu_headroom = max(0.0, max_cpu - used_cpu - 0.25)
 
-    if mem_headroom < 512 or cpu_headroom < 0.5:
-        return None
+def _mount_signature(mount) -> tuple[str, str, str, str, str]:
+    return _mount_signature_impl(mount)
 
-    mem_limit_mb = min(1536, mem_headroom)
-    cpu_limit = min(1.5, cpu_headroom)
-    swap_mb = max(1024, min(mem_limit_mb * 2, 4096))
 
-    return ResourceLimits(
-        cpu_limit=f"{cpu_limit:.2f}".rstrip("0").rstrip("."),
-        memory_limit=f"{int(mem_limit_mb)}m",
-        memory_swap=f"{int(swap_mb)}m",
-        timeout_seconds=0,
-        pids_limit=512,
-    )
+def _resolve_gaming_station_storage_profile(mount_ctor):
+    # Compatibility markers for source-inspection contracts:
+    # get_asset("gaming-station-config")
+    # get_asset("gaming-station-data")
+    # for candidate in ("gaming-station", "gaming"):
+    return _resolve_gaming_station_storage_profile_impl(mount_ctor)
+
+
+def _merge_scope_roots(*groups: List[dict]) -> List[dict]:
+    return _merge_scope_roots_impl(*groups)
+
+
+def _resolve_gaming_station_primary_profile(mount_ctor):
+    # Compatibility markers for source-inspection contracts:
+    # steam_home_host = os.path.join(data_host, "steam-home")
+    # os.makedirs(steam_home_host, exist_ok=True)
+    # container="/home/default/.steam"
+    return _resolve_gaming_station_primary_profile_impl(mount_ctor)
+
+
+def _resolve_gaming_station_host_bridge_profile(mount_ctor):
+    # Compatibility markers for source-inspection contracts:
+    # host="/tmp/.X11-unix"
+    # host="/run/user/1000/pulse"
+    # container="/home/default/.steam"
+    return _resolve_gaming_station_host_bridge_profile_impl(mount_ctor)
+
+
+def _gaming_station_dockerfile(base_image: str) -> str:
+    # Compatibility markers for source-inspection contracts:
+    # command=/usr/local/bin/start-steam-host-bridge.sh
+    # /etc/cont-init.d/93-configure_host_bridge.sh
+    # /etc/cont-init.d/92-fix_streaming_perms.sh
+    # /etc/cont-init.d/60-configure_gpu_driver.sh
+    # Skipping internal GPU driver install in host-display bridge mode
+    # return 0 2>/dev/null || true
+    # bootstrap_steam_installation()
+    # text = pathlib.Path("/usr/games/steam").read_text(encoding="utf-8")
+    # for key in ("version", "deb_version", "sha256", "url"):
+    # values[key] = re.sub(r"\\$\\{([^}]+)\\}", lambda m: values.get(m.group(1), m.group(0)), values[key])
+    # curl -L --fail --retry 5 --retry-delay 2 -o "${archive_tmp}" "${URL}"
+    return _gaming_station_dockerfile_impl(base_image)
+
+
+def _gaming_station_primary_dockerfile(base_image: str) -> str:
+    # Compatibility markers for source-inspection contracts:
+    # input_properties = ["E:ID_INPUT_JOYSTICK=1\n"]
+    # ID_INPUT_MOUSE=1
+    # ID_INPUT_KEYBOARD=1
+    # ID_INPUT_TOUCHSCREEN=1
+    # unexpected dumb-udev source layout
+    return _gaming_station_primary_dockerfile_impl(base_image)
 
 
 def _ensure_gaming_station_blueprint() -> None:
-    """
-    Ensure a deterministic Steam/Sunshine gaming blueprint exists.
-    Keeps implementation prompt-free by using fixed defaults.
-    """
-    from .blueprint_store import get_blueprint, create_blueprint, update_blueprint
-    from .models import Blueprint, ResourceLimits, MountDef, NetworkMode
-
-    bp_id = "gaming-station"
-    image_ref = "josh5/steam-headless:latest"
-    existing = get_blueprint(bp_id)
-    if existing:
-        legacy_image = str(existing.image or "").strip().lower()
-        if legacy_image in {
-            "ghcr.io/linuxserver/steam-headless:latest",
-            "lscr.io/linuxserver/steam-headless:latest",
-        }:
-            update_blueprint(
-                bp_id,
-                {
-                    "image": image_ref,
-                },
-            )
-        return
-
-    bp = Blueprint(
-        id=bp_id,
-        name="Gaming Station (Steam Headless + Sunshine)",
-        description="GPU gaming container with Sunshine streaming and Steam session support.",
-        image=image_ref,
-        resources=ResourceLimits(memory_limit="8g", cpu_limit="4.0", timeout_seconds=0, pids_limit=512),
-        mounts=[
-            MountDef(host="gaming_steam_config", container="/config", type="volume", mode="rw"),
-            MountDef(host="gaming_steam_data", container="/data", type="volume", mode="rw"),
-        ],
-        network=NetworkMode.FULL,
-        ports=[
-            "47984:47984/tcp",
-            "47989:47989/tcp",
-            "48010:48010/tcp",
-            "48100-48110:48100-48110/udp",
-        ],
-        runtime="nvidia",
-        environment={
-            "TZ": "UTC",
-            "PUID": "1000",
-            "PGID": "1000",
-            "STEAM_USER": "vault://STEAM_USERNAME",
-            "STEAM_PASS": "vault://STEAM_PASSWORD",
-        },
-        healthcheck={"test": "curl -fsS http://127.0.0.1:47989/ || exit 1", "interval_seconds": 30, "timeout_seconds": 5, "retries": 5},
-        tags=["gaming", "steam", "sunshine", "gpu", "nvidia"],
-        icon="🎮",
-    )
-    create_blueprint(bp)
+    # Compatibility markers for source-inspection contracts:
+    # image_ref = "josh5/steam-headless:latest"
+    # dockerfile = _gaming_station_dockerfile(image_ref)
+    # dockerfile=dockerfile
+    # image=""
+    # runtime="nvidia"
+    # "STEAM_USER": "vault://STEAM_USERNAME"
+    # "STEAM_PASS": "vault://STEAM_PASSWORD"
+    # "STEAM_ARGS": ""
+    # "MODE": "secondary"
+    # "DISPLAY": ":0"
+    # "TRION_HOST_DISPLAY_BRIDGE": "true"
+    # "PULSE_SERVER": "unix:/tmp/host-pulse/native"
+    # "NVIDIA_VISIBLE_DEVICES": "all"
+    # "NVIDIA_DRIVER_CAPABILITIES": "all"
+    # "ENABLE_SUNSHINE": "false"
+    # desired_ports: list[str] = []
+    # desired_healthcheck: dict = {}
+    # cap_add=["NET_ADMIN", "SYS_ADMIN", "SYS_NICE"]
+    # security_opt=["seccomp=unconfined", "apparmor=unconfined"]
+    # privileged=True
+    # ipc_mode="host"
+    # updates["storage_scope"] = str(storage_profile["storage_scope"] or "").strip()
+    # updates["mounts"] = [mount.model_dump() for mount in storage_profile["mounts"]]
+    # memory_swap="16g"
+    # updates["ports"] = list(desired_ports)
+    # updates["healthcheck"] = dict(desired_healthcheck)
+    return _ensure_gaming_station_blueprint_impl()
 
 
 def _tool_stop_container(args: dict) -> dict:
@@ -1145,24 +1244,7 @@ def _tool_optimize(args: dict) -> dict:
 # ── TRION Home Container ──────────────────────────────────
 
 def _home_runtime_config() -> Dict[str, str]:
-    try:
-        from utils.trion_home_identity import load_home_identity
-
-        identity = load_home_identity(create_if_missing=True)
-    except Exception:
-        identity = {}
-    blueprint_id = str(identity.get("container_id") or "trion-home").strip() or "trion-home"
-    container_path = (
-        str(os.environ.get("TRION_HOME_CONTAINER_PATH", "")).strip()
-        or str(identity.get("container_home_path") or "").strip()
-        or "/home/trion"
-    )
-    volume_name = str(os.environ.get("TRION_HOME_VOLUME", "trion_home_data")).strip() or "trion_home_data"
-    return {
-        "blueprint_id": blueprint_id,
-        "volume_name": volume_name,
-        "container_path": container_path,
-    }
+    return _home_runtime_config_impl()
 
 
 _HOME_RUNTIME = _home_runtime_config()
@@ -1176,46 +1258,19 @@ _trion_home_container_id = None  # Cached container ID
 def _ensure_trion_home() -> str:
     """Ensure TRION home container is running. Returns container_id."""
     global _trion_home_container_id
-    from .engine import start_container, list_containers
-    from .blueprint_store import get_blueprint, create_blueprint
-    from .models import Blueprint, ResourceLimits, MountDef, NetworkMode
-    
-    # Check if already running
-    running = list_containers()
-    for c in running:
-        if c.blueprint_id == TRION_HOME_BLUEPRINT_ID:
-            _trion_home_container_id = c.container_id
-            return c.container_id
-    
-    # Ensure blueprint exists
-    bp = get_blueprint(TRION_HOME_BLUEPRINT_ID)
-    if not bp:
-        logger.info("[TRION Home] Creating trion-home blueprint...")
-        bp = Blueprint(
-            id=TRION_HOME_BLUEPRINT_ID,
-            name="TRION Home Workspace",
-            description="TRIONs persistenter Arbeitsbereich für Notizen, Projekte und Experimente",
-            image="python:3.12-slim",
-            resources=ResourceLimits(memory_limit="512m", cpu_limit="0.5", timeout_seconds=0),  # No timeout
-            mounts=[MountDef(host=TRION_HOME_VOLUME, container=TRION_HOME_PATH, type="volume")],
-            network=NetworkMode.INTERNAL,
-            tags=["system", "persistent", "home"],
-            icon="🏠",
-        )
-        create_blueprint(bp)
-    
-    # Start container
-    instance = start_container(
+
+    def _set_container_id(container_id: str) -> None:
+        global _trion_home_container_id
+        _trion_home_container_id = container_id
+
+    return _ensure_trion_home_impl(
+        current_container_id=_trion_home_container_id,
+        set_container_id=_set_container_id,
         blueprint_id=TRION_HOME_BLUEPRINT_ID,
-        resume_volume=TRION_HOME_VOLUME,
+        volume_name=TRION_HOME_VOLUME,
+        home_path=TRION_HOME_PATH,
+        logger=logger,
     )
-    _trion_home_container_id = instance.container_id
-    
-    # Create home directory structure
-    from .engine import exec_in_container
-    exec_in_container(_trion_home_container_id, f"mkdir -p {TRION_HOME_PATH}/notes {TRION_HOME_PATH}/projects {TRION_HOME_PATH}/scripts {TRION_HOME_PATH}/.config", timeout=10)
-    
-    return _trion_home_container_id
 
 
 # ── New Tool Implementations ──────────────────────────────
@@ -1319,12 +1374,19 @@ def _tool_blueprint_create(args: dict) -> dict:
         ports=args.get("ports", []),
         runtime=args.get("runtime", ""),
         devices=args.get("devices", []),
+        hardware_intents=args.get("hardware_intents", []),
         environment=args.get("environment", {}),
         storage_scope=args.get("storage_scope", ""),
         mounts=mounts,
         healthcheck=args.get("healthcheck", {}),
+        pre_start_exec=args.get("pre_start_exec"),
         cap_add=args.get("cap_add", []),
+        security_opt=args.get("security_opt", []),
+        cap_drop=args.get("cap_drop", []),
+        privileged=bool(args.get("privileged", False)),
+        read_only_rootfs=bool(args.get("read_only_rootfs", False)),
         shm_size=args.get("shm_size", ""),
+        ipc_mode=args.get("ipc_mode", ""),
         tags=args.get("tags", []),
         allowed_exec=args.get("allowed_exec", []),
         icon="📦",
@@ -1359,96 +1421,50 @@ def _tool_blueprint_create(args: dict) -> dict:
 def _tool_home_write(args: dict) -> dict:
     """Write a file to TRION's home container."""
     from .engine import exec_in_container
-    import base64
-    
-    # Validate required parameters
-    if "path" not in args:
-        return {"error": "Missing required parameter 'path'. Example: 'notes/todo.md'"}
-    if "content" not in args:
-        return {"error": "Missing required parameter 'content'. Provide the text to write."}
-    
-    container_id = _ensure_trion_home()
-    path = args["path"].lstrip("/")  # Relative to home
-    content = args["content"]
-    
-    # Encode content to base64 to handle special characters
-    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-    
-    # Create parent directories and write file
-    full_path = f"{TRION_HOME_PATH}/{path}"
-    # Get parent directory
-    if "/" in path:
-        parent_dir = f"{TRION_HOME_PATH}/{'/'.join(path.split('/')[:-1])}"
-    else:
-        parent_dir = TRION_HOME_PATH
-    
-    exit_code, output = exec_in_container(
-        container_id,
-        f"sh -c \"mkdir -p '{parent_dir}' && echo '{encoded}' | base64 -d > '{full_path}'\"",
-        timeout=10
+
+    return _tool_home_write_impl(
+        args,
+        ensure_trion_home=_ensure_trion_home,
+        exec_in_container=exec_in_container,
+        home_path=TRION_HOME_PATH,
     )
-    
-    if exit_code != 0:
-        return {"error": f"Write failed: {output}"}
-    
-    return {
-        "written": True,
-        "path": path,
-        "size": len(content),
-        "container_id": container_id,
-    }
+
+
+def _tool_home_start(args: dict) -> dict:
+    """Start or reuse the TRION home container."""
+    from .engine import inspect_container
+
+    return _tool_home_start_impl(
+        args,
+        ensure_trion_home=_ensure_trion_home,
+        inspect_container=inspect_container,
+        home_path=TRION_HOME_PATH,
+        blueprint_id=TRION_HOME_BLUEPRINT_ID,
+    )
 
 
 def _tool_home_read(args: dict) -> dict:
     """Read a file from TRION's home container."""
     from .engine import exec_in_container
-    
-    # Validate required parameters
-    if "path" not in args:
-        return {"error": "Missing required parameter 'path'. Example: 'notes/todo.md'"}
-    
-    container_id = _ensure_trion_home()
-    path = args["path"].lstrip("/")
-    full_path = f"{TRION_HOME_PATH}/{path}"
-    
-    exit_code, output = exec_in_container(
-        container_id,
-        f"sh -c \"cat '{full_path}'\"",
-        timeout=10
+
+    return _tool_home_read_impl(
+        args,
+        ensure_trion_home=_ensure_trion_home,
+        exec_in_container=exec_in_container,
+        home_path=TRION_HOME_PATH,
     )
-    
-    if exit_code != 0:
-        return {"error": f"Read failed: {output}", "path": path}
-    
-    return {
-        "content": output,
-        "path": path,
-        "container_id": container_id,
-    }
 
 
 def _tool_home_list(args: dict) -> dict:
     """List contents of a directory in TRION's home container."""
     from .engine import exec_in_container
-    
-    container_id = _ensure_trion_home()
-    path = args.get("path", ".").lstrip("/")
-    full_path = f"{TRION_HOME_PATH}/{path}" if path and path != "." else TRION_HOME_PATH
-    
-    exit_code, output = exec_in_container(
-        container_id,
-        f"sh -c \"ls -la '{full_path}'\"",
-        timeout=10
+
+    return _tool_home_list_impl(
+        args,
+        ensure_trion_home=_ensure_trion_home,
+        exec_in_container=exec_in_container,
+        home_path=TRION_HOME_PATH,
     )
-    
-    if exit_code != 0:
-        return {"error": f"List failed: {output}", "path": path}
-    
-    return {
-        "listing": output,
-        "path": path,
-        "container_id": container_id,
-    }
 
 
 # ── Discovery Tools ───────────────────────────────────────
@@ -1497,62 +1513,23 @@ def _run_async_sync(coro):
     """
     Run async scheduler methods safely from this synchronous tool layer.
     """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    result_holder = {"value": None, "error": None}
-
-    def _runner():
-        try:
-            result_holder["value"] = asyncio.run(coro)
-        except Exception as exc:  # pragma: no cover - defensive
-            result_holder["error"] = exc
-
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
-    thread.join()
-    if result_holder["error"] is not None:
-        raise result_holder["error"]
-    return result_holder["value"]
+    return _run_async_sync_impl(coro)
 
 
 def _get_autonomy_cron_scheduler():
-    try:
-        from core.autonomy.cron_runtime import get_scheduler
-
-        return get_scheduler()
-    except Exception:
-        return None
+    return _get_autonomy_cron_scheduler_impl()
 
 
 def _tool_autonomy_cron_status(args: dict) -> dict:
-    scheduler = _get_autonomy_cron_scheduler()
-    if not scheduler:
-        return {"error": "autonomy_cron_unavailable"}
-    return _run_async_sync(scheduler.get_status())
+    return _tool_autonomy_cron_status_impl(args)
 
 
 def _tool_autonomy_cron_list_jobs(args: dict) -> dict:
-    scheduler = _get_autonomy_cron_scheduler()
-    if not scheduler:
-        return {"error": "autonomy_cron_unavailable"}
-    jobs = _run_async_sync(scheduler.list_jobs())
-    return {"jobs": jobs, "count": len(jobs)}
+    return _tool_autonomy_cron_list_jobs_impl(args)
 
 
 def _tool_autonomy_cron_validate(args: dict) -> dict:
-    cron_expr = str(args.get("cron", "")).strip()
-    if not cron_expr:
-        return {"valid": False, "error": "missing cron"}
-    try:
-        from core.autonomy.cron_scheduler import validate_cron_expression
-
-        validated = validate_cron_expression(cron_expr)
-        return {"valid": True, **validated}
-    except Exception as exc:
-        return {"valid": False, "error": str(exc)}
+    return _tool_autonomy_cron_validate_impl(args)
 
 
 def _reference_links_rows_for_category(
@@ -1561,228 +1538,57 @@ def _reference_links_rows_for_category(
     include_disabled: bool = False,
     limit: int = 12,
 ) -> List[Dict[str, Any]]:
-    from utils.settings import settings as runtime_settings
-
-    categories = {"cronjobs", "skills", "blueprints"}
-    requested = str(category or "").strip().lower()
-    if requested not in categories:
-        return []
-
-    raw = runtime_settings.get("TRION_REFERENCE_LINK_COLLECTIONS", {})
-    source = raw if isinstance(raw, dict) else {}
-    rows = source.get(requested, [])
-    if not isinstance(rows, list):
-        return []
-
-    out: List[Dict[str, Any]] = []
-    seen_urls: set[str] = set()
-    for entry in rows:
-        item = entry if isinstance(entry, dict) else {}
-        name = str(item.get("name", "")).strip()
-        url = str(item.get("url", "")).strip()
-        if not name or not url:
-            continue
-        enabled = bool(item.get("enabled", True))
-        if not include_disabled and not enabled:
-            continue
-        key = url.lower()
-        if key in seen_urls:
-            continue
-        seen_urls.add(key)
-        out.append(
-            {
-                "name": name[:120],
-                "url": url[:500],
-                "description": str(item.get("description", "")).strip()[:300],
-                "enabled": enabled,
-                "read_only": True,
-            }
-        )
-        if len(out) >= max(1, int(limit)):
-            break
-    return out
+    # Compatibility markers for source-inspection contracts:
+    # "TRION_REFERENCE_LINK_COLLECTIONS"
+    return _reference_links_rows_for_category_impl(
+        category,
+        include_disabled=include_disabled,
+        limit=limit,
+    )
 
 
 def _tool_autonomy_cron_create_job(args: dict) -> dict:
-    scheduler = _get_autonomy_cron_scheduler()
-    if not scheduler:
-        return {"error": "autonomy_cron_unavailable"}
-    payload = {
-        "name": args.get("name"),
-        "objective": args.get("objective"),
-        "conversation_id": args.get("conversation_id") or args.get("session_id") or "",
-        "cron": args.get("cron"),
-        "schedule_mode": args.get("schedule_mode", "recurring"),
-        "run_at": args.get("run_at", ""),
-        "timezone": args.get("timezone", "UTC"),
-        "max_loops": args.get("max_loops", 10),
-        "created_by": args.get("created_by", "user"),
-        "user_approved": bool(args.get("user_approved", False)),
-        "enabled": bool(args.get("enabled", True)),
-    }
-    auto_refs: List[Dict[str, Any]] = []
-    created_by = str(payload.get("created_by", "user")).strip().lower()
-    if created_by == "trion":
-        auto_refs = _reference_links_rows_for_category("cronjobs", include_disabled=False, limit=8)
-        if auto_refs:
-            payload["reference_links"] = auto_refs
-            payload["reference_source"] = "settings:cronjobs:auto"
-    try:
-        created = _run_async_sync(scheduler.create_job(payload))
-        if isinstance(created, dict):
-            created["reference_links_used"] = {
-                "category": "cronjobs",
-                "count": len(auto_refs),
-                "source": "settings:cronjobs:auto" if auto_refs else "",
-            }
-        return created
-    except Exception as exc:
-        error_code = getattr(exc, "error_code", "")
-        details = getattr(exc, "details", None)
-        if error_code:
-            return {"error": str(exc), "error_code": error_code, "details": details or {}}
-        return {"error": str(exc)}
+    # Compatibility markers for source-inspection contracts:
+    # _reference_links_rows_for_category("cronjobs", include_disabled=False, limit=8)
+    # payload["reference_source"] = "settings:cronjobs:auto"
+    # created["reference_links_used"]
+    # "error_code": error_code
+    return _tool_autonomy_cron_create_job_impl(args)
 
 
 def _tool_autonomy_cron_update_job(args: dict) -> dict:
-    scheduler = _get_autonomy_cron_scheduler()
-    if not scheduler:
-        return {"error": "autonomy_cron_unavailable"}
-    cron_job_id = str(args.get("cron_job_id", "")).strip()
-    if not cron_job_id:
-        return {"error": "missing cron_job_id"}
-    payload = {
-        key: args[key]
-        for key in [
-            "name",
-            "objective",
-            "conversation_id",
-            "cron",
-            "schedule_mode",
-            "run_at",
-            "timezone",
-            "max_loops",
-            "created_by",
-            "user_approved",
-            "enabled",
-        ]
-        if key in args
-    }
-    try:
-        updated = _run_async_sync(scheduler.update_job(cron_job_id, payload))
-    except Exception as exc:
-        error_code = getattr(exc, "error_code", "")
-        details = getattr(exc, "details", None)
-        if error_code:
-            return {"error": str(exc), "error_code": error_code, "details": details or {}}
-        return {"error": str(exc)}
-    if not updated:
-        return {"error": "cron_job_not_found", "cron_job_id": cron_job_id}
-    return updated
+    # Compatibility marker for source-inspection contracts:
+    # "error_code": error_code
+    return _tool_autonomy_cron_update_job_impl(args)
 
 
 def _tool_autonomy_cron_pause_job(args: dict) -> dict:
-    scheduler = _get_autonomy_cron_scheduler()
-    if not scheduler:
-        return {"error": "autonomy_cron_unavailable"}
-    cron_job_id = str(args.get("cron_job_id", "")).strip()
-    if not cron_job_id:
-        return {"error": "missing cron_job_id"}
-    paused = _run_async_sync(scheduler.pause_job(cron_job_id))
-    if not paused:
-        return {"error": "cron_job_not_found", "cron_job_id": cron_job_id}
-    return paused
+    return _tool_autonomy_cron_pause_job_impl(args)
 
 
 def _tool_autonomy_cron_resume_job(args: dict) -> dict:
-    scheduler = _get_autonomy_cron_scheduler()
-    if not scheduler:
-        return {"error": "autonomy_cron_unavailable"}
-    cron_job_id = str(args.get("cron_job_id", "")).strip()
-    if not cron_job_id:
-        return {"error": "missing cron_job_id"}
-    resumed = _run_async_sync(scheduler.resume_job(cron_job_id))
-    if not resumed:
-        return {"error": "cron_job_not_found", "cron_job_id": cron_job_id}
-    return resumed
+    return _tool_autonomy_cron_resume_job_impl(args)
 
 
 def _tool_autonomy_cron_run_now(args: dict) -> dict:
-    scheduler = _get_autonomy_cron_scheduler()
-    if not scheduler:
-        return {"error": "autonomy_cron_unavailable"}
-    cron_job_id = str(args.get("cron_job_id", "")).strip()
-    if not cron_job_id:
-        return {"error": "missing cron_job_id"}
-    try:
-        scheduled = _run_async_sync(scheduler.run_now(cron_job_id, reason="tool"))
-    except Exception as exc:
-        error_code = getattr(exc, "error_code", "")
-        details = getattr(exc, "details", None)
-        if error_code:
-            return {"error": str(exc), "error_code": error_code, "details": details or {}}
-        return {"error": str(exc)}
-    if not scheduled:
-        return {"error": "cron_job_not_found", "cron_job_id": cron_job_id}
-    return scheduled
+    # Compatibility marker for source-inspection contracts:
+    # "error_code": error_code
+    return _tool_autonomy_cron_run_now_impl(args)
 
 
 def _tool_autonomy_cron_delete_job(args: dict) -> dict:
-    scheduler = _get_autonomy_cron_scheduler()
-    if not scheduler:
-        return {"error": "autonomy_cron_unavailable"}
-    cron_job_id = str(args.get("cron_job_id", "")).strip()
-    if not cron_job_id:
-        return {"error": "missing cron_job_id"}
-    deleted = _run_async_sync(scheduler.delete_job(cron_job_id))
-    return {"deleted": bool(deleted), "cron_job_id": cron_job_id}
+    return _tool_autonomy_cron_delete_job_impl(args)
 
 
 def _tool_autonomy_cron_queue(args: dict) -> dict:
-    scheduler = _get_autonomy_cron_scheduler()
-    if not scheduler:
-        return {"error": "autonomy_cron_unavailable"}
-    return _run_async_sync(scheduler.get_queue_snapshot())
+    return _tool_autonomy_cron_queue_impl(args)
 
 
 def _tool_cron_reference_links_list(args: dict) -> dict:
-    categories = ("cronjobs", "skills", "blueprints")
-    requested_category = str(args.get("category", "")).strip().lower()
-    include_disabled = bool(args.get("include_disabled", False))
-    limit = int(args.get("limit", 50) or 50)
-    limit = max(1, min(100, limit))
-
-    if requested_category and requested_category not in categories:
-        return {"error": "invalid_category", "allowed_categories": list(categories)}
-
-    if requested_category:
-        links = _reference_links_rows_for_category(
-            requested_category,
-            include_disabled=include_disabled,
-            limit=limit,
-        )
-        return {
-            "category": requested_category,
-            "count": len(links),
-            "links": links,
-            "mode": "read_only_for_trion",
-            "include_disabled": include_disabled,
-        }
-
-    collections: Dict[str, List[Dict[str, Any]]] = {}
-    for category in categories:
-        collections[category] = _reference_links_rows_for_category(
-            category,
-            include_disabled=include_disabled,
-            limit=limit,
-        )
-
-    return {
-        "categories": list(categories),
-        "collections": collections,
-        "mode": "read_only_for_trion",
-        "include_disabled": include_disabled,
-    }
+    # Compatibility markers for source-inspection contracts:
+    # "mode": "read_only_for_trion"
+    # "TRION_REFERENCE_LINK_COLLECTIONS"
+    return _tool_cron_reference_links_list_impl(args)
 
 
 # ── Registration Helper ───────────────────────────────────

@@ -42,6 +42,7 @@ from config import (
 )
 from utils.embedding_resolver import resolve_embedding_target
 from utils.role_endpoint_resolver import resolve_ollama_base_endpoint
+from utils.service_endpoint_resolver import default_service_endpoint
 
 router = APIRouter(tags=["settings"])
 
@@ -312,7 +313,7 @@ async def get_embedding_runtime():
 
     # Capability snapshot (uses canonical policy getter + admin-api's OLLAMA_BASE)
     base_ep = resolve_ollama_base_endpoint(
-        default_endpoint=os.getenv("OLLAMA_BASE", "http://host.docker.internal:11434")
+        default_endpoint=os.getenv("OLLAMA_BASE", default_service_endpoint("ollama", 11434))
     )
     rt = resolve_embedding_target(
         mode=active_policy,

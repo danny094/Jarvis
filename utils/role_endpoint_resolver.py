@@ -20,6 +20,12 @@ import requests
 
 from config import OLLAMA_BASE
 from utils import ollama_endpoint_manager as _compute
+from utils.service_endpoint_resolver import (
+    candidate_service_endpoints,
+    docker_default_gateway_endpoint,
+    is_truthy,
+    normalize_endpoint,
+)
 
 
 _CACHE_LOCK = threading.Lock()
@@ -36,52 +42,15 @@ _DISCOVERY_TIMEOUT_S = float(os.getenv("TRION_OLLAMA_DISCOVERY_TIMEOUT_S", "0.35
 
 
 def _is_truthy(value: str) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+    return is_truthy(value)
 
 
 def _normalize_endpoint(endpoint: str) -> str:
-    return (endpoint or "").strip().rstrip("/")
+    return normalize_endpoint(endpoint)
 
 
 def _docker_default_gateway_endpoint(port: int = 11434) -> Optional[str]:
-    """
-    Best-effort discovery of the current container/network default gateway.
-    Avoids hardcoded bridge IP assumptions (e.g. 172.17.0.1).
-    """
-    try:
-        with open("/proc/net/route", "r", encoding="utf-8") as fh:
-            # Skip header
-            next(fh, None)
-            for line in fh:
-                cols = line.strip().split()
-                if len(cols) < 4:
-                    continue
-                destination = cols[1]
-                gateway_hex = cols[2]
-                flags_hex = cols[3]
-
-                # Default route + gateway flag.
-                if destination != "00000000":
-                    continue
-                try:
-                    flags = int(flags_hex, 16)
-                except Exception:
-                    continue
-                if not (flags & 0x2):
-                    continue
-
-                try:
-                    raw = bytes.fromhex(gateway_hex)
-                except Exception:
-                    continue
-                if len(raw) != 4:
-                    continue
-                ip = ".".join(str(b) for b in raw[::-1])
-                if ip and ip != "0.0.0.0":
-                    return f"http://{ip}:{int(port)}"
-    except Exception:
-        return None
-    return None
+    return docker_default_gateway_endpoint(port, scheme="http")
 
 
 def _candidate_default_endpoints(preferred: str) -> list[str]:
@@ -90,23 +59,21 @@ def _candidate_default_endpoints(preferred: str) -> list[str]:
     gateway_candidate = None
     if _is_truthy(os.getenv("TRION_OLLAMA_DISCOVERY_INCLUDE_GATEWAY", "true")):
         gateway_candidate = _docker_default_gateway_endpoint(11434)
-    defaults = [
-        preferred,
-        "http://host.docker.internal:11434",
-        "http://ollama:11434",
-        gateway_candidate or "",
-        "http://127.0.0.1:11434",
-        "http://localhost:11434",
-    ]
-    out: list[str] = []
-    seen = set()
-    for ep in custom + defaults:
-        ep = _normalize_endpoint(ep)
-        if not ep or ep in seen:
-            continue
-        seen.add(ep)
-        out.append(ep)
-    return out
+    extras = list(custom)
+    if gateway_candidate:
+        extras.append(gateway_candidate)
+    return candidate_service_endpoints(
+        configured=preferred,
+        port=11434,
+        scheme="http",
+        service_name=os.getenv("OLLAMA_SERVICE_NAME", "ollama"),
+        prefer_container_service=True,
+        extra=extras,
+        include_gateway=False,
+        include_host_docker=True,
+        include_loopback=True,
+        include_localhost=True,
+    )
 
 
 def _probe_ollama_tags(endpoint: str) -> bool:

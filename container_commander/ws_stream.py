@@ -46,7 +46,7 @@ class ExecSession:
 
     exec_id: str
     sock: Any
-    read_task: asyncio.Task
+    read_task: Optional[asyncio.Task]
 
 
 _exec_sessions: Dict[SessionKey, ExecSession] = {}
@@ -118,6 +118,34 @@ async def _handle_attach(ws: WebSocket, container_id: str):
     _attached[ws] = container_id
     logger.info(f"[WS] Attached to {container_id[:12]}")
 
+    # Prime the UI with recent logs so the log panel is never empty on attach.
+    try:
+        from .engine import get_client
+
+        client = get_client()
+        container = client.containers.get(container_id)
+        recent_logs = container.logs(tail=120, timestamps=False).decode("utf-8", errors="replace")
+        if recent_logs:
+            await _send(ws, {
+                "type": "output",
+                "container_id": container_id,
+                "stream": "logs",
+                "data": recent_logs,
+            })
+    except Exception as e:
+        logger.debug(f"[WS] Failed to preload logs for {container_id[:12]}: {e}")
+
+    # Eagerly open the interactive PTY so the shell panel shows a prompt immediately.
+    session = await _ensure_exec_session(ws, container_id)
+    if session:
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: _socket_send(session.sock, b"\n"),
+            )
+        except Exception as e:
+            logger.debug(f"[WS] Failed to prime shell prompt for {container_id[:12]}: {e}")
+
     # Start log streaming task
     task = asyncio.create_task(_stream_logs(ws, container_id))
     _log_tasks[ws] = task
@@ -147,6 +175,7 @@ async def _detach_current(ws: WebSocket):
 
 async def _stream_logs(ws: WebSocket, container_id: str):
     """Stream container logs to WebSocket in real-time."""
+    log_stream = None
     try:
         from .engine import get_client
         client = get_client()
@@ -154,8 +183,12 @@ async def _stream_logs(ws: WebSocket, container_id: str):
 
         # Stream logs with follow
         log_stream = container.logs(stream=True, follow=True, timestamps=False)
+        loop = asyncio.get_event_loop()
 
-        for chunk in log_stream:
+        while True:
+            chunk = await loop.run_in_executor(None, lambda: _next_log_chunk(log_stream))
+            if chunk is None:
+                break
             if ws not in _attached or _attached.get(ws) != container_id:
                 break
             text = chunk.decode("utf-8", errors="replace")
@@ -182,6 +215,12 @@ async def _stream_logs(ws: WebSocket, container_id: str):
     except Exception as e:
         logger.error(f"[WS] Stream error: {e}")
         await _send(ws, {"type": "error", "message": str(e)})
+    finally:
+        try:
+            if log_stream and hasattr(log_stream, "close"):
+                log_stream.close()
+        except Exception:
+            pass
 
 
 # ── Exec ──────────────────────────────────────────────────
@@ -231,7 +270,7 @@ async def _handle_stdin(ws: WebSocket, container_id: str, data: str):
 
         # Write stdin data
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: session.sock._sock.send(data.encode("utf-8")))
+        await loop.run_in_executor(None, lambda: _socket_send(session.sock, data.encode("utf-8")))
 
     except Exception as e:
         logger.error(f"[WS] Stdin error: {e}")
@@ -247,7 +286,7 @@ async def _read_pty_output(ws: WebSocket, container_id: str, session_key: Sessio
     try:
         loop = asyncio.get_event_loop()
         while True:
-            data = await loop.run_in_executor(None, lambda: sock._sock.recv(4096))
+            data = await loop.run_in_executor(None, lambda: _socket_recv(sock, 4096))
             if not data:
                 break
             text = data.decode("utf-8", errors="replace")
@@ -299,7 +338,7 @@ async def broadcast_event(event: str, data: dict):
             await _send(ws, msg)
         except Exception:
             dead.add(ws)
-    _connections -= dead
+    _connections.difference_update(dead)
 
 
 def broadcast_event_sync(event: str, data: dict):
@@ -359,7 +398,7 @@ async def _ensure_exec_session(ws: WebSocket, container_id: str) -> Optional[Exe
         container = client.containers.get(container_id)
         created = client.api.exec_create(
             container.id,
-            "/bin/sh",
+            ["/bin/sh", "-i"],
             stdin=True,
             tty=True,
             stdout=True,
@@ -367,10 +406,10 @@ async def _ensure_exec_session(ws: WebSocket, container_id: str) -> Optional[Exe
         )
         exec_id = created.get("Id") if isinstance(created, dict) else str(created)
         sock = client.api.exec_start(exec_id, socket=True, tty=True)
-        read_task = asyncio.create_task(_read_pty_output(ws, container_id, key))
-        session = ExecSession(exec_id=exec_id, sock=sock, read_task=read_task)
+        session = ExecSession(exec_id=exec_id, sock=sock, read_task=None)
         _exec_sessions[key] = session
         _ws_exec_index.setdefault(ws, set()).add(key)
+        session.read_task = asyncio.create_task(_read_pty_output(ws, container_id, key))
         return session
     except Exception as e:
         logger.error(f"[WS] PTY session create failed for {container_id[:12]}: {e}")
@@ -389,7 +428,7 @@ async def _close_exec_session_by_key(key: SessionKey):
     if read_task and not read_task.done():
         read_task.cancel()
     try:
-        await asyncio.get_event_loop().run_in_executor(None, lambda: session.sock.close())
+        await asyncio.get_event_loop().run_in_executor(None, lambda: _socket_close(session.sock))
     except Exception:
         pass
     ws_to_cleanup = None
@@ -416,3 +455,47 @@ async def _cleanup_ws(ws: WebSocket):
     for key in keys:
         await _close_exec_session_by_key(key)
     _ws_exec_index.pop(ws, None)
+
+
+def _socket_recv(sock: Any, size: int) -> bytes:
+    """Read bytes from a docker exec socket using public methods when available."""
+    if hasattr(sock, "recv"):
+        return sock.recv(size)
+    inner = getattr(sock, "_sock", None)
+    if inner and hasattr(inner, "recv"):
+        return inner.recv(size)
+    raise RuntimeError("socket_recv_unavailable")
+
+
+def _socket_send(sock: Any, data: bytes) -> int:
+    """Write bytes to a docker exec socket using public methods when available."""
+    if hasattr(sock, "send"):
+        return sock.send(data)
+    if hasattr(sock, "sendall"):
+        sock.sendall(data)
+        return len(data)
+    inner = getattr(sock, "_sock", None)
+    if inner and hasattr(inner, "send"):
+        return inner.send(data)
+    if inner and hasattr(inner, "sendall"):
+        inner.sendall(data)
+        return len(data)
+    raise RuntimeError("socket_send_unavailable")
+
+
+def _socket_close(sock: Any) -> None:
+    """Close a docker exec socket wrapper safely."""
+    if hasattr(sock, "close"):
+        sock.close()
+        return
+    inner = getattr(sock, "_sock", None)
+    if inner and hasattr(inner, "close"):
+        inner.close()
+
+
+def _next_log_chunk(log_stream: Any) -> Optional[bytes]:
+    """Read one blocking chunk from Docker's log iterator."""
+    try:
+        return next(log_stream)
+    except StopIteration:
+        return None

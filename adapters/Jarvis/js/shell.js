@@ -4,7 +4,9 @@
  */
 
 import { initApp } from "../static/js/app.js";
-import { initToolsApp } from "./apps/tools.js";
+import { initToolsApp } from "./apps/tools.js?v=20260322a";
+
+const TERMINAL_MODULE_PATH = './apps/terminal.js?v=20260322q';
 
 // Global State
 const state = {
@@ -16,6 +18,7 @@ const state = {
     terminalLoaded: false,
     cronLoaded: false,
     sessionLoaded: false,
+    vaultLoaded: false,
     marketplaceLoaded: false
 };
 
@@ -31,6 +34,7 @@ const els = {
         terminal: document.getElementById('app-terminal'),
         cron: document.getElementById('app-cron'),
         session: document.getElementById('app-session'),
+        vault: document.getElementById('app-vault'),
         marketplace: document.getElementById('app-marketplace')
     },
     debugBtn: document.getElementById('debug-toggle-btn'),
@@ -328,7 +332,12 @@ function switchApp(appName) {
     if (targetWin) {
         targetWin.classList.remove('hidden');
         // Slight delay for fade-in effect if we add css transitions later
-        setTimeout(() => targetWin.classList.add('active'), 10);
+        setTimeout(() => {
+            targetWin.classList.add('active');
+            window.dispatchEvent(new CustomEvent('trion:app-activated', {
+                detail: { appName }
+            }));
+        }, 10);
     }
 
     // Lazy Load Apps
@@ -378,7 +387,7 @@ function switchApp(appName) {
 
     if (appName === 'terminal') {
         if (!state.terminalLoaded) {
-            import('./apps/terminal.js')
+            import(TERMINAL_MODULE_PATH)
                 .then(module => {
                     if (module.init) {
                         module.init();
@@ -386,6 +395,14 @@ function switchApp(appName) {
                     state.terminalLoaded = true;
                 })
                 .catch(err => console.error("Failed to load Terminal App:", err));
+        } else {
+            import(TERMINAL_MODULE_PATH)
+                .then(module => {
+                    if (module.remount) {
+                        module.remount();
+                    }
+                })
+                .catch(err => console.error("Failed to remount Terminal App:", err));
         }
     }
 
@@ -400,6 +417,14 @@ function switchApp(appName) {
             .catch(err => console.error("Failed to load Cron App:", err));
     }
 
+    if (appName === 'vault') {
+        import('./apps/vault.js?v=20260322g')
+            .then(mod => {
+                if (mod.initVaultApp) mod.initVaultApp(els.windows.vault);
+                state.vaultLoaded = true;
+            })
+            .catch(err => console.error('[Vault] load error', err));
+    }
     if (appName === 'session') {
         import('./apps/session.js')
             .then(module => {

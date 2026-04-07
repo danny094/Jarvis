@@ -20,6 +20,7 @@ services:
     - ENABLE_VALIDATION=true
     - VALIDATION_HARD_FAIL=true
     - LOG_LEVEL=INFO
+    - COMMANDER_MAX_CONTAINERS=5
     - COMMANDER_DB_PATH=/app/data/commander.db
     - SNAPSHOT_DIR=/app/data/snapshots
     - MARKETPLACE_DIR=/app/data/marketplace
@@ -102,6 +103,7 @@ services:
     - COMMANDER_DB_PATH=/app/data/commander.db
     - SNAPSHOT_DIR=/app/data/snapshots
     - MARKETPLACE_DIR=/app/data/marketplace
+    - VAULT_DB_PATH=/app/data/vault.db
     - PROTOCOL_DIR=/app/memory
     - COMPRESSION_THRESHOLD=20000
     - COMPRESSION_PHASE2_THRESHOLD=40000
@@ -111,6 +113,7 @@ services:
     - INTERNAL_SECRET_RESOLVE_TOKEN=${INTERNAL_SECRET_RESOLVE_TOKEN:-trion-internal-secret-resolve-token}
     - STORAGE_BROKER_URL=http://storage-broker:8089
     - STORAGE_BROKER_SETTINGS_PATH=/app/storage_broker/storage_policy.json
+    - RUNTIME_HARDWARE_URL=http://host.docker.internal:8420
     volumes:
     - ./personas:/app/personas
     - ./core:/app/core:ro
@@ -128,6 +131,7 @@ services:
     - ./adapters/admin-api/commander_api:/app/commander_api:ro
     - ./adapters/admin-api/secrets_routes.py:/app/secrets_routes.py:ro
     - ./container_commander:/app/container_commander:ro
+    - ./marketplace:/app/marketplace:ro
     - ./sysinfo:/app/sysinfo:ro
     - /var/run/docker.sock:/var/run/docker.sock
     - commander-data:/app/data
@@ -330,15 +334,36 @@ services:
     # When DIGEST_RUN_MODE=off the script exits with code 0 → no restart loop.
     restart: on-failure
 
+  storage-host-helper:
+    build:
+      context: ./mcp-servers/storage-host-helper
+    container_name: storage-host-helper
+    pid: host
+    privileged: true
+    security_opt:
+    - label=disable
+    - seccomp=unconfined
+    environment:
+    - LOG_LEVEL=INFO
+    - STORAGE_HOST_MOUNT_NS_PATH=/proc/1/ns/mnt
+    volumes:
+    - /dev:/dev
+    networks:
+    - big-bear-lobe-chat_default
+    restart: unless-stopped
+
   storage-broker:
     build:
       context: ./mcp-servers/storage-broker
     container_name: storage-broker
+    depends_on:
+    - storage-host-helper
     environment:
     - LOG_LEVEL=INFO
     - STORAGE_BROKER_DB=/app/data/storage_broker.db
     - STORAGE_POLICY_PATH=/app/data/storage_policy.json
     - STORAGE_MOUNTS_PATH=/host/proc_mounts
+    - STORAGE_HOST_HELPER_URL=http://storage-host-helper:8090
     - ADMIN_API_URL=http://jarvis-admin-api:8200
     # STORAGE_MANAGED_BASES: colon-separated list of approved managed host paths
     # e.g. /mnt/trion-data:/srv/trion-storage
@@ -352,21 +377,14 @@ services:
     - /proc/1/mounts:/host/proc_mounts:ro
     - /sys/block:/sys/block:ro
     - /sys/class/block:/sys/class/block:ro
-    # Block device access for lsblk filesystem probing (read-only)
-    # storage-broker is a governance tool and needs raw device read access
-    devices:
-    - /dev/sda:/dev/sda
-    - /dev/sda1:/dev/sda1
-    - /dev/sda2:/dev/sda2
-    - /dev/sda3:/dev/sda3
-    - /dev/sdb:/dev/sdb
-    - /dev/sdb1:/dev/sdb1
-    - /dev/sdb2:/dev/sdb2
-    - /dev/sdb3:/dev/sdb3
-    - /dev/sdc:/dev/sdc
-    - /dev/sdc1:/dev/sdc1
-    - /dev/sdc2:/dev/sdc2
-    - /dev/sdc3:/dev/sdc3
+    # Full /dev mount so newly attached block devices are visible without
+    # restarting the container or editing this file.
+    - /dev:/dev
+    # Allow read/write/mknod on all SCSI/SATA (major 8) and NVMe (major 259)
+    # block devices — more targeted than privileged: true.
+    device_cgroup_rules:
+    - 'b 8:* rwm'
+    - 'b 259:* rwm'
     # disk group (GID 6) = read access to block devices without root
     group_add:
     - '6'

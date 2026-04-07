@@ -54,6 +54,7 @@ class DiskInfo(BaseModel):
     device: str                      # e.g. "/dev/sdb1"
     uuid: str = ""
     label: str = ""
+    partlabel: str = ""
     filesystem: str = ""
     size_bytes: int = 0
     available_bytes: int = 0
@@ -103,6 +104,7 @@ class PolicyConfig(BaseModel):
     unknown_mount_default: str = "blocked"
     dry_run_default: bool = True
     blacklist_extra: List[str] = Field(default_factory=list)  # user-added blocked paths
+    managed_bases: List[str] = Field(default_factory=list)
     zone_overrides: Dict[str, str] = Field(default_factory=dict)  # device_id → zone
     policy_overrides: Dict[str, str] = Field(default_factory=dict)  # device_id → policy_state
 
@@ -124,9 +126,15 @@ class ProvisionResult(BaseModel):
     zone: str
     profile: str
     dry_run: bool = True
+    base_path: str = ""
+    owner: str = ""
+    group: str = ""
     target_base: str = ""
     paths_to_create: List[str] = Field(default_factory=list)
+    aliases_to_create: List[str] = Field(default_factory=list)
     created: List[str] = Field(default_factory=list)
+    aliases_created: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     ok: bool = False
 
@@ -137,6 +145,7 @@ class OperationResult(BaseModel):
     device: str
     dry_run: bool = True
     preview: str = ""
+    mountpoint: str = ""
     executed: bool = False
     ok: bool = False
     error: str = ""

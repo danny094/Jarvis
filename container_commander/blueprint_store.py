@@ -15,7 +15,7 @@ import threading
 import yaml
 from datetime import datetime
 from typing import Optional, List, Dict
-from .models import Blueprint, ResourceLimits, SecretRequirement, MountDef, NetworkMode
+from .models import Blueprint, ResourceLimits, SecretRequirement, MountDef, NetworkMode, PreStartExec, HardwareIntent
 
 
 # ── Database Path ─────────────────────────────────────────
@@ -54,10 +54,17 @@ def init_db():
                 ports_json TEXT DEFAULT '[]',
                 runtime TEXT DEFAULT '',
                 devices_json TEXT DEFAULT '[]',
+                hardware_intents_json TEXT DEFAULT '[]',
                 environment_json TEXT DEFAULT '{}',
                 healthcheck_json TEXT DEFAULT '{}',
+                pre_start_exec_json TEXT DEFAULT '{}',
                 cap_add_json TEXT DEFAULT '[]',
+                security_opt_json TEXT DEFAULT '[]',
+                cap_drop_json TEXT DEFAULT '[]',
+                privileged INTEGER DEFAULT 0,
+                read_only_rootfs INTEGER DEFAULT 0,
                 shm_size TEXT DEFAULT '',
+                ipc_mode TEXT DEFAULT '',
                 network TEXT DEFAULT 'internal',
                 tags_json TEXT DEFAULT '[]',
                 icon TEXT DEFAULT '📦',
@@ -110,6 +117,11 @@ def init_db():
         except Exception:
             pass
         try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN hardware_intents_json TEXT DEFAULT '[]'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
             conn.execute("ALTER TABLE blueprints ADD COLUMN environment_json TEXT DEFAULT '{}'")
             conn.commit()
         except Exception:
@@ -120,12 +132,42 @@ def init_db():
         except Exception:
             pass
         try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN pre_start_exec_json TEXT DEFAULT '{}'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
             conn.execute("ALTER TABLE blueprints ADD COLUMN cap_add_json TEXT DEFAULT '[]'")
             conn.commit()
         except Exception:
             pass
         try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN security_opt_json TEXT DEFAULT '[]'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN cap_drop_json TEXT DEFAULT '[]'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN privileged INTEGER DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN read_only_rootfs INTEGER DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass
+        try:
             conn.execute("ALTER TABLE blueprints ADD COLUMN shm_size TEXT DEFAULT ''")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE blueprints ADD COLUMN ipc_mode TEXT DEFAULT ''")
             conn.commit()
         except Exception:
             pass
@@ -169,9 +211,13 @@ def _row_to_blueprint(row: sqlite3.Row) -> Blueprint:
     mounts_data = json.loads(row["mounts_json"] or "[]")
     ports_data = json.loads(row["ports_json"] or "[]")
     devices_data = json.loads(row["devices_json"] or "[]")
+    hardware_intents_data = json.loads(row["hardware_intents_json"] or "[]")
     environment_data = json.loads(row["environment_json"] or "{}")
     healthcheck_data = json.loads(row["healthcheck_json"] or "{}")
+    pre_start_exec_data = json.loads(row["pre_start_exec_json"] or "{}")
     cap_add_data = json.loads(row["cap_add_json"] or "[]")
+    security_opt_data = json.loads(row["security_opt_json"] or "[]")
+    cap_drop_data = json.loads(row["cap_drop_json"] or "[]")
     tags = json.loads(row["tags_json"] or "[]")
     # exec_policy_json added in Phase 2 — graceful fallback for older rows
     try:
@@ -196,6 +242,18 @@ def _row_to_blueprint(row: sqlite3.Row) -> Blueprint:
         shm_size = row["shm_size"] or ""
     except Exception:
         shm_size = ""
+    try:
+        ipc_mode = row["ipc_mode"] or ""
+    except Exception:
+        ipc_mode = ""
+    try:
+        privileged = bool(int(row["privileged"] or 0))
+    except Exception:
+        privileged = False
+    try:
+        read_only_rootfs = bool(int(row["read_only_rootfs"] or 0))
+    except Exception:
+        read_only_rootfs = False
 
     return Blueprint(
         id=row["id"],
@@ -213,10 +271,17 @@ def _row_to_blueprint(row: sqlite3.Row) -> Blueprint:
         ports=[str(p) for p in ports_data if p is not None],
         runtime=runtime,
         devices=[str(d) for d in devices_data if d is not None],
+        hardware_intents=[HardwareIntent(**item) for item in hardware_intents_data if isinstance(item, dict)],
         environment={str(k): str(v) for k, v in dict(environment_data or {}).items()},
         healthcheck=dict(healthcheck_data or {}),
+        pre_start_exec=PreStartExec(**pre_start_exec_data) if isinstance(pre_start_exec_data, dict) and pre_start_exec_data else None,
         cap_add=[str(c) for c in cap_add_data if c is not None],
+        security_opt=[str(opt) for opt in security_opt_data if opt is not None],
+        cap_drop=[str(c) for c in cap_drop_data if c is not None],
+        privileged=privileged,
+        read_only_rootfs=read_only_rootfs,
         shm_size=shm_size,
+        ipc_mode=ipc_mode,
         network=NetworkMode(row["network"]) if row["network"] else NetworkMode.INTERNAL,
         allowed_exec=allowed_exec,
         tags=tags,
@@ -244,10 +309,17 @@ def _blueprint_to_params(bp: Blueprint) -> dict:
         "ports_json": json.dumps(bp.ports),
         "runtime": bp.runtime,
         "devices_json": json.dumps(bp.devices),
+        "hardware_intents_json": json.dumps([intent.model_dump() for intent in bp.hardware_intents]),
         "environment_json": json.dumps(bp.environment),
         "healthcheck_json": json.dumps(bp.healthcheck),
+        "pre_start_exec_json": bp.pre_start_exec.model_dump_json() if bp.pre_start_exec else "{}",
         "cap_add_json": json.dumps(bp.cap_add),
+        "security_opt_json": json.dumps(bp.security_opt),
+        "cap_drop_json": json.dumps(bp.cap_drop),
+        "privileged": 1 if bp.privileged else 0,
+        "read_only_rootfs": 1 if bp.read_only_rootfs else 0,
         "shm_size": bp.shm_size,
+        "ipc_mode": bp.ipc_mode,
         "network": bp.network.value if bp.network else "internal",
         "tags_json": json.dumps(bp.tags),
         "exec_policy_json": json.dumps(bp.allowed_exec),
@@ -268,11 +340,13 @@ def create_blueprint(bp: Blueprint) -> Blueprint:
         conn.execute("""
             INSERT INTO blueprints (id, name, description, extends, dockerfile, image, image_digest,
                 system_prompt, resources_json, secrets_json, mounts_json, storage_scope,
-                ports_json, runtime, devices_json, environment_json, healthcheck_json, cap_add_json, shm_size,
+                ports_json, runtime, devices_json, hardware_intents_json, environment_json, healthcheck_json, pre_start_exec_json, cap_add_json,
+                security_opt_json, cap_drop_json, privileged, read_only_rootfs, shm_size, ipc_mode,
                 network, tags_json, exec_policy_json, icon, created_at, updated_at)
             VALUES (:id, :name, :description, :extends, :dockerfile, :image, :image_digest,
                 :system_prompt, :resources_json, :secrets_json, :mounts_json, :storage_scope,
-                :ports_json, :runtime, :devices_json, :environment_json, :healthcheck_json, :cap_add_json, :shm_size,
+                :ports_json, :runtime, :devices_json, :hardware_intents_json, :environment_json, :healthcheck_json, :pre_start_exec_json, :cap_add_json,
+                :security_opt_json, :cap_drop_json, :privileged, :read_only_rootfs, :shm_size, :ipc_mode,
                 :network, :tags_json, :exec_policy_json, :icon, :created_at, :updated_at)
         """, params)
         conn.commit()
@@ -336,18 +410,26 @@ def update_blueprint(blueprint_id: str, updates: dict) -> Optional[Blueprint]:
         return None
 
     # Merge updates into existing blueprint
+    nullable_replace_fields = {"extends", "image", "image_digest", "pre_start_exec"}
     for key, value in updates.items():
-        if hasattr(existing, key) and value is not None:
-            if key == "resources" and isinstance(value, dict):
-                setattr(existing, key, ResourceLimits(**value))
-            elif key == "secrets_required" and isinstance(value, list):
-                setattr(existing, key, [SecretRequirement(**s) if isinstance(s, dict) else s for s in value])
-            elif key == "mounts" and isinstance(value, list):
-                setattr(existing, key, [MountDef(**m) if isinstance(m, dict) else m for m in value])
-            elif key == "network":
-                setattr(existing, key, NetworkMode(value) if isinstance(value, str) else value)
-            else:
-                setattr(existing, key, value)
+        if not hasattr(existing, key):
+            continue
+        if value is None and key not in nullable_replace_fields:
+            continue
+        if key == "resources" and isinstance(value, dict):
+            setattr(existing, key, ResourceLimits(**value))
+        elif key == "secrets_required" and isinstance(value, list):
+            setattr(existing, key, [SecretRequirement(**s) if isinstance(s, dict) else s for s in value])
+        elif key == "mounts" and isinstance(value, list):
+            setattr(existing, key, [MountDef(**m) if isinstance(m, dict) else m for m in value])
+        elif key == "hardware_intents" and isinstance(value, list):
+            setattr(existing, key, [HardwareIntent(**item) if isinstance(item, dict) else item for item in value])
+        elif key == "pre_start_exec":
+            setattr(existing, key, PreStartExec(**value) if isinstance(value, dict) and value else None)
+        elif key == "network":
+            setattr(existing, key, NetworkMode(value) if isinstance(value, str) else value)
+        else:
+            setattr(existing, key, value)
 
     conn = _get_conn()
     try:
@@ -360,8 +442,12 @@ def update_blueprint(blueprint_id: str, updates: dict) -> Optional[Blueprint]:
                 resources_json=:resources_json, secrets_json=:secrets_json,
                 mounts_json=:mounts_json, storage_scope=:storage_scope,
                 ports_json=:ports_json, runtime=:runtime, devices_json=:devices_json,
+                hardware_intents_json=:hardware_intents_json,
                 environment_json=:environment_json, healthcheck_json=:healthcheck_json,
-                cap_add_json=:cap_add_json, shm_size=:shm_size,
+                pre_start_exec_json=:pre_start_exec_json,
+                cap_add_json=:cap_add_json, security_opt_json=:security_opt_json,
+                cap_drop_json=:cap_drop_json, privileged=:privileged,
+                read_only_rootfs=:read_only_rootfs, shm_size=:shm_size, ipc_mode=:ipc_mode,
                 network=:network, tags_json=:tags_json,
                 exec_policy_json=:exec_policy_json,
                 icon=:icon, updated_at=:updated_at
@@ -432,14 +518,46 @@ def resolve_blueprint(blueprint_id: str) -> Optional[Blueprint]:
         merged.runtime = bp.runtime
     if bp.devices:
         merged.devices = bp.devices
+    if bp.hardware_intents:
+        child_keys = {
+            (
+                item.resource_id,
+                item.target_type,
+                item.target_id,
+                item.attachment_mode,
+            )
+            for item in bp.hardware_intents
+        }
+        merged.hardware_intents = [
+            item for item in merged.hardware_intents
+            if (
+                item.resource_id,
+                item.target_type,
+                item.target_id,
+                item.attachment_mode,
+            ) not in child_keys
+        ]
+        merged.hardware_intents.extend(bp.hardware_intents)
     if bp.environment:
         merged.environment = {**merged.environment, **bp.environment}
     if bp.healthcheck:
         merged.healthcheck = {**merged.healthcheck, **bp.healthcheck}
+    if bp.pre_start_exec:
+        merged.pre_start_exec = bp.pre_start_exec
     if bp.cap_add:
         merged.cap_add = bp.cap_add
+    if bp.security_opt:
+        merged.security_opt = bp.security_opt
+    if bp.cap_drop:
+        merged.cap_drop = bp.cap_drop
+    if bp.privileged:
+        merged.privileged = True
+    if bp.read_only_rootfs:
+        merged.read_only_rootfs = True
     if bp.shm_size:
         merged.shm_size = bp.shm_size
+    if bp.ipc_mode:
+        merged.ipc_mode = bp.ipc_mode
     if bp.network != NetworkMode.INTERNAL:
         merged.network = bp.network
 
@@ -631,7 +749,7 @@ def backfill_exec_policies():
 
 # Official built-in blueprints that are always trusted.
 # User-created blueprints (via API or MCP) are "unverified" by default.
-_OFFICIAL_BLUEPRINT_IDS = frozenset({"python-sandbox", "node-sandbox", "db-sandbox", "shell-sandbox"})
+_OFFICIAL_BLUEPRINT_IDS = frozenset({"python-sandbox", "node-sandbox", "db-sandbox", "shell-sandbox", "runtime-hardware", "filestash"})
 
 
 def sync_blueprint_to_graph(bp, trust_level: str = "", force_update: bool = False) -> bool:

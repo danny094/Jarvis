@@ -58,6 +58,47 @@ def _extend_catalog_with_scopes(catalog: list[dict]) -> list[dict]:
     return out
 
 
+def _extend_catalog_with_assets(catalog: list[dict]) -> list[dict]:
+    try:
+        from container_commander.storage_assets import list_assets
+
+        assets = list_assets(published_only=True)
+    except Exception:
+        return catalog
+
+    out = [dict(item or {}) for item in list(catalog or [])]
+    index_by_path = {
+        os.path.abspath(str(item.get("path", "")).strip()): idx
+        for idx, item in enumerate(out)
+        if str(item.get("path", "")).strip()
+    }
+    for asset_id, asset in dict(assets or {}).items():
+        path = os.path.abspath(str((asset or {}).get("path", "")).strip())
+        if not path:
+            continue
+        payload = {
+            "id": f"asset:{asset_id}",
+            "asset_id": asset_id,
+            "label": str((asset or {}).get("label", "")).strip() or asset_id,
+            "path": path,
+            "source": "storage_asset",
+            "default_mode": str((asset or {}).get("default_mode", "ro")).strip() or "ro",
+            "published_to_commander": bool((asset or {}).get("published_to_commander")),
+            "allowed_for": list((asset or {}).get("allowed_for", []) or []),
+        }
+        existing_idx = index_by_path.get(path)
+        if existing_idx is not None:
+            existing = dict(out[existing_idx] or {})
+            payload["source_origin"] = str(existing.get("source", "")).strip() or None
+            payload["id"] = str(existing.get("id", "")).strip() or payload["id"]
+            out[existing_idx] = {**existing, **payload}
+            continue
+        index_by_path[path] = len(out)
+        out.append(payload)
+    out.sort(key=lambda item: item["path"])
+    return out
+
+
 @router.get("/volumes")
 async def api_list_volumes(blueprint_id: Optional[str] = None):
     """List all TRION workspace volumes."""
@@ -269,7 +310,70 @@ async def api_list_storage_managed_paths():
         raw_paths = payload.get("managed_paths", []) if isinstance(payload, dict) else []
         normalized = _managed_path_catalog(raw_paths if isinstance(raw_paths, list) else [])
         normalized = _extend_catalog_with_scopes(normalized)
+        normalized = _extend_catalog_with_assets(normalized)
         return {"managed_paths": [item["path"] for item in normalized], "catalog": normalized, "count": len(normalized)}
+    except Exception as e:
+        return exception_response(e)
+
+
+@router.get("/storage/assets")
+async def api_list_storage_assets(published_only: bool = False):
+    """List shared storage assets published by Storage Manager for Commander use."""
+    try:
+        from container_commander.storage_assets import list_assets
+
+        assets = list_assets(published_only=published_only)
+        return {"assets": assets, "count": len(assets)}
+    except Exception as e:
+        return exception_response(e)
+
+
+@router.get("/storage/assets/{asset_id}")
+async def api_get_storage_asset(asset_id: str):
+    """Get one shared storage asset."""
+    try:
+        from container_commander.storage_assets import get_asset
+
+        asset = get_asset(asset_id)
+        if not asset:
+            return exception_response(
+                HTTPException(404, f"Storage asset '{asset_id}' not found"),
+                error_code="not_found",
+                details={"asset_id": asset_id},
+            )
+        return {"asset": asset}
+    except Exception as e:
+        return exception_response(e)
+
+
+@router.post("/storage/assets")
+async def api_upsert_storage_asset(request: Request):
+    """Create or update a shared storage asset entry."""
+    try:
+        from container_commander.storage_assets import upsert_asset
+
+        data = await request.json()
+        asset_id = str(data.get("id", "")).strip()
+        asset = upsert_asset(asset_id, data)
+        return {"stored": True, "asset": asset}
+    except Exception as e:
+        return exception_response(e)
+
+
+@router.delete("/storage/assets/{asset_id}")
+async def api_delete_storage_asset(asset_id: str):
+    """Delete one shared storage asset entry."""
+    try:
+        from container_commander.storage_assets import delete_asset
+
+        deleted = delete_asset(asset_id)
+        if not deleted:
+            return exception_response(
+                HTTPException(404, f"Storage asset '{asset_id}' not found"),
+                error_code="not_found",
+                details={"asset_id": asset_id, "deleted": False},
+            )
+        return {"deleted": True, "asset_id": asset_id}
     except Exception as e:
         return exception_response(e)
 
@@ -302,7 +406,8 @@ async def api_upsert_storage_scope(request: Request):
         name = str(data.get("name", "")).strip()
         roots = data.get("roots", [])
         approved_by = str(data.get("approved_by", "user")).strip() or "user"
-        scope = upsert_scope(name=name, roots=roots, approved_by=approved_by)
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+        scope = upsert_scope(name=name, roots=roots, approved_by=approved_by, metadata=metadata)
         return {"stored": True, "scope": scope}
     except Exception as e:
         return exception_response(e)

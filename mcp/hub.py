@@ -396,6 +396,12 @@ Keywords: starte container, deploy, container starten, brauche sandbox, code aus
 Triggers: starte einen container, deploy blueprint, ich brauche einen container, führe code aus
 Examples: User: Starte einen Python Container -> request_container; User: Ich brauche eine Sandbox -> request_container
 
+TOOL: home_start (MCP: container-commander)
+Priority: high
+Keywords: trion home starten, home workspace starten, trion-home, home container starten
+Triggers: starte TRION Home, starte TRION Home Workspace, starte den Home Container
+Examples: User: Starte TRION Home Workspace -> home_start
+
 TOOL: stop_container (MCP: container-commander)
 Priority: high
 Keywords: stoppe container, stop container, beende container, container beenden, container stoppen

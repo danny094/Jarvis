@@ -10,10 +10,20 @@ import json
 import os
 import threading
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 _LOCK = threading.Lock()
 SCOPES_PATH = os.environ.get("COMMANDER_STORAGE_SCOPES_PATH", "/app/data/storage_scopes.json")
+_RUNTIME_BIND_PREFIXES = (
+    "/dev",
+    "/proc",
+    "/sys",
+    "/run/udev",
+    "/run/dbus",
+    "/run/user",
+    "/var/run/dbus",
+    "/tmp/.X11-unix",
+)
 
 
 def _default_payload() -> dict:
@@ -51,7 +61,7 @@ def get_scope(name: str) -> dict | None:
     return scopes.get(str(name or "").strip())
 
 
-def upsert_scope(name: str, roots: List[dict], approved_by: str = "user") -> dict:
+def upsert_scope(name: str, roots: List[dict], approved_by: str = "user", metadata: dict | None = None) -> dict:
     scope_name = str(name or "").strip()
     if not scope_name:
         raise ValueError("scope name is required")
@@ -66,16 +76,27 @@ def upsert_scope(name: str, roots: List[dict], approved_by: str = "user") -> dic
         normalized_roots.append({"path": path, "mode": mode})
     if not normalized_roots:
         raise ValueError("at least one scope root is required")
+    normalized_metadata: Dict[str, Any] = {}
+    if isinstance(metadata, dict):
+        for key, value in metadata.items():
+            meta_key = str(key or "").strip()
+            if not meta_key:
+                continue
+            normalized_metadata[meta_key] = value
 
     with _LOCK:
         payload = _load()
         scopes = payload.setdefault("scopes", {})
+        existing = dict(scopes.get(scope_name, {}) or {})
         scopes[scope_name] = {
             "name": scope_name,
             "roots": normalized_roots,
             "approved_by": str(approved_by or "user"),
             "approved_at": datetime.utcnow().isoformat() + "Z",
+            "metadata": normalized_metadata,
         }
+        created_at = str(existing.get("created_at", "")).strip()
+        scopes[scope_name]["created_at"] = created_at or scopes[scope_name]["approved_at"]
         _save(payload)
         return dict(scopes[scope_name])
 
@@ -101,6 +122,48 @@ def _is_within(path: str, root: str) -> bool:
         return os.path.commonpath([p, r]) == r
     except Exception:
         return False
+
+
+def _runtime_bind_prefix(path: str) -> Optional[str]:
+    normalized = os.path.abspath(str(path or "").strip())
+    if not normalized.startswith("/"):
+        return None
+    for prefix in _RUNTIME_BIND_PREFIXES:
+        candidate = os.path.abspath(prefix)
+        if normalized == candidate or normalized.startswith(f"{candidate}/"):
+            return candidate
+    return None
+
+
+def _is_runtime_system_bind(mount: Any) -> bool:
+    """
+    Storage scopes govern persistent host data, not transient runtime interfaces.
+
+    Allow bind mounts for system/runtime namespaces only when they stay in the
+    same namespace and path inside the container. This keeps the exception narrow
+    while allowing dynamic hardware/runtime surfaces like /dev/input and
+    /run/udev/data to bypass storage-scope checks.
+    """
+
+    mount_type = str(getattr(mount, "type", "bind") or "bind").strip().lower()
+    if mount_type != "bind":
+        return False
+    if str(getattr(mount, "asset_id", "") or "").strip():
+        return False
+
+    host_raw = str(getattr(mount, "host", "") or "").strip()
+    container_raw = str(getattr(mount, "container", "") or "").strip()
+    if not host_raw or not container_raw:
+        return False
+    if not host_raw.startswith("/") or not container_raw.startswith("/"):
+        return False
+
+    host_abs = os.path.abspath(host_raw)
+    container_abs = os.path.abspath(container_raw)
+    host_prefix = _runtime_bind_prefix(host_abs)
+    if not host_prefix:
+        return False
+    return container_abs == host_abs
 
 
 def validate_blueprint_mounts(bp) -> Tuple[bool, str]:
@@ -131,6 +194,8 @@ def validate_blueprint_mounts(bp) -> Tuple[bool, str]:
     for mount in mounts:
         mount_type = str(getattr(mount, "type", "bind") or "bind").strip().lower()
         if mount_type == "volume":
+            continue
+        if _is_runtime_system_bind(mount):
             continue
         host_raw = str(getattr(mount, "host", "") or "").strip()
         if not host_raw:

@@ -1,0 +1,49 @@
+{
+  "id": "filestash",
+  "name": "Filestash",
+  "version": "0.1.0",
+  "package_type": "composite_addon",
+  "description": "Webbasierter File Manager als Referenzdienst fuer den generischen Storage-Broker- und Simple-Blueprint-Pfad.",
+  "blueprints": [
+    "filestash"
+  ],
+  "runtime_storage_views": {
+    "broker_assets": {
+      "enabled": true,
+      "published_only": true,
+      "source_kinds": [
+        "service_dir",
+        "existing_path",
+        "import"
+      ],
+      "container_root": "/srv/storage-broker",
+      "connection_mode": "filestash_local",
+      "label_prefix": "TRION /"
+    }
+  },
+  "host_companion": {
+    "id": "filestash-access",
+    "kind": "access_links_only",
+    "summary": "Filestash stellt eine Weboberflaeche bereit und dient als Referenzdienst fuer generische Storage-Mounts.",
+    "auto_enable": false,
+    "auto_start": false,
+    "access_links": [
+      {
+        "host_ip": "0.0.0.0",
+        "host_port": "8334",
+        "container_port": "8334/tcp",
+        "service_name": "Filestash Web UI",
+        "access_label": "Open Filestash",
+        "access_scheme": "http",
+        "access_path": "/",
+        "access_kind": "web_ui"
+      }
+    ]
+  },
+  "notes": [
+    "Der Standard-Blueprint persistiert nur den Filestash-Zustand ueber das Docker-Volume filestash_state.",
+    "Brokerverwaltete und fuer Commander veroeffentlichte Storage-Assets werden zur Laufzeit automatisch in Filestash gemountet und als lokale Verbindungen eingetragen.",
+    "Der Dienst ist als Referenz fuer den Produktpfad Datentraeger -> Storage-Broker -> Asset -> Container-Mount gedacht.",
+    "Port 8334/tcp oeffnet die Filestash-Weboberflaeche."
+  ]
+}

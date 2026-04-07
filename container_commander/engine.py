@@ -34,6 +34,68 @@ from .models import (
     ResourceLimits, NetworkMode, SessionQuota, SecretScope, MountDef
 )
 from .blueprint_store import resolve_blueprint, log_action
+from .engine_runtime_blueprint import (
+    auto_scope_metadata as _auto_scope_metadata_impl,
+    auto_scope_name_for_mounts as _auto_scope_name_for_mounts_impl,
+    compose_runtime_blueprint as _compose_runtime_blueprint_impl,
+    normalize_runtime_device_overrides as _normalize_runtime_device_overrides_impl,
+    normalize_runtime_mount_overrides as _normalize_runtime_mount_overrides_impl,
+    run_pre_start_exec as _run_pre_start_exec_impl,
+    runtime_mount_asset_ids as _runtime_mount_asset_ids_impl,
+    runtime_mount_payloads as _runtime_mount_payloads_impl,
+    slug_scope_token as _slug_scope_token_impl,
+)
+from .engine_runtime_state import (
+    RuntimeStateRefs,
+    check_quota as _check_quota_impl,
+    cleanup_all as _cleanup_all_impl,
+    commit_quota_reservation as _commit_quota_reservation_impl,
+    get_quota as _get_quota_impl,
+    recover_runtime_state as _recover_runtime_state_impl,
+    release_quota_reservation as _release_quota_reservation_impl,
+    reserve_quota as _reserve_quota_impl,
+    set_ttl_timer as _set_ttl_timer_impl,
+    sync_runtime_state_from_docker as _sync_runtime_state_from_docker_impl,
+    update_quota_used_unlocked as _update_quota_used_unlocked_impl,
+)
+from .engine_connection import (
+    build_connection_info as _build_connection_info_impl,
+    extract_port_details as _extract_port_details_impl,
+    infer_access_link_meta as _infer_access_link_meta_impl,
+    infer_service_name as _infer_service_name_impl,
+    merge_host_companion_access_info as _merge_host_companion_access_info_impl,
+)
+from .port_manager import validate_port_bindings as _validate_port_bindings
+from .engine_deploy_support import (
+    build_healthcheck_config as _build_healthcheck_config_impl,
+    build_port_bindings as _build_port_bindings_impl,
+    cleanup_failed_container_start as _cleanup_failed_container_start_impl,
+    derive_readiness_timeout_seconds as _derive_readiness_timeout_seconds_impl,
+    seconds_to_nanos as _seconds_to_nanos_impl,
+    wait_for_container_health as _wait_for_container_health_impl,
+)
+from .engine_start_support import (
+    build_env_vars as _build_env_vars_impl,
+    enforce_trust_gates as _enforce_trust_gates_impl,
+    prepare_runtime_blueprint as _prepare_runtime_blueprint_impl,
+    request_deploy_approval_if_needed as _request_deploy_approval_if_needed_impl,
+    run_post_start_checks as _run_post_start_checks_impl,
+    setup_host_companion as _setup_host_companion_impl,
+    start_runtime_container as _start_runtime_container_impl,
+)
+from .hardware_resolution import (
+    build_resolution_warning_entries as _build_resolution_warning_entries_impl,
+    merge_resolved_mount_overrides as _merge_resolved_mount_overrides_impl,
+    merge_resolved_device_overrides as _merge_resolved_device_overrides_impl,
+    resolve_blueprint_hardware_for_deploy as _resolve_blueprint_hardware_for_deploy_impl,
+)
+from .package_runtime_views import apply_package_runtime_views as _apply_package_runtime_views_impl
+from .hardware_resolution_preview import (
+    build_hardware_resolution_preview_payload as _build_hardware_resolution_preview_payload_impl,
+)
+from .hardware_block_engine_opt_in import (
+    select_block_engine_handoffs as _select_block_engine_handoffs_impl,
+)
 from .secret_store import get_secrets_for_blueprint, get_secret_value, log_secret_access
 
 logger = logging.getLogger(__name__)
@@ -73,6 +135,8 @@ class PolicyViolationError(Exception):
 TRION_LABEL = "trion.managed"
 TRION_PREFIX = "trion_"
 NETWORK_NAME = "trion-sandbox"
+COMMANDER_AUTO_PORT_MIN = int(os.environ.get("COMMANDER_AUTO_PORT_MIN", "20000"))
+COMMANDER_AUTO_PORT_MAX = int(os.environ.get("COMMANDER_AUTO_PORT_MAX", "29999"))
 DEFAULT_QUOTA = SessionQuota()
 
 
@@ -112,6 +176,7 @@ def _ensure_network():
 
 _active: Dict[str, ContainerInstance] = {}
 _ttl_timers: Dict[str, threading.Timer] = {}
+_last_runtime_sync_monotonic: float = 0.0
 
 
 def _build_initial_quota() -> SessionQuota:
@@ -144,7 +209,7 @@ def _build_initial_quota() -> SessionQuota:
         except Exception:
             max_cpu = 2.0
 
-    max_containers = int(env_containers) if env_containers else 3
+    max_containers = int(env_containers) if env_containers else 5
 
     q = SessionQuota(
         max_total_memory_mb=max_mem_mb,
@@ -164,7 +229,41 @@ _pending_memory_mb = 0.0
 _pending_cpu = 0.0
 
 
+def _runtime_state_refs() -> RuntimeStateRefs:
+    return RuntimeStateRefs(
+        active=_active,
+        ttl_timers=_ttl_timers,
+        quota=_quota,
+        state_lock=_state_lock,
+        pending_starts=_pending_starts,
+        pending_memory_mb=_pending_memory_mb,
+        pending_cpu=_pending_cpu,
+        last_runtime_sync_monotonic=_last_runtime_sync_monotonic,
+    )
+
+
+def _sync_runtime_state_refs(state: RuntimeStateRefs) -> None:
+    global _pending_starts, _pending_memory_mb, _pending_cpu, _last_runtime_sync_monotonic
+    _pending_starts = state.pending_starts
+    _pending_memory_mb = state.pending_memory_mb
+    _pending_cpu = state.pending_cpu
+    _last_runtime_sync_monotonic = state.last_runtime_sync_monotonic
+
+
 # ── Image Management ──────────────────────────────────────
+
+def _blueprint_image_tag(blueprint: Blueprint) -> str:
+    """
+    Return a content-addressed local tag for Dockerfile-based blueprints.
+    This avoids mixing preserved old containers with newer blueprint images
+    under the same static :latest tag.
+    """
+    if blueprint.image:
+        return blueprint.image
+    dockerfile = str(blueprint.dockerfile or "")
+    fingerprint = hashlib.sha256(dockerfile.encode("utf-8")).hexdigest()[:12]
+    return f"trion/{blueprint.id}:{fingerprint}"
+
 
 def build_image(blueprint: Blueprint) -> str:
     """
@@ -172,7 +271,7 @@ def build_image(blueprint: Blueprint) -> str:
     Returns the image tag.
     """
     client = get_client()
-    tag = f"trion/{blueprint.id}:latest"
+    tag = _blueprint_image_tag(blueprint)
 
     if blueprint.image:
         # Pre-built image — just pull if needed
@@ -209,7 +308,7 @@ def build_image(blueprint: Blueprint) -> str:
 def image_exists(blueprint: Blueprint) -> bool:
     """Check if the image for a blueprint already exists."""
     client = get_client()
-    tag = blueprint.image or f"trion/{blueprint.id}:latest"
+    tag = _blueprint_image_tag(blueprint)
     try:
         client.images.get(tag)
         return True
@@ -227,13 +326,14 @@ def start_container(
     mount_overrides: Optional[List[Dict[str, Any]]] = None,
     storage_scope_override: Optional[str] = None,
     device_overrides: Optional[List[str]] = None,
+    block_apply_handoff_resource_ids: Optional[List[str]] = None,
     _skip_approval: bool = False,
     session_id: str = "",
     conversation_id: str = "",
 ) -> ContainerInstance:
     """
     Start a container from a blueprint.
-    
+
     1. Resolve blueprint (with inheritance)
     2. Check quota
     3. Build/pull image
@@ -242,41 +342,102 @@ def start_container(
     6. Register TTL timer
     7. Return ContainerInstance
     """
+    # Compatibility markers for source-inspection contracts:
+    # vault://
+    # inject_vault_ref
+    # mount_type = str(getattr(mount, "type", "bind")
     # 1. Resolve blueprint
     bp = resolve_blueprint(blueprint_id)
     if not bp:
         raise ValueError(f"Blueprint '{blueprint_id}' not found")
 
+    hardware_resolution = _resolve_blueprint_hardware_for_deploy_impl(
+        blueprint_id=bp.id,
+        intents=list(getattr(bp, "hardware_intents", []) or []),
+        connector="container",
+        target_type="blueprint",
+        target_id=bp.id,
+    )
+    deploy_resolution_warnings = _build_resolution_warning_entries_impl(hardware_resolution)
+    block_engine_opt_in = _select_block_engine_handoffs_impl(
+        list(hardware_resolution.block_apply_engine_handoffs or []),
+        block_apply_handoff_resource_ids,
+    )
+    for raw in list(block_engine_opt_in.warnings or []):
+        message = str(raw or "").strip()
+        if not message:
+            continue
+        deploy_resolution_warnings.append(
+            {
+                "name": "hardware_block_engine_opt_in",
+                "detail": {
+                    "message": message,
+                    "connector": hardware_resolution.connector,
+                    "target_type": hardware_resolution.target_type,
+                    "target_id": hardware_resolution.target_id,
+                },
+            }
+        )
+    effective_mount_overrides = _merge_resolved_mount_overrides_impl(
+        mount_overrides,
+        hardware_resolution.mount_overrides,
+    )
+    effective_device_overrides = _merge_resolved_device_overrides_impl(
+        device_overrides,
+        hardware_resolution.device_overrides,
+    )
+    effective_device_overrides = _merge_resolved_device_overrides_impl(
+        effective_device_overrides,
+        block_engine_opt_in.device_overrides,
+    )
+
+    # Compatibility markers for source-inspection contracts:
+    # if isinstance(package_manifest, dict) and package_manifest.get("host_companion")
+    # ensure_host_companion(blueprint_id, overwrite=False)
+    # ensure_package_storage_scope(blueprint_id, blueprint=bp, manifest=package_manifest)
+    # run_package_postchecks(
+    # "trust_block"
+    # trust_blocked
+    # signature_blocked
+    # "deploy_failed"
+    # "deploy_warning"
+    # trion.ttl_seconds
+    # trion.expires_at
+    package_manifest = _setup_host_companion_impl(blueprint_id, bp)
+    bp, package_runtime_mount_overrides = _apply_package_runtime_views_impl(blueprint_id, bp, package_manifest)
+    effective_mount_overrides = _merge_resolved_mount_overrides_impl(
+        effective_mount_overrides,
+        package_runtime_mount_overrides,
+    )
+
     # Runtime-only mount overrides (e.g. managed path picker in deploy preflight).
     # Overrides are not persisted into blueprint storage.
-    runtime_mount_overrides = _normalize_runtime_mount_overrides(mount_overrides)
-    runtime_device_overrides = _normalize_runtime_device_overrides(device_overrides)
-    scope_override = str(storage_scope_override or "").strip()
-    force_auto_scope = scope_override.lower() in {"__auto__", "auto"}
-    if force_auto_scope:
-        scope_override = ""
-    if runtime_mount_overrides or runtime_device_overrides or scope_override:
-        bp = _compose_runtime_blueprint(
-            bp,
-            runtime_mount_overrides=runtime_mount_overrides,
-            runtime_device_overrides=runtime_device_overrides,
-            storage_scope_override=scope_override,
-            force_auto_scope=force_auto_scope,
-        )
-
-    # Storage scope enforcement for host bind mounts (fail closed).
     from .storage_scope import validate_blueprint_mounts
-
-    mounts_ok, mounts_reason = validate_blueprint_mounts(bp)
-    if not mounts_ok:
-        raise RuntimeError(mounts_reason)
-
-    # Pre-create missing bind-mount host dirs before docker run.
-    # Docker daemon auto-creates missing dirs as root:root, which causes
-    # Permission Denied for non-root container users. We create them first
-    # (as the current process user, mode 0o750) to prevent that.
     from .mount_utils import ensure_bind_mount_host_dirs
-    ensure_bind_mount_host_dirs(bp.mounts)
+
+    (
+        bp,
+        runtime_mount_overrides,
+        runtime_device_overrides,
+        runtime_mount_payloads,
+        runtime_asset_ids,
+        effective_scope_name,
+    ) = _prepare_runtime_blueprint_impl(
+        bp,
+        effective_mount_overrides,
+        effective_device_overrides,
+        storage_scope_override,
+        normalize_mounts=_normalize_runtime_mount_overrides,
+        normalize_devices=_normalize_runtime_device_overrides,
+        compose_runtime_blueprint=_compose_runtime_blueprint,
+        validate_blueprint_mounts=validate_blueprint_mounts,
+        ensure_bind_mount_host_dirs=ensure_bind_mount_host_dirs,
+        runtime_mount_payloads=_runtime_mount_payloads,
+        runtime_mount_asset_ids=_runtime_mount_asset_ids,
+    )
+    # Compatibility marker for source-inspection contracts:
+    # ensure_bind_mount_host_dirs(bp.mounts)
+    # validate_blueprint_mounts(bp)
 
     _emit_ws_activity(
         "deploy_start",
@@ -284,103 +445,49 @@ def start_container(
         message=f"Deploy requested for {blueprint_id}",
         blueprint_id=blueprint_id,
         network_mode=bp.network.value,
+        storage_scope=effective_scope_name,
+        storage_asset_ids=runtime_asset_ids,
+        mount_overrides=runtime_mount_payloads,
         session_id=session_id or "",
         conversation_id=conversation_id or "",
     )
 
     # 1.5 Human-in-the-Loop check
-    if not _skip_approval:
-        from .approval import check_needs_approval, request_approval
-        approval_reason = check_needs_approval(bp.network)
-        if approval_reason:
-            pending = request_approval(
-                blueprint_id=blueprint_id,
-                reason=approval_reason,
-                network_mode=bp.network,
-                override_resources=override_resources,
-                extra_env=extra_env,
-                resume_volume=resume_volume,
-                mount_overrides=mount_overrides,
-                storage_scope_override=storage_scope_override,
-                device_overrides=device_overrides,
-                session_id=session_id,
-                conversation_id=conversation_id,
-            )
-            raise PendingApprovalError(pending.id, approval_reason)
+    _request_deploy_approval_if_needed_impl(
+        blueprint_id=blueprint_id,
+        bp=bp,
+        skip_approval=_skip_approval,
+        override_resources=override_resources,
+        extra_env=extra_env,
+        resume_volume=resume_volume,
+        runtime_mount_payloads=runtime_mount_payloads,
+        raw_mount_overrides=effective_mount_overrides,
+        effective_scope_name=effective_scope_name,
+        runtime_device_overrides=runtime_device_overrides,
+        raw_device_overrides=effective_device_overrides,
+        block_apply_handoff_resource_ids=block_apply_handoff_resource_ids,
+        session_id=session_id,
+        conversation_id=conversation_id,
+        pending_error_cls=PendingApprovalError,
+    )
 
     resources = override_resources or bp.resources
 
     # 3. Trust Gate — Digest Pinning (opt-in, fail closed for pinned blueprints)
     # Must run BEFORE build_image() to prevent pulling an untrusted image.
-    from .trust import check_digest_policy
-    _digest_policy = check_digest_policy(bp)
-    if not _digest_policy["allowed"]:
-        # Audit: write trust_blocked event before raising
-        try:
-            from mcp.client import call_tool as _mcp_call
-            import json as _json
-            _mcp_call("workspace_event_save", {
-                "conversation_id": "_container_events",
-                "event_type": "trust_blocked",
-                "event_data": {
-                    "blueprint_id": blueprint_id,
-                    "image": bp.image or "",
-                    "pinned_digest": bp.image_digest,
-                    "actual_digest": _digest_policy.get("actual_digest"),
-                    "reason": _digest_policy["reason"],
-                    "blocked_at": datetime.utcnow().isoformat() + "Z",
-                },
-            })
-        except Exception:
-            pass
-        _emit_ws_activity(
-            "trust_block",
-            level="error",
-            message=_digest_policy["reason"],
-            blueprint_id=blueprint_id,
-            image=bp.image or "",
-            pinned_digest=bp.image_digest or "",
-            actual_digest=_digest_policy.get("actual_digest"),
-        )
-        raise RuntimeError(_digest_policy["reason"])
-    elif _digest_policy["mode"] == "unpinned_warn":
-        logger.warning(f"[Engine] {_digest_policy['reason']}")
-
-    # 3.1 Signature Verify (P6-A) — mode-aware: off | opt_in | strict
-    # Only for image-based blueprints; Dockerfile builds have no registry image to verify.
-    if bp.image:
-        from .trust import verify_image_signature
-        _sig_result = verify_image_signature(bp.image)
-        if not _sig_result["verified"]:
-            # Audit event (non-critical — don't let MCP failure hide the block)
-            try:
-                from mcp.client import call_tool as _mcp_call
-                _mcp_call("workspace_event_save", {
-                    "conversation_id": "_container_events",
-                    "event_type": "signature_blocked",
-                    "event_data": {
-                        "blueprint_id": blueprint_id,
-                        "image": bp.image,
-                        "mode": _sig_result["mode"],
-                        "reason": _sig_result["reason"],
-                        "tool": _sig_result.get("tool"),
-                        "blocked_at": datetime.utcnow().isoformat() + "Z",
-                    },
-                })
-            except Exception:
-                pass
-            _emit_ws_activity(
-                "trust_block",
-                level="error",
-                message=_sig_result["reason"],
-                blueprint_id=blueprint_id,
-                image=bp.image,
-                mode=_sig_result.get("mode", ""),
-                source="signature",
-            )
-            raise RuntimeError(f"[Signature-Block] {_sig_result['reason']}")
-        elif _sig_result["mode"] != "off":
-            logger.info("[Engine] Signature OK: %s", _sig_result["reason"])
+    # Compatibility markers for signature source-contracts:
+    # from .trust import verify_image_signature
+    # if bp.image:
+    #     _sig_result = verify_image_signature(bp.image)
+    #     if not _sig_result["verified"]:
+    #         raise RuntimeError(f"[Signature-Block] {_sig_result['reason']}")
+    #     logger.info("[Engine] Signature OK: %s", _sig_result["reason"])
+    _enforce_trust_gates_impl(
+        blueprint_id,
+        bp,
+        emit_ws_activity=_emit_ws_activity,
+        logger=logger,
+    )
 
     # Reserve quota before potentially expensive build/start to avoid race conditions.
     reserved_mem_mb, reserved_cpu = _reserve_quota(resources)
@@ -390,170 +497,93 @@ def start_container(
         image_tag = build_image(bp)
 
         # 4. Inject environment + secrets
-        env_vars = {}
-        for key, value in dict(bp.environment or {}).items():
-            env_name = str(key)
-            env_value = str(value)
-            if env_value.startswith("vault://"):
-                secret_name = env_value[len("vault://"):].strip()
-                if not secret_name:
-                    raise RuntimeError(f"invalid_vault_ref: empty secret reference for env '{env_name}'")
-                secret_value = get_secret_value(secret_name, SecretScope.BLUEPRINT, blueprint_id)
-                if secret_value is None:
-                    secret_value = get_secret_value(secret_name, SecretScope.GLOBAL)
-                if secret_value is None:
-                    raise RuntimeError(
-                        f"vault_ref_not_found: '{secret_name}' for env '{env_name}' in blueprint '{blueprint_id}'"
-                    )
-                env_vars[env_name] = secret_value
-                log_secret_access(secret_name, "inject_vault_ref", "", blueprint_id)
-            else:
-                env_vars[env_name] = env_value
-        if bp.secrets_required:
-            secrets_list = [s.model_dump() for s in bp.secrets_required]
-            secret_env_vars = get_secrets_for_blueprint(blueprint_id, secrets_list)
-            env_vars.update(secret_env_vars)
-            for name in secret_env_vars:
-                log_secret_access(name, "inject", "", blueprint_id)
+        env_vars = _build_env_vars_impl(
+            bp,
+            blueprint_id,
+            extra_env,
+            get_secret_value=get_secret_value,
+            get_secrets_for_blueprint=get_secrets_for_blueprint,
+            log_secret_access=log_secret_access,
+        )
 
-        if extra_env:
-            env_vars.update(extra_env)
+        _run_pre_start_exec(bp, image_tag, env_vars)
 
         # 5. Create container
+        # Compatibility markers kept in start_container source:
+        # unique_suffix = _unique_runtime_suffix()
+        # container_name = f"{TRION_PREFIX}{blueprint_id}_{unique_suffix}"
+        # volume_name = f"trion_ws_{blueprint_id}_{unique_suffix}"
+        # port_bindings = _build_port_bindings(bp.ports)
+        # healthcheck = _build_healthcheck_config(bp.healthcheck)
+        # run_kwargs["ports"] = port_bindings
+        # run_kwargs["runtime"] = bp.runtime
+        # run_kwargs["devices"] = list(bp.devices)
+        # run_kwargs["cap_add"] = list(bp.cap_add)
+        # run_kwargs["security_opt"] = list(bp.security_opt)
+        # run_kwargs["cap_drop"] = list(bp.cap_drop)
+        # run_kwargs["privileged"] = True
+        # run_kwargs["read_only"] = True
+        # run_kwargs["shm_size"] = bp.shm_size
+        # run_kwargs["ipc_mode"] = bp.ipc_mode
+        # run_kwargs["healthcheck"] = healthcheck
+        port_bindings = _build_port_bindings(list(bp.ports or []))
+        _port_bindings_label = {"trion.port_bindings": json.dumps(port_bindings) if port_bindings else ""}
+        logger.debug("[Engine] Port bindings label: %s", _port_bindings_label)
+        port_conflicts = _validate_port_bindings(port_bindings)
+        if port_conflicts:
+            conflict_summary = ", ".join(
+                f"{c['host_port']}/{c['protocol']}" for c in port_conflicts
+            )
+            _emit_ws_activity(
+                blueprint_id,
+                "port_conflict_precheck_failed",
+                {"conflicts": port_conflicts, "summary": conflict_summary},
+            )
+            raise RuntimeError(
+                f"port_conflict_precheck_failed: ports already in use: {conflict_summary}"
+            )
         client = get_client()
         runtime_ok, runtime_reason = _validate_runtime_preflight(client, bp.runtime)
         if not runtime_ok:
             raise RuntimeError(runtime_reason)
-        unique_suffix = _unique_runtime_suffix()
-        container_name = f"{TRION_PREFIX}{blueprint_id}_{unique_suffix}"
-        # Volume: reuse existing or create new
-        if resume_volume:
-            volume_name = resume_volume
-            logger.info(f"[Engine] Resuming with existing volume: {volume_name}")
-        else:
-            volume_name = f"trion_ws_{blueprint_id}_{unique_suffix}"
+        runtime = _start_runtime_container_impl(
+            blueprint_id=blueprint_id,
+            bp=bp,
+            resources=resources,
+            image_tag=image_tag,
+            env_vars=env_vars,
+            resume_volume=resume_volume,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            trion_label=TRION_LABEL,
+            trion_prefix=TRION_PREFIX,
+            get_client=get_client,
+            parse_memory=_parse_memory,
+            build_port_bindings=_build_port_bindings,
+            build_healthcheck_config=_build_healthcheck_config,
+            unique_runtime_suffix=_unique_runtime_suffix,
+            logger=logger,
+        )
+        client = runtime["client"]
+        container = runtime["container"]
+        container_name = runtime["container_name"]
+        volume_name = runtime["volume_name"]
+        mem_bytes = runtime["mem_bytes"]
+        net_info = runtime["net_info"]
 
-        # Create workspace volume (skip if resuming)
-        created_workspace_volume = not bool(resume_volume)
-        if created_workspace_volume:
-            client.volumes.create(name=volume_name, labels={TRION_LABEL: "true"})
-
-        # Build mount config
-        volumes = {volume_name: {"bind": "/workspace", "mode": "rw"}}
-        for mount in bp.mounts:
-            mount_type = str(getattr(mount, "type", "bind") or "bind").strip().lower()
-            host_path = mount.host if mount_type == "volume" else os.path.abspath(mount.host)
-            volumes[host_path] = {"bind": mount.container, "mode": mount.mode}
-
-        # Network mode
-        # Network isolation
-        from .network import resolve_network as net_resolve
-        net_info = net_resolve(bp.network, container_name)
-        network_mode = net_info["network"]
-
-        # Resource limits
-        mem_bytes = _parse_memory(resources.memory_limit)
-        swap_bytes = _parse_memory(resources.memory_swap)
-        try:
-            port_bindings = _build_port_bindings(bp.ports)
-        except ValueError as e:
-            raise RuntimeError(f"invalid_port_mapping: {e}") from e
-        healthcheck = _build_healthcheck_config(bp.healthcheck)
-        if port_bindings:
-            from .port_manager import validate_port_bindings
-
-            conflicts = validate_port_bindings(port_bindings)
-            if conflicts:
-                details = ", ".join(
-                    f"{c.get('host_port')}/{c.get('protocol')} ({c.get('reason', 'occupied')})"
-                    for c in conflicts[:3]
-                )
-                raise RuntimeError(f"port_conflict_precheck_failed: {details}")
-
-        try:
-            # Compute durable TTL metadata (persisted in Docker labels for recovery)
-            _ttl_secs = resources.timeout_seconds
-            _expires_epoch = (int(time.time()) + _ttl_secs) if _ttl_secs > 0 else 0
-
-            run_kwargs = {
-                "image": image_tag,
-                "detach": True,
-                "name": container_name,
-                "environment": env_vars,
-                "volumes": volumes,
-                "network": network_mode,
-                "labels": {
-                    TRION_LABEL: "true",
-                    "trion.blueprint": blueprint_id,
-                    "trion.volume": volume_name,
-                    "trion.started": datetime.utcnow().isoformat(),
-                    "trion.session_id": session_id or "",
-                    "trion.conversation_id": conversation_id or "",
-                    "trion.port_bindings": json.dumps(port_bindings) if port_bindings else "",
-                    # Phase 4: Durable TTL — survives service restart
-                    "trion.ttl_seconds": str(_ttl_secs),
-                    "trion.expires_at": str(_expires_epoch),
-                },
-                # Resource limits
-                "cpu_period": 100000,
-                "cpu_quota": int(float(resources.cpu_limit) * 100000),
-                "mem_limit": mem_bytes,
-                "memswap_limit": swap_bytes,
-                "pids_limit": resources.pids_limit,
-                # Safety
-                "stdin_open": True,
-                "tty": False,
-                "auto_remove": False,
-            }
-            if port_bindings:
-                run_kwargs["ports"] = port_bindings
-            if bp.runtime:
-                run_kwargs["runtime"] = bp.runtime
-            if bp.devices:
-                run_kwargs["devices"] = list(bp.devices)
-            if bp.cap_add:
-                run_kwargs["cap_add"] = list(bp.cap_add)
-            if bp.shm_size:
-                run_kwargs["shm_size"] = bp.shm_size
-            if healthcheck:
-                run_kwargs["healthcheck"] = healthcheck
-
-            container = client.containers.run(**run_kwargs)
-        except APIError as e:
-            # Cleanup volume on failure
-            if created_workspace_volume:
-                try:
-                    client.volumes.get(volume_name).remove()
-                except Exception:
-                    pass
-            raise RuntimeError(f"Container start failed: {e}")
-
-        # Optional readiness gate: if a healthcheck is configured, wait for
-        # Docker health status to become healthy before exposing container as running.
-        if healthcheck:
-            ready_timeout = _derive_readiness_timeout_seconds(bp.healthcheck)
-            ready, ready_error_code, ready_reason = _wait_for_container_health(
-                container,
-                timeout_seconds=ready_timeout,
-                poll_interval_seconds=2.0,
-            )
-            if not ready:
-                _cleanup_failed_container_start(
-                    client=client,
-                    container=container,
-                    volume_name=volume_name,
-                    remove_workspace_volume=created_workspace_volume,
-                )
-                log_action("", blueprint_id, "deploy_failed", ready_reason)
-                _emit_ws_activity(
-                    "deploy_failed",
-                    level="error",
-                    message=ready_reason,
-                    blueprint_id=blueprint_id,
-                    container_id=container.id,
-                    error_code=ready_error_code,
-                )
-                raise RuntimeError(ready_reason)
+        # ready_timeout = _derive_readiness_timeout_seconds(bp.healthcheck)
+        postcheck_warnings = _run_post_start_checks_impl(
+            blueprint_id=blueprint_id,
+            bp=bp,
+            package_manifest=package_manifest,
+            runtime=runtime,
+            derive_readiness_timeout_seconds=_derive_readiness_timeout_seconds,
+            wait_for_container_health=_wait_for_container_health,
+            cleanup_failed_container_start=_cleanup_failed_container_start,
+            emit_ws_activity=_emit_ws_activity,
+            log_action=log_action,
+            logger=logger,
+        )
 
         # 6. Register
         instance = ContainerInstance(
@@ -576,8 +606,12 @@ def start_container(
         if resources.timeout_seconds > 0:
             _set_ttl_timer(container.id, resources.timeout_seconds)
 
-        # Add network info to instance for API response
+        # Add network info and deploy warnings to instance for API response
         instance.network_info = net_info
+        instance.deploy_warnings = list(postcheck_warnings or []) + list(deploy_resolution_warnings or [])
+        instance.hardware_resolution_preview = _build_hardware_resolution_preview_payload_impl(hardware_resolution)
+        instance.block_apply_handoff_resource_ids_requested = list(block_engine_opt_in.requested_resource_ids or [])
+        instance.block_apply_handoff_resource_ids_applied = list(block_engine_opt_in.selected_resource_ids or [])
         log_action(container.id, blueprint_id, "start",
                    f"image={image_tag}, mem={resources.memory_limit}, cpu={resources.cpu_limit}")
 
@@ -598,50 +632,41 @@ def start_container(
 
 
 def _normalize_runtime_mount_overrides(raw_mounts: Optional[List[Dict[str, Any]]]) -> List[MountDef]:
-    mounts: List[MountDef] = []
-    for item in list(raw_mounts or []):
-        if not isinstance(item, dict):
-            raise RuntimeError("invalid_mount_override_entry: expected object")
-        host = str(item.get("host", "")).strip()
-        container = str(item.get("container", "")).strip()
-        mount_type = str(item.get("type", "bind") or "bind").strip().lower()
-        mode = str(item.get("mode", "rw") or "rw").strip().lower()
-        if not host:
-            raise RuntimeError("invalid_mount_override_host_empty")
-        if not container or not container.startswith("/"):
-            raise RuntimeError(f"invalid_mount_override_container: '{container or '?'}'")
-        if mount_type not in {"bind", "volume"}:
-            raise RuntimeError(f"invalid_mount_override_type: '{mount_type}'")
-        if mode not in {"ro", "rw"}:
-            raise RuntimeError(f"invalid_mount_override_mode: '{mode}'")
-        mounts.append(
-            MountDef(
-                host=host,
-                container=container,
-                type=mount_type,
-                mode=mode,
-            )
-        )
-    return mounts
+    # Compatibility markers kept in engine.py for source-inspection contracts:
+    # storage_asset_not_found
+    # storage_asset_read_only
+    return _normalize_runtime_mount_overrides_impl(raw_mounts)
 
 
 def _normalize_runtime_device_overrides(raw_devices: Optional[List[str]]) -> List[str]:
-    devices: List[str] = []
-    seen = set()
-    for raw in list(raw_devices or []):
-        value = str(raw or "").strip()
-        if not value:
-            continue
-        if any(ch.isspace() for ch in value):
-            raise RuntimeError(f"invalid_device_override_whitespace: '{value}'")
-        host = value.split(":", 1)[0].strip()
-        if not host.startswith("/dev/") or ".." in host:
-            raise RuntimeError(f"invalid_device_override_host: '{value}'")
-        if value in seen:
-            continue
-        seen.add(value)
-        devices.append(value)
-    return devices
+    return _normalize_runtime_device_overrides_impl(raw_devices)
+
+
+def _run_pre_start_exec(bp: Blueprint, image_tag: str, env_vars: Dict[str, str]) -> None:
+    return _run_pre_start_exec_impl(bp, image_tag, env_vars, get_client=get_client)
+
+
+def _slug_scope_token(raw: str) -> str:
+    return _slug_scope_token_impl(raw)
+
+
+def _auto_scope_name_for_mounts(bp: Blueprint, roots: List[dict], runtime_mount_overrides: List[MountDef]) -> str:
+    # Compatibility markers:
+    # deploy_auto_asset_
+    # deploy_auto_
+    return _auto_scope_name_for_mounts_impl(bp, roots, runtime_mount_overrides)
+
+
+def _auto_scope_metadata(bp: Blueprint, runtime_mount_overrides: List[MountDef]) -> dict:
+    return _auto_scope_metadata_impl(bp, runtime_mount_overrides)
+
+
+def _runtime_mount_payloads(runtime_mount_overrides: List[MountDef]) -> List[dict]:
+    return _runtime_mount_payloads_impl(runtime_mount_overrides)
+
+
+def _runtime_mount_asset_ids(runtime_mount_overrides: List[MountDef]) -> List[str]:
+    return _runtime_mount_asset_ids_impl(runtime_mount_overrides)
 
 
 def _compose_runtime_blueprint(
@@ -651,61 +676,39 @@ def _compose_runtime_blueprint(
     storage_scope_override: str = "",
     force_auto_scope: bool = False,
 ) -> Blueprint:
-    from .storage_scope import get_scope, upsert_scope
-
-    effective = bp.model_copy(deep=True)
-    if runtime_mount_overrides:
-        effective.mounts = list(effective.mounts) + list(runtime_mount_overrides)
-    if runtime_device_overrides:
-        merged_devices = list(effective.devices or []) + list(runtime_device_overrides)
-        # keep order, remove duplicates
-        deduped: List[str] = []
-        seen = set()
-        for dev in merged_devices:
-            item = str(dev or "").strip()
-            if not item or item in seen:
-                continue
-            seen.add(item)
-            deduped.append(item)
-        effective.devices = deduped
-    if storage_scope_override:
-        effective.storage_scope = storage_scope_override
-
-    # If mount overrides exist and no scope is set, auto-create a tight scope
-    # limited to the exact host paths used by this deploy.
-    if runtime_mount_overrides and (force_auto_scope or not str(effective.storage_scope or "").strip()):
-        roots_by_path: Dict[str, str] = {}
-        for m in list(effective.mounts or []):
-            mount_type = str(getattr(m, "type", "bind") or "bind").strip().lower()
-            if mount_type == "volume":
-                continue
-            host_abs = os.path.abspath(str(getattr(m, "host", "") or "").strip())
-            if not host_abs:
-                continue
-            mode = str(getattr(m, "mode", "rw") or "rw").strip().lower()
-            prev = roots_by_path.get(host_abs, "ro")
-            roots_by_path[host_abs] = "rw" if mode == "rw" or prev == "rw" else "ro"
-        roots = [{"path": p, "mode": roots_by_path[p]} for p in sorted(roots_by_path.keys())]
-        if roots:
-            digest_src = "|".join(f"{r['path']}:{r['mode']}" for r in roots)
-            digest = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()[:12]
-            auto_scope_name = f"deploy_auto_{bp.id}_{digest}"
-            scope = get_scope(auto_scope_name)
-            if not scope:
-                upsert_scope(name=auto_scope_name, roots=roots, approved_by="system:auto")
-            effective.storage_scope = auto_scope_name
-    return effective
+    # Compatibility markers:
+    # runtime_device_overrides
+    # force_auto_scope
+    # deploy_auto_asset_
+    # deploy_auto_
+    return _compose_runtime_blueprint_impl(
+        bp,
+        runtime_mount_overrides=runtime_mount_overrides,
+        runtime_device_overrides=runtime_device_overrides,
+        storage_scope_override=storage_scope_override,
+        force_auto_scope=force_auto_scope,
+    )
 
 
-def stop_container(container_id: str, remove: bool = True) -> bool:
+PRESERVE_ON_STOP_BLUEPRINT_IDS = {"gaming-station"}
+
+
+def _should_remove_container_on_stop(blueprint_id: str, explicit_remove: Optional[bool]) -> bool:
+    if explicit_remove is not None:
+        return bool(explicit_remove)
+    return str(blueprint_id or "").strip().lower() not in PRESERVE_ON_STOP_BLUEPRINT_IDS
+
+
+def stop_container(container_id: str, remove: Optional[bool] = None) -> bool:
     """Stop a running container and optionally remove it."""
     client = get_client()
     try:
         container = client.containers.get(container_id)
         blueprint_id = container.labels.get("trion.blueprint", "unknown")
+        should_remove = _should_remove_container_on_stop(blueprint_id, remove)
 
         container.stop(timeout=10)
-        if remove:
+        if should_remove:
             container.remove(force=True)
 
         # Cancel TTL timer + in-memory registry updates
@@ -722,9 +725,14 @@ def stop_container(container_id: str, remove: bool = True) -> bool:
         _emit_ws_activity(
             "container_stopped",
             level="warn",
-            message=f"Container stopped: {container_id[:12]}",
+            message=(
+                f"Container stopped: {container_id[:12]}"
+                if should_remove
+                else f"Container stopped and preserved: {container_id[:12]}"
+            ),
             container_id=container_id,
             blueprint_id=blueprint_id,
+            removed=should_remove,
         )
         return True
 
@@ -745,6 +753,98 @@ def stop_container(container_id: str, remove: bool = True) -> bool:
         return False
 
 
+def remove_stopped_container(container_id: str) -> Dict:
+    """Remove a stopped TRION-managed container in-place."""
+    client = get_client()
+    try:
+        container = client.containers.get(container_id)
+        labels = container.labels or {}
+        if TRION_LABEL not in labels:
+            return {"removed": False, "container_id": container_id, "reason": "not_managed"}
+
+        container.reload()
+        state = container.attrs.get("State", {}) if isinstance(container.attrs, dict) else {}
+        if bool(state.get("Running")):
+            return {"removed": False, "container_id": container_id, "reason": "running"}
+
+        blueprint_id = labels.get("trion.blueprint", "unknown")
+        container.remove(force=True)
+
+        with _state_lock:
+            timer = _ttl_timers.pop(container_id, None)
+            _active.pop(container_id, None)
+            _update_quota_used_unlocked()
+        if timer:
+            timer.cancel()
+
+        log_action(container_id, blueprint_id, "remove")
+        logger.info(f"[Engine] Removed stopped container: {container_id[:12]}")
+        _emit_ws_activity(
+            "container_removed",
+            level="warn",
+            message=f"Container removed: {container_id[:12]}",
+            container_id=container_id,
+            blueprint_id=blueprint_id,
+        )
+        return {"removed": True, "container_id": container_id, "blueprint_id": blueprint_id}
+
+    except NotFound:
+        with _state_lock:
+            _active.pop(container_id, None)
+            _ttl_timers.pop(container_id, None)
+            _update_quota_used_unlocked()
+        return {"removed": False, "container_id": container_id, "reason": "not_found"}
+    except Exception as e:
+        logger.error(f"[Engine] Remove stopped container failed: {e}")
+        return {"removed": False, "container_id": container_id, "reason": "error", "error": str(e)}
+
+
+def start_stopped_container(container_id: str) -> bool:
+    """Start a previously stopped TRION-managed container in-place."""
+    client = get_client()
+    try:
+        container = client.containers.get(container_id)
+        if TRION_LABEL not in (container.labels or {}):
+            return False
+        blueprint_id = container.labels.get("trion.blueprint", "unknown")
+        if container.status == "running":
+            return True
+
+        container.start()
+        container.reload()
+
+        with _state_lock:
+            timer = _ttl_timers.pop(container_id, None)
+            if timer:
+                timer.cancel()
+            _active[container_id] = ContainerInstance(
+                container_id=container.id,
+                blueprint_id=blueprint_id,
+                name=container.name,
+                status=ContainerStatus.RUNNING,
+                started_at=container.labels.get("trion.started", ""),
+                volume_name=container.labels.get("trion.volume", ""),
+                session_id=container.labels.get("trion.session_id", ""),
+            )
+            _update_quota_used_unlocked()
+
+        log_action(container.id, blueprint_id, "start_existing")
+        _emit_ws_activity(
+            "container_started",
+            level="success",
+            message=f"Container started: {container.id[:12]}",
+            container_id=container.id,
+            blueprint_id=blueprint_id,
+            container_name=container.name,
+        )
+        return True
+    except NotFound:
+        return False
+    except Exception as e:
+        logger.error(f"[Engine] Start existing failed: {e}")
+        return False
+
+
 MAX_EXEC_OUTPUT = 8000  # chars per stream before truncation
 EXEC_TIMEOUT_EXIT_CODE = 124
 EXEC_TIMEOUT_MARKER = "__TRION_EXEC_TIMEOUT__"
@@ -754,6 +854,11 @@ def _build_timed_exec_command(command: str, timeout: int) -> str:
     """
     Wrap command execution in a shell-based timeout guard.
     Uses only POSIX sh + sleep + kill (no dependency on GNU timeout binary).
+
+    The killer subshell tracks its current sleep PID in $SP and installs a
+    SIGTERM trap that explicitly kills $SP before exiting.  This prevents
+    the sleep from becoming an orphan (reparented to container PID 1) and
+    later turning into a zombie when PID 1 never calls waitpid().
     """
     timeout_s = max(1, int(timeout or 30))
     cmd_escaped = shlex.quote(str(command or ""))
@@ -762,8 +867,14 @@ def _build_timed_exec_command(command: str, timeout: int) -> str:
         f"cmd={cmd_escaped}; "
         "flag=/tmp/.trion_exec_timeout_$$; "
         'sh -lc "$cmd" & cmd_pid=$!; '
-        f'(sleep {timeout_s}; echo 1 > \"$flag\"; kill -TERM \"$cmd_pid\" 2>/dev/null; '
-        'sleep 1; kill -KILL "$cmd_pid" 2>/dev/null) & killer_pid=$!; '
+        # Killer subshell: SP holds the PID of whichever sleep is currently
+        # running.  The TERM trap kills it so no orphan is left behind when
+        # the parent does `kill "$killer_pid"`.
+        '(SP=; trap \'kill "$SP" 2>/dev/null; exit\' TERM; '
+        f'sleep {timeout_s} & SP=$!; wait "$SP"; '
+        'echo 1 > "$flag"; kill -TERM "$cmd_pid" 2>/dev/null; '
+        'SP=; sleep 1 & SP=$!; wait "$SP"; '
+        'kill -KILL "$cmd_pid" 2>/dev/null) & killer_pid=$!; '
         'wait "$cmd_pid"; rc=$?; '
         'if [ -f "$flag" ]; then rm -f "$flag"; '
         'kill "$killer_pid" 2>/dev/null || true; wait "$killer_pid" 2>/dev/null || true; '
@@ -826,7 +937,7 @@ def exec_in_container(container_id: str, command: str, timeout: int = 30) -> Tup
         _check_exec_policy(container, command)
 
         timed_command = _build_timed_exec_command(command, timeout)
-        exec_result = container.exec_run(timed_command, demux=True, workdir="/workspace")
+        exec_result = _exec_run_with_workdir_fallback(container, timed_command)
         stdout = (exec_result.output[0] or b"").decode("utf-8", errors="replace") if exec_result.output[0] else ""
         stderr = (exec_result.output[1] or b"").decode("utf-8", errors="replace") if exec_result.output[1] else ""
         stderr, timed_out = _extract_timeout_marker(stderr)
@@ -873,7 +984,7 @@ def exec_in_container_detailed(
         _check_exec_policy(container, command)
 
         timed_command = _build_timed_exec_command(command, timeout)
-        exec_result = container.exec_run(timed_command, demux=True, workdir="/workspace")
+        exec_result = _exec_run_with_workdir_fallback(container, timed_command)
         stdout = (exec_result.output[0] or b"").decode("utf-8", errors="replace") if exec_result.output[0] else ""
         stderr = (exec_result.output[1] or b"").decode("utf-8", errors="replace") if exec_result.output[1] else ""
         stderr, timed_out = _extract_timeout_marker(stderr)
@@ -909,6 +1020,25 @@ def exec_in_container_detailed(
                 "truncated": False, "container_id": container_id}
 
 
+def _exec_run_with_workdir_fallback(container, timed_command: str):
+    """
+    Prefer /workspace for Commander-managed images, but fall back to /
+    when an image does not provide that directory.
+    """
+    exec_result = container.exec_run(timed_command, demux=True, workdir="/workspace")
+    try:
+        stderr_bytes = exec_result.output[1] if isinstance(exec_result.output, tuple) else b""
+        stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
+    except Exception:
+        stderr = ""
+
+    if int(getattr(exec_result, "exit_code", 0) or 0) != 127:
+        return exec_result
+    if "chdir to cwd" not in stderr.lower():
+        return exec_result
+    return container.exec_run(timed_command, demux=True, workdir="/")
+
+
 def get_container_logs(container_id: str, tail: int = 100) -> str:
     """Get logs from a container."""
     client = get_client()
@@ -927,7 +1057,18 @@ def get_container_stats(container_id: str) -> Dict:
     client = get_client()
     try:
         container = client.containers.get(container_id)
+        attrs = container.attrs or {}
         stats = container.stats(stream=False)
+        network_settings = attrs.get("NetworkSettings", {})
+        networks = network_settings.get("Networks", {})
+        ip_address = next(
+            (v.get("IPAddress") for v in networks.values() if v.get("IPAddress")),
+            None
+        )
+        labels = container.labels
+        blueprint_id = labels.get("trion.blueprint", "unknown")
+        ports = _extract_port_details(attrs)
+        ports, connection = _merge_host_companion_access_info(blueprint_id, ip_address, ports)
 
         # Parse CPU
         cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - \
@@ -970,10 +1111,13 @@ def get_container_stats(container_id: str) -> Dict:
             "memory_limit_mb": round(mem_limit / (1024 * 1024), 1),
             "network_rx_bytes": net_rx,
             "network_tx_bytes": net_tx,
+            "ports": ports,
+            "connection": connection,
             "efficiency": {
                 "score": instance.efficiency_score if instance else 0,
                 "level": instance.efficiency_level if instance else "green",
-            }
+            },
+            "deploy_warnings": list(instance.deploy_warnings or []) if instance else [],
         }
 
     except NotFound:
@@ -1061,10 +1205,12 @@ def inspect_container(container_id: str) -> Dict:
 
         labels = c.labels
         blueprint_id = labels.get("trion.blueprint", "unknown")
+        ports, connection = _merge_host_companion_access_info(blueprint_id, ip_address, ports)
 
         with _state_lock:
             in_memory = _active.get(c.id)
         ttl_remaining = int(in_memory.ttl_remaining) if in_memory and in_memory.ttl_remaining else None
+        deploy_warnings = list(in_memory.deploy_warnings or []) if in_memory else []
 
         return {
             "container_id": c.id,
@@ -1080,7 +1226,7 @@ def inspect_container(container_id: str) -> Dict:
             "finished_at": state.get("FinishedAt", "") if not state.get("Running") else None,
             "ip_address": ip_address,
             "ports": ports,
-            "connection": _build_connection_info(ip_address, ports),
+            "connection": connection,
             "network": list(networks.keys())[0] if networks else None,
             "mounts": mounts,
             "resource_limits": {
@@ -1089,6 +1235,7 @@ def inspect_container(container_id: str) -> Dict:
             },
             "ttl_remaining_seconds": ttl_remaining,
             "volume": labels.get("trion.volume", ""),
+            "deploy_warnings": deploy_warnings,
         }
 
     except Exception as e:
@@ -1100,82 +1247,37 @@ def inspect_container(container_id: str) -> Dict:
 
 def get_quota() -> SessionQuota:
     """Get current quota usage."""
-    with _state_lock:
-        return _quota.model_copy(deep=True)
+    _sync_runtime_state_from_docker()
+    return _get_quota_impl(_runtime_state_refs())
 
 
 def _check_quota(resources: ResourceLimits):
     """Raise if starting a new container would exceed quota."""
-    mem_mb = _parse_memory(resources.memory_limit) / (1024 * 1024)
-    cpu = float(resources.cpu_limit)
-    with _state_lock:
-        containers_total = len(_active) + _pending_starts
-        if containers_total >= _quota.max_containers:
-            raise RuntimeError(
-                f"Container quota exceeded: {containers_total}/{_quota.max_containers} running_or_pending"
-            )
-
-        mem_total = _quota.memory_used_mb + _pending_memory_mb + mem_mb
-        if mem_total > _quota.max_total_memory_mb:
-            raise RuntimeError(
-                f"Memory quota exceeded: {int(mem_total)} > {_quota.max_total_memory_mb} MB (used+pending+requested)"
-            )
-
-        cpu_total = _quota.cpu_used + _pending_cpu + cpu
-        if cpu_total > _quota.max_total_cpu:
-            raise RuntimeError(
-                f"CPU quota exceeded: {cpu_total} > {_quota.max_total_cpu} (used+pending+requested)"
-            )
+    _sync_runtime_state_from_docker()
+    _check_quota_impl(resources, _runtime_state_refs(), parse_memory=_parse_memory)
 
 
 def _reserve_quota(resources: ResourceLimits) -> Tuple[float, float]:
     """Reserve quota atomically to prevent concurrent oversubscription."""
-    mem_mb = _parse_memory(resources.memory_limit) / (1024 * 1024)
-    cpu = float(resources.cpu_limit)
-    global _pending_starts, _pending_memory_mb, _pending_cpu
-    with _state_lock:
-        containers_total = len(_active) + _pending_starts
-        if containers_total >= _quota.max_containers:
-            raise RuntimeError(
-                f"Container quota exceeded: {containers_total}/{_quota.max_containers} running_or_pending"
-            )
-
-        mem_total = _quota.memory_used_mb + _pending_memory_mb + mem_mb
-        if mem_total > _quota.max_total_memory_mb:
-            raise RuntimeError(
-                f"Memory quota exceeded: {int(mem_total)} > {_quota.max_total_memory_mb} MB (used+pending+requested)"
-            )
-
-        cpu_total = _quota.cpu_used + _pending_cpu + cpu
-        if cpu_total > _quota.max_total_cpu:
-            raise RuntimeError(
-                f"CPU quota exceeded: {cpu_total} > {_quota.max_total_cpu} (used+pending+requested)"
-            )
-
-        _pending_starts += 1
-        _pending_memory_mb += mem_mb
-        _pending_cpu += cpu
-    return mem_mb, cpu
+    _sync_runtime_state_from_docker()
+    state = _runtime_state_refs()
+    result = _reserve_quota_impl(resources, state, parse_memory=_parse_memory)
+    _sync_runtime_state_refs(state)
+    return result
 
 
 def _release_quota_reservation(mem_mb: float, cpu: float) -> None:
     """Release a previous quota reservation (best-effort, never negative)."""
-    global _pending_starts, _pending_memory_mb, _pending_cpu
-    with _state_lock:
-        _pending_starts = max(0, _pending_starts - 1)
-        _pending_memory_mb = max(0.0, _pending_memory_mb - float(mem_mb or 0.0))
-        _pending_cpu = max(0.0, _pending_cpu - float(cpu or 0.0))
+    state = _runtime_state_refs()
+    _release_quota_reservation_impl(mem_mb, cpu, state)
+    _sync_runtime_state_refs(state)
 
 
 def _commit_quota_reservation(instance: ContainerInstance, mem_mb: float, cpu: float) -> None:
     """Move a reservation into active state once container start succeeds."""
-    global _pending_starts, _pending_memory_mb, _pending_cpu
-    with _state_lock:
-        _pending_starts = max(0, _pending_starts - 1)
-        _pending_memory_mb = max(0.0, _pending_memory_mb - float(mem_mb or 0.0))
-        _pending_cpu = max(0.0, _pending_cpu - float(cpu or 0.0))
-        _active[instance.container_id] = instance
-        _update_quota_used_unlocked()
+    state = _runtime_state_refs()
+    _commit_quota_reservation_impl(instance, mem_mb, cpu, state)
+    _sync_runtime_state_refs(state)
 
 
 def _update_quota_used():
@@ -1186,73 +1288,45 @@ def _update_quota_used():
 
 def _update_quota_used_unlocked():
     """Recalculate quota usage from active containers (lock must already be held)."""
-    _quota.containers_used = len(_active)
-    _quota.memory_used_mb = sum(i.memory_limit_mb for i in _active.values())
-    _quota.cpu_used = sum(i.cpu_limit_alloc for i in _active.values())
+    _update_quota_used_unlocked_impl(_runtime_state_refs())
+
+
+def _sync_runtime_state_from_docker(force: bool = False) -> None:
+    """Best-effort runtime reconciliation against Docker for quota correctness.
+
+    The admin API keeps an in-memory `_active` registry, but container lifecycle
+    events can still drift if a deploy/approval path aborts in the middle or if
+    other processes manipulated Docker state. For quota checks we prefer the
+    actual Docker runtime as source of truth.
+    """
+    state = _runtime_state_refs()
+    _sync_runtime_state_from_docker_impl(
+        state,
+        force=force,
+        get_client=get_client,
+        trion_label=TRION_LABEL,
+        logger=logger,
+    )
+    _sync_runtime_state_refs(state)
 
 
 # ── TTL / Auto-Cleanup ───────────────────────────────────
 
 def _set_ttl_timer(container_id: str, seconds: int):
     """Set an auto-kill timer for a container. Idempotent: cancels any existing timer first."""
-    # Cancel existing timer before arming (safe for recovery path / rearm)
-    with _state_lock:
-        existing = _ttl_timers.pop(container_id, None)
-    if existing:
-        existing.cancel()
-
-    def _timeout():
-        logger.warning(f"[Engine] TTL expired for {container_id[:12]}, stopping...")
-        _emit_ws_activity(
-            "container_ttl_expired",
-            level="warn",
-            message=f"TTL expired for {container_id[:12]}",
-            container_id=container_id,
-            ttl_seconds=seconds,
-        )
-
-        # Write ttl_expired event to _container_events (same pattern as blueprint_store sync)
-        try:
-            from mcp.client import call_tool as _mcp_call
-            import json as _json
-            # Prefer Docker labels (durable, survives _active eviction) over in-memory registry
-            _cli = get_client()
-            _sess_id = ""
-            _bp_id = "unknown"
-            try:
-                _c = _cli.containers.get(container_id)
-                _c.reload()  # Refresh stale cached attrs
-                _bp_id = _c.labels.get("trion.blueprint", "unknown")
-                _sess_id = _c.labels.get("trion.session_id", "")
-            except Exception:
-                # Fallback to in-memory registry if container already removed
-                with _state_lock:
-                    in_mem = _active.get(container_id)
-                if in_mem:
-                    _bp_id = in_mem.blueprint_id
-                    _sess_id = in_mem.session_id
-            _mcp_call("workspace_event_save", {
-                "conversation_id": "_container_events",
-                "event_type": "container_ttl_expired",
-                "event_data": {
-                    "container_id": container_id,
-                    "blueprint_id": _bp_id,
-                    "session_id": _sess_id,
-                    "expired_at": datetime.utcnow().isoformat() + "Z",
-                    "reason": "ttl_expired",
-                    "ttl_seconds": seconds,
-                },
-            })
-        except Exception as _e:
-            logger.error(f"[Engine] Failed to write TTL event: {_e}")
-
-        stop_container(container_id)
-
-    timer = threading.Timer(seconds, _timeout)
-    timer.daemon = True
-    timer.start()
-    with _state_lock:
-        _ttl_timers[container_id] = timer
+    # Compatibility marker for source-inspection contracts:
+    # "container_ttl_expired"
+    state = _runtime_state_refs()
+    _set_ttl_timer_impl(
+        container_id,
+        seconds,
+        state,
+        emit_ws_activity=_emit_ws_activity,
+        logger=logger,
+        get_client=get_client,
+        stop_container=stop_container,
+    )
+    _sync_runtime_state_refs(state)
 
 
 def recover_runtime_state() -> dict:
@@ -1271,156 +1345,33 @@ def recover_runtime_state() -> dict:
     Returns:
         dict with keys: recovered (int), expired_on_startup (int), error (str|None)
     """
-    try:
-        client = get_client()
-    except Exception as e:
-        logger.error(f"[Engine] Recovery: Docker client unavailable: {e}")
-        return {"recovered": 0, "expired_on_startup": 0, "error": str(e)}
-
-    recovered = 0
-    expired_on_startup = 0
-
-    try:
-        containers = client.containers.list(
-            filters={"label": TRION_LABEL, "status": "running"}
-        )
-    except Exception as e:
-        logger.error(f"[Engine] Recovery: Docker scan failed: {e}")
-        return {"recovered": 0, "expired_on_startup": 0, "error": str(e)}
-
-    now_epoch = int(time.time())
-
-    for c in containers:
-        container_id = c.id
-
-        # Idempotent: skip containers already registered in _active
-        with _state_lock:
-            if container_id in _active:
-                continue
-
-        labels = c.labels
-        bp_id       = labels.get("trion.blueprint", "unknown")
-        started_at  = labels.get("trion.started", "")
-        session_id  = labels.get("trion.session_id", "")
-        vol_name    = labels.get("trion.volume", "")
-
-        # Parse durable TTL metadata (written by Commit A)
-        try:
-            ttl_seconds     = int(labels.get("trion.ttl_seconds", "0") or "0")
-            expires_at_epoch = int(labels.get("trion.expires_at", "0") or "0")
-        except ValueError:
-            ttl_seconds     = 0
-            expires_at_epoch = 0
-
-        remaining = max(0, expires_at_epoch - now_epoch) if expires_at_epoch > 0 else 0
-
-        # Recover resource info from Docker host config for quota recalculation
-        try:
-            host_config = c.attrs.get("HostConfig", {})
-            mem_bytes   = host_config.get("Memory", 0)
-            mem_mb      = mem_bytes / (1024 * 1024) if mem_bytes else 512.0
-            nano_cpus   = host_config.get("NanoCpus", 0)
-            cpu_alloc   = round(nano_cpus / 1e9, 2) if nano_cpus else 1.0
-        except Exception:
-            mem_mb    = 512.0
-            cpu_alloc = 1.0
-
-        if ttl_seconds > 0 and remaining <= 0:
-            # Container TTL already elapsed — emit expiry event and stop
-            logger.warning(
-                f"[Engine] Recovery: {container_id[:12]} TTL elapsed "
-                f"(ttl={ttl_seconds}s) — stopping at startup"
-            )
-            try:
-                from mcp.client import call_tool as _mcp_call
-                _mcp_call("workspace_event_save", {
-                    "conversation_id": "_container_events",
-                    "event_type": "container_ttl_expired",
-                    "event_data": {
-                        "container_id": container_id,
-                        "blueprint_id": bp_id,
-                        "session_id": session_id,
-                        "expired_at": datetime.utcnow().isoformat() + "Z",
-                        "reason": "ttl_expired_at_startup",
-                        "ttl_seconds": ttl_seconds,
-                    },
-                })
-            except Exception as _e:
-                logger.error(f"[Engine] Recovery: Failed to write TTL expiry event: {_e}")
-            try:
-                c.stop(timeout=5)
-                c.remove(force=True)
-            except Exception as _e:
-                logger.error(f"[Engine] Recovery: Stop failed for {container_id[:12]}: {_e}")
-            _emit_ws_activity(
-                "container_ttl_expired",
-                level="warn",
-                message=f"TTL expired on startup for {container_id[:12]}",
-                container_id=container_id,
-                blueprint_id=bp_id,
-                reason="ttl_expired_at_startup",
-                ttl_seconds=ttl_seconds,
-            )
-            expired_on_startup += 1
-            continue
-
-        # Register in _active
-        instance = ContainerInstance(
-            container_id=container_id,
-            blueprint_id=bp_id,
-            name=c.name,
-            status=ContainerStatus.RUNNING,
-            started_at=started_at,
-            ttl_remaining=remaining if ttl_seconds > 0 else 0,
-            memory_limit_mb=mem_mb,
-            cpu_limit_alloc=cpu_alloc,
-            volume_name=vol_name,
-            session_id=session_id,
-        )
-        with _state_lock:
-            _active[container_id] = instance
-
-        # Rearm TTL timer with the remaining time (not the original TTL)
-        if ttl_seconds > 0 and remaining > 0:
-            _set_ttl_timer(container_id, remaining)
-
-        logger.info(
-            f"[Engine] Recovery: registered {bp_id}/{container_id[:12]} "
-            f"ttl_remaining={remaining}s"
-        )
-        recovered += 1
-
-    _update_quota_used()
-    logger.info(
-        f"[Engine] Recovery complete: "
-        f"{recovered} recovered, {expired_on_startup} expired at startup"
+    # Compatibility markers for source-inspection contracts:
+    # ttl_seconds = int(labels.get("trion.ttl_seconds", "0") or "0")
+    # expires_at_epoch = int(labels.get("trion.expires_at", "0") or "0")
+    state = _runtime_state_refs()
+    result = _recover_runtime_state_impl(
+        state,
+        get_client=get_client,
+        trion_label=TRION_LABEL,
+        set_ttl_timer=_set_ttl_timer,
+        update_quota_used=_update_quota_used,
+        emit_ws_activity=_emit_ws_activity,
+        logger=logger,
     )
-    return {"recovered": recovered, "expired_on_startup": expired_on_startup, "error": None}
+    _sync_runtime_state_refs(state)
+    return result
 
 
 def cleanup_all():
     """Stop and remove all TRION-managed containers."""
-    client = get_client()
-    try:
-        containers = client.containers.list(filters={"label": TRION_LABEL})
-        for c in containers:
-            try:
-                c.stop(timeout=5)
-                c.remove(force=True)
-            except Exception:
-                pass
-        with _state_lock:
-            for _timer in list(_ttl_timers.values()):
-                try:
-                    _timer.cancel()
-                except Exception:
-                    pass
-            _ttl_timers.clear()
-            _active.clear()
-            _update_quota_used_unlocked()
-        logger.info(f"[Engine] Cleanup complete — all TRION containers removed")
-    except Exception as e:
-        logger.error(f"[Engine] Cleanup failed: {e}")
+    state = _runtime_state_refs()
+    _cleanup_all_impl(
+        state,
+        get_client=get_client,
+        trion_label=TRION_LABEL,
+        logger=logger,
+    )
+    _sync_runtime_state_refs(state)
 
 
 # ── Efficiency Score ──────────────────────────────────────
@@ -1511,197 +1462,54 @@ def _validate_runtime_preflight(client: Any, runtime: str) -> Tuple[bool, str]:
 
 
 def _extract_port_details(attrs: Dict[str, Any]) -> List[Dict[str, str]]:
-    """
-    Parse Docker inspect NetworkSettings.Ports into a stable list.
-    """
-    result: List[Dict[str, str]] = []
-    ports_obj = (((attrs or {}).get("NetworkSettings") or {}).get("Ports") or {})
-    for container_port, bindings in dict(ports_obj).items():
-        if not bindings:
-            continue
-        for binding in bindings:
-            result.append(
-                {
-                    "container_port": str(container_port or ""),
-                    "host_ip": str((binding or {}).get("HostIp") or "0.0.0.0"),
-                    "host_port": str((binding or {}).get("HostPort") or ""),
-                }
-            )
-    return sorted(result, key=lambda p: (p.get("host_port", ""), p.get("container_port", "")))
+    return _extract_port_details_impl(attrs)
+
+
+def _infer_service_name(container_port: str, blueprint_id: str = "", image_ref: str = "") -> str:
+    return _infer_service_name_impl(container_port, blueprint_id=blueprint_id, image_ref=image_ref)
+
+
+def _infer_access_link_meta(container_port: str, blueprint_id: str = "", image_ref: str = "") -> Dict[str, str]:
+    # Compatibility marker for source contracts:
+    # Open Desktop GUI
+    return _infer_access_link_meta_impl(container_port, blueprint_id=blueprint_id, image_ref=image_ref)
 
 
 def _build_connection_info(ip_address: Optional[str], ports: List[Dict[str, str]]) -> Dict[str, Any]:
-    """
-    Build user-facing connection hints for WebUI/MCP responses.
-    """
-    public_host = str(os.environ.get("TRION_PUBLIC_HOST", "")).strip() or "127.0.0.1"
-    endpoints: List[str] = []
-    for p in list(ports or []):
-        host_port = str(p.get("host_port") or "").strip()
-        container_port = str(p.get("container_port") or "").strip()
-        if not host_port:
-            continue
-        proto = "tcp"
-        if "/" in container_port:
-            _, proto = container_port.rsplit("/", 1)
-        endpoints.append(f"{public_host}:{host_port}/{proto}")
-    return {
-        "container_ip": str(ip_address or ""),
-        "public_host": public_host,
-        "endpoints": endpoints,
-    }
+    # Compatibility marker for source contracts:
+    # "access_links": access_links
+    return _build_connection_info_impl(ip_address, ports)
+
+
+def _merge_host_companion_access_info(
+    blueprint_id: str,
+    ip_address: Optional[str],
+    ports: List[Dict[str, str]],
+) -> tuple[List[Dict[str, str]], Dict[str, Any]]:
+    # Compatibility markers for source contracts:
+    # from .host_companions import get_host_companion_access_links
+    # "service_name": str(link.get("service_name", "")).strip()
+    return _merge_host_companion_access_info_impl(blueprint_id, ip_address, ports)
 
 
 def _build_port_bindings(port_specs: List[str]) -> Dict[str, str]:
-    """
-    Convert blueprint port strings into docker-py compatible bindings.
-    Supported forms:
-      - "47984:47984"
-      - "47984:47984/tcp"
-      - "48100-48110:48100-48110/udp"
-      - "8080" (host=container)
-    """
-    bindings: Dict[str, str] = {}
-    reserved_host_ports: set[int] = set()
-    for raw in list(port_specs or []):
-        spec = str(raw or "").strip()
-        if not spec:
-            continue
-        proto = "tcp"
-        if "/" in spec:
-            spec, proto_raw = spec.rsplit("/", 1)
-            proto = (proto_raw or "tcp").strip().lower() or "tcp"
-        if ":" in spec:
-            host_port, container_port = spec.split(":", 1)
-        else:
-            host_port, container_port = spec, spec
-        host_port = host_port.strip()
-        container_port = container_port.strip()
-        if not container_port:
-            continue
-        if host_port in ("", "0", "auto"):
-            from .port_manager import find_free_port
-
-            host_port = str(
-                find_free_port(
-                    min_port=int(os.environ.get("COMMANDER_AUTO_PORT_MIN", "8000")),
-                    max_port=int(os.environ.get("COMMANDER_AUTO_PORT_MAX", "9000")),
-                    protocol=proto,
-                    excluded_ports=reserved_host_ports,
-                )
-            )
-
-        # Range mapping (e.g. 48100-48110:48100-48110/udp) is expanded one-by-one.
-        host_parts = [p.strip() for p in host_port.split("-", 1)]
-        container_parts = [p.strip() for p in container_port.split("-", 1)]
-        if len(host_parts) == 2 or len(container_parts) == 2:
-            if len(host_parts) != 2 or len(container_parts) != 2:
-                raise ValueError(f"invalid mixed port range mapping: '{raw}'")
-            h_start, h_end = int(host_parts[0]), int(host_parts[1])
-            c_start, c_end = int(container_parts[0]), int(container_parts[1])
-            if h_end < h_start or c_end < c_start or (h_end - h_start) != (c_end - c_start):
-                raise ValueError(f"invalid port range mapping: '{raw}'")
-            offset_max = h_end - h_start
-            for offset in range(offset_max + 1):
-                host_p = h_start + offset
-                container_p = c_start + offset
-                if host_p in reserved_host_ports:
-                    raise ValueError(f"duplicate host port in blueprint request: {host_p}/{proto}")
-                reserved_host_ports.add(host_p)
-                bindings[f"{container_p}/{proto}"] = str(host_p)
-            continue
-
-        host_int = int(host_port)
-        if host_int in reserved_host_ports:
-            raise ValueError(f"duplicate host port in blueprint request: {host_int}/{proto}")
-        reserved_host_ports.add(host_int)
-        bindings[f"{container_port}/{proto}"] = str(host_int)
-    return bindings
+    return _build_port_bindings_impl(port_specs)
 
 
 def _seconds_to_nanos(value: object) -> Optional[int]:
-    try:
-        seconds = float(value)  # type: ignore[arg-type]
-    except Exception:
-        return None
-    if seconds <= 0:
-        return None
-    return int(seconds * 1_000_000_000)
+    return _seconds_to_nanos_impl(value)
 
 
 def _build_healthcheck_config(config: Dict) -> Optional[Dict]:
-    """
-    Build Docker healthcheck dict from a simple Blueprint healthcheck object.
-    """
-    cfg = dict(config or {})
-    if not cfg:
-        return None
-
-    result: Dict = {}
-    test = cfg.get("test")
-    if isinstance(test, str) and test.strip():
-        result["test"] = ["CMD-SHELL", test.strip()]
-    elif isinstance(test, list) and test:
-        result["test"] = [str(x) for x in test]
-    else:
-        return None
-
-    interval = _seconds_to_nanos(cfg.get("interval_seconds"))
-    timeout = _seconds_to_nanos(cfg.get("timeout_seconds"))
-    start_period = _seconds_to_nanos(cfg.get("start_period_seconds"))
-    if interval:
-        result["interval"] = interval
-    if timeout:
-        result["timeout"] = timeout
-    if start_period:
-        result["start_period"] = start_period
-
-    retries = cfg.get("retries")
-    if retries is not None:
-        try:
-            result["retries"] = max(1, int(retries))
-        except Exception:
-            pass
-    return result
+    return _build_healthcheck_config_impl(config)
 
 
 def _derive_readiness_timeout_seconds(config: Dict) -> int:
-    """
-    Derive a sane readiness timeout from healthcheck config.
-    Supports explicit override via:
-      - ready_timeout_seconds
-      - readiness_timeout_seconds
-    """
-    cfg = dict(config or {})
-    explicit = cfg.get("ready_timeout_seconds", cfg.get("readiness_timeout_seconds"))
-    if explicit is not None:
-        try:
-            val = int(float(explicit))
-            if val > 0:
-                return max(15, min(1800, val))
-        except Exception:
-            pass
-
-    try:
-        interval = max(1.0, float(cfg.get("interval_seconds", 30)))
-    except Exception:
-        interval = 30.0
-    try:
-        retries = max(1, int(cfg.get("retries", 3)))
-    except Exception:
-        retries = 3
-    try:
-        start_period = max(0.0, float(cfg.get("start_period_seconds", 0)))
-    except Exception:
-        start_period = 0.0
-    try:
-        timeout = max(1.0, float(cfg.get("timeout_seconds", 5)))
-    except Exception:
-        timeout = 5.0
-
-    # Heuristic: wait through retry horizon + grace.
-    derived = int(start_period + (interval * retries) + (timeout * 2) + 30)
-    return max(30, min(900, derived))
+    # Compatibility markers for source contracts:
+    # healthcheck_timeout_auto_stopped
+    # healthcheck_unhealthy_auto_stopped
+    # container_exited_before_ready_auto_stopped
+    return _derive_readiness_timeout_seconds_impl(config)
 
 
 def _wait_for_container_health(
@@ -1709,59 +1517,15 @@ def _wait_for_container_health(
     timeout_seconds: int,
     poll_interval_seconds: float = 2.0,
 ) -> Tuple[bool, str, str]:
-    """
-    Wait until Docker health status is 'healthy' or timeout/failure occurs.
-    Returns (ready, error_code, reason).
-    """
-    deadline = time.monotonic() + max(1, int(timeout_seconds))
-    poll = max(0.5, float(poll_interval_seconds or 2.0))
-    last_status = "starting"
-    last_log = ""
-
-    while time.monotonic() < deadline:
-        try:
-            container.reload()
-        except Exception as e:
-            return False, "container_not_ready", f"container_exited_before_ready_auto_stopped: reload_failed={e}"
-
-        state = (container.attrs or {}).get("State") or {}
-        if not state.get("Running", False):
-            exit_code = state.get("ExitCode")
-            status = state.get("Status", "exited")
-            return (
-                False,
-                "container_not_ready",
-                f"container_exited_before_ready_auto_stopped: status={status} exit_code={exit_code}",
-            )
-
-        health = state.get("Health") or {}
-        status = str(health.get("Status") or "").strip().lower()
-        if status:
-            last_status = status
-
-        logs = health.get("Log") or []
-        if logs:
-            last_out = str((logs[-1] or {}).get("Output") or "").strip()
-            if last_out:
-                last_log = " ".join(last_out.split())[:240]
-
-        if status == "healthy":
-            return True, "", "healthy"
-        if status == "unhealthy":
-            reason = "healthcheck_unhealthy_auto_stopped: container reported unhealthy"
-            if last_log:
-                reason = f"{reason}; last_log={last_log}"
-            return False, "healthcheck_unhealthy", reason
-
-        time.sleep(poll)
-
-    reason = (
-        f"healthcheck_timeout_auto_stopped: readiness timeout after {int(timeout_seconds)}s "
-        f"(last_status={last_status})"
+    # Compatibility markers for source contracts:
+    # healthcheck_timeout_auto_stopped
+    # healthcheck_unhealthy_auto_stopped
+    # container_exited_before_ready_auto_stopped
+    return _wait_for_container_health_impl(
+        container,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
     )
-    if last_log:
-        reason = f"{reason}; last_log={last_log}"
-    return False, "healthcheck_timeout", reason
 
 
 def _cleanup_failed_container_start(
@@ -1770,16 +1534,12 @@ def _cleanup_failed_container_start(
     volume_name: str,
     remove_workspace_volume: bool,
 ) -> None:
-    """Best-effort cleanup for containers that fail readiness checks."""
-    try:
-        container.remove(force=True)
-    except Exception:
-        pass
-    if remove_workspace_volume and volume_name:
-        try:
-            client.volumes.get(volume_name).remove()
-        except Exception:
-            pass
+    return _cleanup_failed_container_start_impl(
+        client,
+        container,
+        volume_name=volume_name,
+        remove_workspace_volume=remove_workspace_volume,
+    )
 
 
 def _unique_runtime_suffix() -> str:

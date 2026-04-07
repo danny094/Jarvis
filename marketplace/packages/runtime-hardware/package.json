@@ -1,0 +1,74 @@
+{
+  "id": "runtime-hardware",
+  "name": "Runtime Hardware",
+  "version": "0.1.0",
+  "package_type": "composite_addon",
+  "description": "Generischer Hardware-, Capability- und Attachment-Planungsdienst fuer Jarvis Runtime-Connectoren.",
+  "blueprints": [
+    "runtime-hardware"
+  ],
+  "host_companion": {
+    "id": "runtime-hardware-access",
+    "kind": "access_links_only",
+    "summary": "v0 stellt eine kleine interne API fuer Hardware-Discovery, Capabilities, Plan und Validate bereit.",
+    "auto_enable": false,
+    "auto_start": false,
+    "access_links": [
+      {
+        "host_ip": "0.0.0.0",
+        "host_port": "8420",
+        "container_port": "8420/tcp",
+        "service_name": "Runtime Hardware API",
+        "access_label": "Open Runtime Hardware API",
+        "access_scheme": "http",
+        "access_path": "/docs",
+        "access_kind": "web_ui"
+      }
+    ]
+  },
+  "storage": {
+    "scope": {
+      "name": "runtime-hardware",
+      "roots": [
+        {
+          "path": "/data/services/runtime-hardware/config",
+          "mode": "rw"
+        },
+        {
+          "path": "/data/services/runtime-hardware/data",
+          "mode": "rw"
+        },
+        {
+          "path": "/sys",
+          "mode": "ro"
+        },
+        {
+          "path": "/run/udev",
+          "mode": "ro"
+        },
+        {
+          "path": "/dev",
+          "mode": "ro"
+        },
+        {
+          "path": "/proc",
+          "mode": "ro"
+        },
+        {
+          "path": "/var/run/docker.sock",
+          "mode": "rw"
+        }
+      ]
+    },
+    "paths": [
+      "/data/services/runtime-hardware/config",
+      "/data/services/runtime-hardware/data"
+    ]
+  },
+  "notes": [
+    "v0 ist ein Discovery-/Plan-Service, kein vollwertiger Hotplug-Controller.",
+    "Der erste echte Connector ist container_connector.",
+    "QEMU- und Remote-Agent-Connectoren folgen spaeter.",
+    "Der Service braucht Host-Lesesicht auf /sys, /run/udev, /dev, /proc und Docker-Socket-Zugriff fuer Container-Discovery."
+  ]
+}

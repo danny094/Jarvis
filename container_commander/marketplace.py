@@ -23,6 +23,7 @@ import tarfile
 import hashlib
 import logging
 import re
+from pathlib import Path
 from urllib.parse import urlparse, urljoin
 from urllib.request import Request, urlopen
 from datetime import datetime
@@ -39,6 +40,10 @@ MARKETPLACE_CATALOG_CACHE = os.environ.get(
 )
 MARKETPLACE_DEFAULT_CATALOG_REPO = os.environ.get("TRION_BLUEPRINT_CATALOG_REPO", "")
 MARKETPLACE_DEFAULT_CATALOG_BRANCH = os.environ.get("TRION_BLUEPRINT_CATALOG_BRANCH", "main")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LOCAL_PACKAGE_DIR = REPO_ROOT / "marketplace" / "packages"
+LOCAL_CONTAINER_ADDONS_DIR = REPO_ROOT / "intelligence_modules" / "container_addons"
+RUNTIME_CONTAINER_ADDONS_DIR = Path(MARKETPLACE_DIR) / "container_addons"
 
 
 # ── Built-in Starter Blueprints ──────────────────────────
@@ -114,7 +119,7 @@ def export_bundle(blueprint_id: str) -> Optional[str]:
     os.makedirs(MARKETPLACE_DIR, exist_ok=True)
 
     # Build YAML
-    bp_dict = bp.model_dump()
+    bp_dict = bp.model_dump(mode="json")
     bp_yaml = yaml.dump(bp_dict, default_flow_style=False, allow_unicode=True)
 
     # Meta
@@ -127,6 +132,9 @@ def export_bundle(blueprint_id: str) -> Optional[str]:
         "tags": bp.tags,
         "checksum": hashlib.sha256(bp_yaml.encode()).hexdigest(),
     }
+    package_manifest = _load_local_package_manifest(bp.id)
+    if package_manifest:
+        meta["package_type"] = str(package_manifest.get("package_type", "composite_addon")).strip() or "composite_addon"
 
     # Build tarball
     filename = f"{blueprint_id}.trion-bundle.tar.gz"
@@ -143,64 +151,84 @@ def export_bundle(blueprint_id: str) -> Optional[str]:
         # README
         readme = f"# {bp.name}\n\n{bp.description}\n\n## Tags\n{', '.join(bp.tags)}\n"
         _add_string_to_tar(tar, "README.md", readme)
+        if package_manifest:
+            _add_string_to_tar(tar, "package.json", json.dumps(package_manifest, indent=2, ensure_ascii=False))
+            _add_package_dir_to_tar(tar, bp.id)
+            _add_container_addons_to_tar(tar, package_manifest)
 
     logger.info(f"[Marketplace] Exported: {filename}")
     return filename
 
 
-def import_bundle(filepath_or_bytes, filename: str = "") -> Optional[Dict]:
+def import_bundle(filepath_or_bytes, filename: str = "", overwrite: bool = False) -> Optional[Dict]:
     """
     Import a .trion-bundle.tar.gz and create the blueprint.
     Accepts a filepath (str) or bytes.
     Returns the created blueprint dict or None.
     """
-    from .blueprint_store import create_blueprint, get_blueprint
+    from .blueprint_store import create_blueprint, get_blueprint, update_blueprint
     from .models import Blueprint, ResourceLimits, NetworkMode
 
     try:
-        if isinstance(filepath_or_bytes, str):
-            tar = tarfile.open(filepath_or_bytes, "r:gz")
-        else:
-            tar = tarfile.open(fileobj=io.BytesIO(filepath_or_bytes), mode="r:gz")
+        tar_args = (filepath_or_bytes, "r:gz") if isinstance(filepath_or_bytes, str) else None
+        with (
+            tarfile.open(*tar_args) if tar_args else tarfile.open(fileobj=io.BytesIO(filepath_or_bytes), mode="r:gz")
+        ) as tar:
+            # Read blueprint.yaml
+            bp_yaml = tar.extractfile("blueprint.yaml").read().decode("utf-8")
+            bp_data = yaml.safe_load(bp_yaml)
 
-        # Read blueprint.yaml
-        bp_yaml = tar.extractfile("blueprint.yaml").read().decode("utf-8")
-        bp_data = yaml.safe_load(bp_yaml)
+            # Read meta
+            try:
+                meta_raw = tar.extractfile("meta.json").read().decode("utf-8")
+                meta = json.loads(meta_raw)
+            except Exception:
+                meta = {}
+            try:
+                package_raw = tar.extractfile("package.json").read().decode("utf-8")
+                package_manifest = json.loads(package_raw)
+            except Exception:
+                package_manifest = None
 
-        # Read meta
-        try:
-            meta_raw = tar.extractfile("meta.json").read().decode("utf-8")
-            meta = json.loads(meta_raw)
-        except Exception:
-            meta = {}
+            # Verify checksum
+            if meta.get("checksum"):
+                actual = hashlib.sha256(bp_yaml.encode()).hexdigest()
+                if actual != meta["checksum"]:
+                    logger.warning(f"[Marketplace] Checksum mismatch for {filename}")
 
-        # Verify checksum
-        if meta.get("checksum"):
-            actual = hashlib.sha256(bp_yaml.encode()).hexdigest()
-            if actual != meta["checksum"]:
-                logger.warning(f"[Marketplace] Checksum mismatch for {filename}")
+            # Create blueprint
+            resources = ResourceLimits(**(bp_data.pop("resources", {})))
+            network = NetworkMode(bp_data.pop("network", "internal"))
 
-        tar.close()
+            # Clean fields
+            for key in list(bp_data.keys()):
+                if key not in Blueprint.model_fields:
+                    bp_data.pop(key)
 
-        # Create blueprint
-        resources = ResourceLimits(**(bp_data.pop("resources", {})))
-        network = NetworkMode(bp_data.pop("network", "internal"))
+            bp = Blueprint(resources=resources, network=network, **bp_data)
 
-        # Clean fields
-        for key in list(bp_data.keys()):
-            if key not in Blueprint.model_fields:
-                bp_data.pop(key)
+            # Check if exists
+            existing = get_blueprint(bp.id)
+            if existing:
+                if not overwrite:
+                    return {"error": f"Blueprint '{bp.id}' already exists", "blueprint": existing.model_dump()}
+                created = update_blueprint(bp.id, bp.model_dump())
+            else:
+                created = create_blueprint(bp)
 
-        bp = Blueprint(resources=resources, network=network, **bp_data)
+            package_info = None
+            addon_info = None
+            if isinstance(package_manifest, dict):
+                package_info = _install_bundle_package(bp.id, tar, package_manifest)
+                addon_info = _install_bundle_container_addons(bp.id, tar, package_manifest)
 
-        # Check if exists
-        existing = get_blueprint(bp.id)
-        if existing:
-            return {"error": f"Blueprint '{bp.id}' already exists", "blueprint": existing.model_dump()}
-
-        created = create_blueprint(bp)
         logger.info(f"[Marketplace] Imported: {bp.id}")
-        return {"imported": True, "blueprint": created.model_dump(), "meta": meta}
+        result = {"imported": True, "blueprint": created.model_dump(), "meta": meta}
+        if package_info:
+            result["package"] = package_info
+        if addon_info:
+            result["container_addons"] = addon_info
+        return result
 
     except Exception as e:
         logger.error(f"[Marketplace] Import failed: {e}")
@@ -280,6 +308,156 @@ def _add_string_to_tar(tar: tarfile.TarFile, name: str, content: str):
     tar.addfile(info, io.BytesIO(data))
 
 
+def _load_local_package_manifest(blueprint_id: str) -> Optional[Dict]:
+    manifest_path = LOCAL_PACKAGE_DIR / blueprint_id / "package.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("[Marketplace] Failed to read local package manifest for %s", blueprint_id)
+        return None
+
+
+def _add_package_dir_to_tar(tar: tarfile.TarFile, blueprint_id: str) -> None:
+    package_dir = LOCAL_PACKAGE_DIR / blueprint_id
+    if not package_dir.exists():
+        return
+    for file_path in sorted(package_dir.rglob("*")):
+        if not file_path.is_file():
+            continue
+        rel = file_path.relative_to(package_dir)
+        if str(rel) == "package.json":
+            continue
+        data = file_path.read_bytes()
+        info = tarfile.TarInfo(name=f"package/{rel.as_posix()}")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+
+
+def _container_addon_source_paths(package_manifest: Dict) -> List[Path]:
+    addon_cfg = package_manifest.get("container_addons") if isinstance(package_manifest, dict) else {}
+    addon_cfg = addon_cfg if isinstance(addon_cfg, dict) else {}
+    entries: List[str] = []
+    for key in ("profiles", "dependencies", "files", "root_files"):
+        values = addon_cfg.get(key)
+        if isinstance(values, list):
+            entries.extend(str(item).strip() for item in values if str(item).strip())
+
+    paths: List[Path] = []
+    seen: set[str] = set()
+    for rel in entries:
+        normalized = rel.replace("\\", "/").strip().lstrip("/")
+        if not normalized or ".." in normalized.split("/"):
+            continue
+        if normalized in seen:
+            continue
+        source = LOCAL_CONTAINER_ADDONS_DIR / normalized
+        if source.exists() and source.is_file():
+            paths.append(source)
+            seen.add(normalized)
+    return paths
+
+
+def _add_container_addons_to_tar(tar: tarfile.TarFile, package_manifest: Dict) -> None:
+    for source in _container_addon_source_paths(package_manifest):
+        rel = source.relative_to(LOCAL_CONTAINER_ADDONS_DIR)
+        data = source.read_bytes()
+        info = tarfile.TarInfo(name=f"container_addons/{rel.as_posix()}")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+
+
+def _sanitize_package_member(name: str) -> Optional[str]:
+    normalized = str(name or "").strip().replace("\\", "/")
+    if not normalized.startswith("package/"):
+        return None
+    rel = normalized[len("package/"):].strip("/")
+    if not rel or ".." in rel.split("/"):
+        return None
+    return rel
+
+
+def _sanitize_container_addon_member(name: str) -> Optional[str]:
+    normalized = str(name or "").strip().replace("\\", "/")
+    if not normalized.startswith("container_addons/"):
+        return None
+    rel = normalized[len("container_addons/"):].strip("/")
+    if not rel or ".." in rel.split("/"):
+        return None
+    return rel
+
+
+def _install_bundle_package(blueprint_id: str, tar: tarfile.TarFile, package_manifest: Dict) -> Dict:
+    _ensure_marketplace_dir()
+    package_root = Path(MARKETPLACE_DIR) / "packages" / blueprint_id
+    package_root.mkdir(parents=True, exist_ok=True)
+    written: List[str] = []
+
+    (package_root / "package.json").write_text(
+        json.dumps(package_manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    written.append("package.json")
+
+    for member in tar.getmembers():
+        rel = _sanitize_package_member(member.name)
+        if not rel or not member.isfile():
+            continue
+        extracted = tar.extractfile(member)
+        if extracted is None:
+            continue
+        target = package_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = extracted.read()
+        target.write_bytes(data)
+        written.append(rel)
+
+    return {
+        "installed": True,
+        "package_id": blueprint_id,
+        "package_type": str(package_manifest.get("package_type", "composite_addon")).strip() or "composite_addon",
+        "root": str(package_root),
+        "files": written,
+    }
+
+
+def _install_bundle_container_addons(blueprint_id: str, tar: tarfile.TarFile, package_manifest: Dict) -> Dict:
+    addon_cfg = package_manifest.get("container_addons") if isinstance(package_manifest, dict) else {}
+    addon_cfg = addon_cfg if isinstance(addon_cfg, dict) else {}
+    install_root = str(addon_cfg.get("install_root", "intelligence_modules/container_addons")).strip() or "intelligence_modules/container_addons"
+    normalized_install_root = install_root.replace("\\", "/").strip().strip("/")
+    if normalized_install_root == "intelligence_modules/container_addons":
+        target_root = RUNTIME_CONTAINER_ADDONS_DIR
+    else:
+        target_root = (REPO_ROOT / normalized_install_root).resolve()
+        try:
+            target_root.relative_to(REPO_ROOT)
+        except Exception as exc:
+            raise ValueError(f"invalid_container_addon_install_root: {install_root}") from exc
+
+    written: List[str] = []
+    for member in tar.getmembers():
+        rel = _sanitize_container_addon_member(member.name)
+        if not rel or not member.isfile():
+            continue
+        extracted = tar.extractfile(member)
+        if extracted is None:
+            continue
+        target = target_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(extracted.read())
+        written.append(rel)
+
+    return {
+        "installed": bool(written),
+        "package_id": blueprint_id,
+        "install_root": install_root,
+        "root": str(target_root),
+        "files": written,
+    }
+
+
 # ── Remote Catalog (GitHub) ───────────────────────────────
 
 _SECRET_REF_RE = re.compile(r"^\{\{\s*SECRET\s*:\s*([A-Za-z0-9_]+)\s*\}\}$")
@@ -299,6 +477,18 @@ def _http_get_text(url: str, timeout: int = 20) -> str:
     )
     with urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
+
+
+def _http_get_bytes(url: str, timeout: int = 20) -> bytes:
+    req = Request(
+        url=url,
+        headers={
+            "User-Agent": "TRION-Blueprint-Catalog/1.0",
+            "Accept": "application/octet-stream,*/*",
+        },
+    )
+    with urlopen(req, timeout=timeout) as resp:
+        return resp.read()
 
 
 def _resolve_github_raw(repo_url: str, branch: str = "main") -> Dict[str, str]:
@@ -397,6 +587,9 @@ def _normalize_catalog_entry(raw: Dict, raw_base: str) -> Dict:
     bundle_url = str(item.get("bundle_url", "")).strip()
     if bundle_url and not urlparse(bundle_url).scheme:
         bundle_url = urljoin(raw_base, bundle_url)
+    package_url = str(item.get("package_url", "")).strip()
+    if package_url and not urlparse(package_url).scheme:
+        package_url = urljoin(raw_base, package_url)
 
     tags = [str(t).strip() for t in (item.get("tags") or []) if str(t).strip()]
     profile = _normalize_health_profile(item.get("health_profile") or {})
@@ -421,6 +614,10 @@ def _normalize_catalog_entry(raw: Dict, raw_base: str) -> Dict:
         "version": str(item.get("version", "1.0.0")).strip() or "1.0.0",
         "yaml_url": resolved_yaml_url,
         "bundle_url": bundle_url,
+        "package_url": package_url,
+        "package_type": str(item.get("package_type", "")).strip().lower(),
+        "has_host_companion": bool(item.get("has_host_companion", False)),
+        "supports_trion_addons": bool(item.get("supports_trion_addons", False)),
         "downloads": int(item.get("downloads", 0) or 0),
         "stars": int(item.get("stars", 0) or 0),
         "health_profile": profile,
@@ -542,6 +739,14 @@ def install_catalog_blueprint(blueprint_id: str, overwrite: bool = False) -> Dic
     target = next((r for r in rows if str(r.get("id", "")).strip() == str(blueprint_id).strip()), None)
     if not target:
         return {"error": f"catalog_blueprint_not_found: {blueprint_id}"}
+
+    bundle_url = str(target.get("bundle_url", "")).strip()
+    if bundle_url:
+        raw_bundle = _http_get_bytes(bundle_url, timeout=30)
+        result = import_bundle(raw_bundle, filename=f"{blueprint_id}.trion-bundle.tar.gz", overwrite=overwrite)
+        if isinstance(result, dict):
+            result["source"] = target
+        return result
 
     yaml_url = str(target.get("yaml_url", "")).strip()
     if not yaml_url:
