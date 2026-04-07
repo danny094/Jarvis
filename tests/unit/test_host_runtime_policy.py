@@ -45,9 +45,9 @@ def test_build_direct_host_runtime_response_from_stdout():
     msg = build_direct_host_runtime_response(
         "exec_in_container",
         args,
-        {"stdout": "192.168.0.1\n"},
+        {"stdout": "203.0.113.10\n"},
     )
-    assert "192.168.0.1" in msg
+    assert "203.0.113.10" in msg
 
 
 def test_extract_blueprint_id_from_create_result_nested():

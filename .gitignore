@@ -10,7 +10,42 @@ __pycache__/
 
 # Local env / runtime artifacts
 .env
+.claude/
+**/.claude/
+.codex/
+**/.codex/
+.cursor/
+**/.cursor/
+.aider*
+**/.aider*
+.roo/
+**/.roo/
+.windsurf/
+**/.windsurf/
+.mcp/
+**/.mcp/
+.env.local
+.env.secrets
+.env.*.local
 MagicMock/
+logs/
+backups/
+snapshots/
+memory/
+memory_speicher/*.lock
+memory_speicher/*.csv
+memory_speicher/*.json
+memory_speicher/*.jsonl
+memory_speicher/*.db
+memory_speicher/*.sqlite
+memory_speicher/*.sqlite3
+memory_speicher/*.tmp
+memory_speicher/*.bak
+docs/session-handoff*.md
+*.bak.*
+.tmp_gaming_inspect/
+/app_data/
+/runtime_data/
 logs/live_restore_report_*.json
 intelligence_modules/logs/causal_traces/
 

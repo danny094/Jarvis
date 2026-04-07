@@ -1,0 +1,118 @@
+{
+  "id": "gaming-station-shadow",
+  "name": "Gaming Station Shadow",
+  "version": "1.0.0",
+  "package_type": "composite_addon",
+  "description": "Sicherer Shadow-Install des Gaming-Station-Host-Companions ohne Eingriff in den laufenden Live-Service.",
+  "blueprints": [
+    "gaming-station"
+  ],
+  "host_companion": {
+    "id": "sunshine-host-shadow",
+    "kind": "user_service_bundle",
+    "summary": "Materialisiert dieselben Host-Dateien unter Shadow-Namen, ohne den Live-Sunshine-Service zu starten.",
+    "auto_enable": false,
+    "auto_start": false,
+    "access_links": [
+      {
+        "host_ip": "0.0.0.0",
+        "host_port": "47990",
+        "container_port": "47990/tcp",
+        "service_name": "Sunshine Web UI",
+        "access_label": "Open Sunshine UI",
+        "access_scheme": "https",
+        "access_path": "/welcome",
+        "access_kind": "web_ui"
+      }
+    ],
+    "install_targets": {
+      "service_name": "sunshine-host-shadow.service",
+      "start_script_name": "start-host-sunshine-shadow-session.sh",
+      "xsession_script_name": "host-sunshine-shadow-xsession.sh",
+      "steam_script_name": "gaming-station-shadow-steam.sh",
+      "prepare_script_path": "/usr/local/bin/sunshine-host-shadow-prepare.sh",
+      "xorg_conf_path": "/etc/X11/xorg.conf.d/90-sunshine-headless-shadow.conf",
+      "xwrapper_path": "/etc/X11/Xwrapper-shadow.config",
+      "edid_path": "/etc/X11/edid/monitor-1080p-shadow.bin"
+    },
+    "binary_bootstrap": {
+      "binary_path": "/usr/bin/sunshine",
+      "deb_url": "https://sourceforge.net/projects/sunshine.mirror/files/v2025.923.33222/sunshine-ubuntu-24.04-amd64.deb/download",
+      "package_name": "sunshine",
+      "version": "2025.923.33222"
+    },
+    "files": [
+      "README.md",
+      "host/bin/start-host-sunshine-session.sh",
+      "host/bin/host-sunshine-xsession.sh",
+      "host/bin/gaming-station-steam.sh",
+      "host/bin/sunshine-host-prepare.sh",
+      "host/systemd-user/sunshine-host.service",
+      "host/config/sunshine/sunshine.conf",
+      "host/config/sunshine/apps.json",
+      "host/etc/X11/90-sunshine-headless.conf",
+      "host/etc/X11/Xwrapper.config",
+      "host/etc/X11/edid/monitor-1080p.bin.hex"
+    ]
+  },
+  "storage": {
+    "scope": {
+      "name": "gaming-station-host-bridge",
+      "roots": [
+        {
+          "path": "/data/services/gaming-station/config",
+          "mode": "rw"
+        },
+        {
+          "path": "/data/services/gaming-station/data",
+          "mode": "rw"
+        },
+        {
+          "path": "/tmp/.X11-unix",
+          "mode": "rw"
+        },
+        {
+          "path": "/run/user/1000/pulse",
+          "mode": "rw"
+        }
+      ]
+    },
+    "paths": [
+      "/data/services/gaming-station/config",
+      "/data/services/gaming-station/data",
+      "/data/services/gaming-station/data/steam-home"
+    ]
+  },
+  "container_addons": {
+    "install_root": "intelligence_modules/container_addons",
+    "root_files": [
+      "ADDON_SPEC.md",
+      "README.md"
+    ],
+    "profiles": [
+      "profiles/gaming-station/00-profile.md",
+      "profiles/gaming-station/10-runtime.md",
+      "profiles/gaming-station/20-diagnostics.md",
+      "profiles/gaming-station/30-known-issues.md",
+      "profiles/gaming-station/README.md"
+    ],
+    "dependencies": [
+      "profiles/generic-linux/00-shell-basics.md",
+      "profiles/runtime-supervisord/10-supervisord.md",
+      "profiles/headless-x11-novnc/10-headless-x11-novnc.md",
+      "profiles/apps-sunshine/20-sunshine.md",
+      "profiles/apps-steam-headless/20-steam-headless.md"
+    ]
+  },
+  "postchecks": [
+    "host_sunshine_service_enabled",
+    "host_xorg_ready",
+    "container_display_bridge_ready",
+    "steam_home_persistent"
+  ],
+  "notes": [
+    "Dieses Paket dient nur dem sicheren Installations-/Materialisierungstest.",
+    "Es startet absichtlich keinen zweiten Sunshine-Service.",
+    "Es schreibt in parallele *-shadow Pfade, damit der laufende Live-Pfad unberuehrt bleibt."
+  ]
+}

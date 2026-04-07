@@ -1,0 +1,110 @@
+{
+  "id": "gaming-station",
+  "name": "Gaming Station",
+  "version": "1.3.0",
+  "package_type": "composite_addon",
+  "description": "Steam im Container mit hostnahem Sunshine, Xorg und Eingabebruecke. Bevorzugter Profilpfad fuer stabile Maus-/Tastatur-Eingabe.",
+  "blueprints": [
+    "gaming-station"
+  ],
+  "host_companion": {
+    "id": "sunshine-host-bridge",
+    "mode": "discovery_only",
+    "summary": "Der Deploy prueft read-only, ob Sunshine auf dem Host vorhanden ist; das Paket installiert oder startet keine Host-Dienste.",
+    "access_links": [
+      {
+        "host_ip": "0.0.0.0",
+        "host_port": "47990",
+        "container_port": "47990/tcp",
+        "service_name": "Sunshine Web UI",
+        "access_label": "Open Sunshine UI",
+        "access_scheme": "https",
+        "access_path": "/welcome",
+        "access_kind": "web_ui"
+      }
+    ]
+  },
+  "host_runtime_requirements": {
+    "sunshine": {
+      "required": false,
+      "systemd_user_units": [
+        "sunshine-host.service",
+        "sunshine.service"
+      ],
+      "systemd_user_globs": [
+        "sunshine*.service"
+      ],
+      "binary_candidates": [
+        "/usr/bin/sunshine"
+      ],
+      "message_when_found": "Sunshine auf dem Host gefunden",
+      "message_when_missing": "Sunshine auf dem Host nicht gefunden"
+    }
+  },
+  "storage": {
+    "scope": {
+      "name": "gaming-station-host-bridge",
+      "roots": [
+        {
+          "path": "/data/services/gaming-station/config",
+          "mode": "rw"
+        },
+        {
+          "path": "/data/services/gaming-station/data",
+          "mode": "rw"
+        },
+        {
+          "path": "/tmp/.X11-unix",
+          "mode": "rw"
+        },
+        {
+          "path": "/run/user/1000/pulse",
+          "mode": "rw"
+        }
+      ]
+    },
+    "paths": [
+      "/data/services/gaming-station/config",
+      "/data/services/gaming-station/data",
+      "/data/services/gaming-station/data/steam-home",
+      "/data/services/gaming-station/data/userdata",
+      "/tmp/.X11-unix",
+      "/run/user/1000/pulse"
+    ]
+  },
+  "container_addons": {
+    "install_root": "intelligence_modules/container_addons",
+    "root_files": [
+      "ADDON_SPEC.md",
+      "README.md"
+    ],
+    "profiles": [
+      "profiles/gaming-station/00-profile.md",
+      "profiles/gaming-station/10-runtime.md",
+      "profiles/gaming-station/20-diagnostics.md",
+      "profiles/gaming-station/30-known-issues.md",
+      "profiles/gaming-station/README.md"
+    ],
+    "dependencies": [
+      "profiles/generic-linux/00-shell-basics.md",
+      "profiles/runtime-supervisord/10-supervisord.md",
+      "profiles/headless-x11-novnc/10-headless-x11-novnc.md",
+      "profiles/apps-sunshine/20-sunshine.md",
+      "profiles/apps-steam-headless/20-steam-headless.md"
+    ]
+  },
+  "postchecks": [
+    "host_xorg_ready",
+    "container_display_bridge_ready",
+    "steam_home_persistent",
+    "user_data_persistent"
+  ],
+  "notes": [
+    "Bevorzugter Runtime-Pfad: Sunshine und die Xorg-Session laufen auf dem Host; der Container nutzt DISPLAY :0 und Host-Pulse.",
+    "Der gaming-station-Blueprint wird fest als Host-Bridge-/MODE=secondary-Profil materialisiert; Sunshine bleibt ausserhalb des Containers.",
+    "Der Deploy prueft Sunshine auf dem Host nur read-only und gibt den Befund als Status/Warnung aus.",
+    "Zugang: https://<host-ip>:47990 fuer die hostnahe Sunshine WebUI (Moonlight-Pairing).",
+    "Alle Spieldaten persistent unter /data/services/gaming-station/ auf dem Host.",
+    "Fuer Moonlight-Streaming: vorhandenes Host-Sunshine verwenden, Sunshine WebUI oeffnen und Client pairen."
+  ]
+}
