@@ -341,6 +341,26 @@ Archivhinweis 2026-04-01:
 - das Addon-System ist vorbereitet, aber noch jung
 - mehr Containerprofile würden den praktischen Nutzen schnell erhöhen
 
+### Orchestrator-Architektur / Entflechtung
+
+- Neuer Architekturpfad dokumentiert in
+  [[2026-04-07-orchestrator-architektur-refactor-plan]].
+- Stand 2026-04-07:
+  - `core/orchestrator.py` ist inzwischen ein echter Wartungsblocker
+  - der Refactor soll **kein** Big-Bang-Rewrite sein, sondern eine
+    kontrollierte Extraktion in fachliche Module
+  - zuerst sollen reine oder fast-pure Entscheidungsbloecke herausgezogen
+    werden, nicht sofort der gesamte `process_request(...)`-Pfad
+- bevorzugter erster Schnitt:
+  - Domain-/Container-Policy
+  - Tool-Shaping fuer `request_container` / `home_start` / Binding
+  - Grounding-/Repair-nahe Entscheidungslogik nur dort, wo sie klar abgrenzbar
+    ist
+- explizite Leitplanken:
+  - keine Produktfeatures mit dem Refactor vermischen
+  - vor jedem Schnitt Pinning-Regressionen fuer Container-/Control-/Output-
+    Pfade sichern
+
 ## Empfohlene nächste Schritte
 
 1. Storage-Broker-Repartitionierung und `mkfs` weiter haerten
@@ -387,6 +407,10 @@ Archivhinweis 2026-04-01:
 16. neuen `userdata`-Mount bei nächstem Recreate/Neu-Deploy praktisch verifizieren:
    - `/data/services/gaming-station/data/userdata -> /home/default/.local/share`
    - EOS-/Save-Dateien müssen danach ohne manuellen `chown` sauber entstehen
+17. Architekturpfad fuer `core/orchestrator.py` starten
+   - zuerst kurzer Audit der Funktionscluster
+   - dann erster Extraktionsschnitt fuer Domain-/Container-Policy
+   - erst spaeter stateful Streaming-/Sync-/Lifecycle-Pfade anfassen
 
 ## Mögliche spätere Ausbaustufen
 
