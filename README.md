@@ -40,6 +40,9 @@ Inside this secure environment, TRION can test projects, run code, and try out n
 
 - **Encrypted API Keys:** Your API keys are entered once and securely stored using strict encryption.
 - **Zero Raw Access:** When working in the sandbox, TRION only has access to the *names* associated with the keys—never the raw keys themselves. It cannot accidentally expose or leak your API credentials.
+---
+
+Would you like to help build TRION?  [Here you can find more information](https://github.com/danny094/Jarvis/discussions/38)
 
 ## 📸 Screenshots
 
