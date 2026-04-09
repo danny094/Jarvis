@@ -443,7 +443,13 @@ Freeze-Hinweis 2026-04-09:
 3. den neuesten GitHub-/Marketplace-Paketstand erneut importieren, damit Host-Companion- und Paket-Haertungen auch im Runtime-Paketstore liegen
 4. weitere Containerprofile ergänzen, z. B. Datenbank-, MCP-, Web- und Service-Container
 5. Shell-Policy weiter schärfen, vor allem für GUI- und Write-Aktionen
-6. spaeter Mikro-Loops und erst danach echte Shell-Autonomie nachziehen
+6. TRION-Multistep-Loop als Chat-first-Aufgabenmodus planen und umsetzen
+   - Implementationsplan:
+     [[2026-04-09-trion-multistep-loop-implementationsplan]]
+   - zuerst im Chatfenster: planen, ausfuehren, Zwischenantwort, reflektieren,
+     weiter machen oder stoppen
+   - Planungsmodus als sichtbarer Aufgabenfaden
+   - Shell-Mikro-Loops erst spaeter, wenn Chat-Loop und Gates stabil sind
 7. bei Bedarf Blueprint-seitige Addon-Registrierung ergänzen
 8. Commander-UI optional klarer anzeigen lassen, wenn ein Service `stopped and preserved` ist
 9. den trägen Tabwechsel / verspätete Panel-Updates im Commander gezielt untersuchen
