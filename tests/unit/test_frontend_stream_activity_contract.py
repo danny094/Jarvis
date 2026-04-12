@@ -13,6 +13,28 @@ def test_admin_api_stream_keeps_typed_metadata_events():
     assert '"done": bool(metadata.get("done", False))' in src
 
 
+def test_lobechat_adapter_stream_keeps_typed_metadata_events():
+    src = _read("adapters/lobechat/main.py")
+    assert 'elif chunk_type and chunk_type != "content" and metadata:' in src
+    assert "**metadata" in src
+    assert '"done": bool(metadata.get("done", False))' in src
+
+
+def test_lobechat_done_branch_checked_before_generic_metadata_branch():
+    src = _read("adapters/lobechat/main.py")
+    idx_done = src.index("if is_done:")
+    idx_generic = src.index('elif chunk_type and chunk_type != "content" and metadata:')
+    assert idx_done < idx_generic
+
+
+def test_lobechat_done_branch_keeps_terminal_done_fields():
+    src = _read("adapters/lobechat/main.py")
+    done_block = src[src.index("if is_done:"): src.index('elif chunk_type == "thinking_stream":')]
+    assert '"done": True' in done_block
+    assert '"done_reason": metadata.get("done_reason", "stop")' in done_block
+    assert 'response_data["type"] = metadata.get("type")' in done_block
+
+
 def test_admin_api_terminal_done_contract_fields():
     src = _read("adapters/admin-api/main.py")
     done_block = src[src.index("if is_done:"): src.index('elif chunk_type == "thinking_stream":')]
@@ -47,6 +69,56 @@ def test_chat_reads_both_thinking_chunk_field_variants_and_uses_thinking_label()
     assert "Thinking.finalizeThinking(controlThinkingId, chunk.thinking);" in src
 
 
+def test_loop_trace_events_are_routed_into_plan_box():
+    src = _read("adapters/Jarvis/static/js/chat.js")
+    for marker in [
+        '"loop_trace_started"',
+        '"loop_trace_plan_normalized"',
+        '"loop_trace_step_started"',
+        '"loop_trace_correction"',
+        '"loop_trace_completed"',
+        '"task_loop_update"',
+        "I'm tracing and correcting the loop...",
+        "I'm working on the next step...",
+    ]:
+        assert marker in src
+
+
+def test_task_loop_content_is_rendered_as_separate_assistant_segments():
+    src = _read("adapters/Jarvis/static/js/chat.js")
+    required_markers = [
+        'let sawTaskLoopEvent = false;',
+        'let taskLoopBotMsgId = null;',
+        'let taskLoopBuffer = "";',
+        'let taskLoopSegmentBoundary = false;',
+        'if (planType === "task_loop_update") {',
+        'if (sawTaskLoopEvent) {',
+        'taskLoopBotMsgId = Render.renderMessage("assistant", "", true);',
+        'taskLoopBuffer += contentChunk;',
+        'Render.updateMessage(taskLoopBotMsgId, taskLoopBuffer, true);',
+        'segmentedResponses.push(taskLoopBuffer.trimEnd());',
+        'const finalResponses = segmentedResponses.length ? segmentedResponses : (fullResponse ? [fullResponse] : []);',
+        'ai_response: finalResponses.join("\\n\\n")',
+    ]
+    for marker in required_markers:
+        assert marker in src
+
+
+def test_chat_render_uses_lightweight_streaming_shell_for_live_updates():
+    src = _read("adapters/Jarvis/static/js/chat-render.js")
+    for marker in [
+        "const STREAM_RENDER_STATE = new Map();",
+        'function ensureStreamingShell(contentEl) {',
+        'data-stream-text="true"',
+        'data-stream-cursor="true"',
+        "requestAnimationFrame(() => {",
+        "applyStreamingMessageContent(messageId, pending.content, true);",
+        "queueStreamingMessageRender(messageId, content);",
+        "clearStreamingMessageRender(messageId);",
+    ]:
+        assert marker in src
+
+
 def test_thinking_box_renders_compact_strategy_and_trace_metadata():
     src = _read("adapters/Jarvis/static/js/chat-thinking.js")
     required_markers = [
@@ -60,6 +132,9 @@ def test_thinking_box_renders_compact_strategy_and_trace_metadata():
         'renderMetaRow("Postcheck"',
         'renderMetaRow("Tool Route"',
         'renderMetaRow("Route Reason"',
+        'renderMetaRow("Loop Mode"',
+        'renderMetaRow("Loop Reason"',
+        'renderMetaRow("Plan Fixes"',
         'renderMetaRow("Fact Query"',
         'renderMetaRow("Uses History"',
         'renderMetaRow("Source"',
@@ -68,6 +143,35 @@ def test_thinking_box_renders_compact_strategy_and_trace_metadata():
         "JSON.stringify(finalTrace, null, 2)",
     ]
     for marker in required_markers:
+        assert marker in src
+
+
+def test_plan_box_renders_loop_trace_event_variants():
+    src = _read("adapters/Jarvis/static/js/chat-plan.js")
+    for marker in [
+        'eventType === "loop_trace_started"',
+        'eventType === "loop_trace_plan_normalized"',
+        'eventType === "loop_trace_step_started"',
+        'eventType === "loop_trace_correction"',
+        'eventType === "loop_trace_completed"',
+        'eventType === "task_loop_update"',
+        'title: "Loop-Trace gestartet"',
+        'title: "Korrektur angewendet"',
+        '"Task-Loop abgeschlossen"',
+        '"Task-Loop läuft"',
+    ]:
+        assert marker in src
+
+
+def test_stream_flow_emits_loop_trace_events():
+    src = _read("core/orchestrator_stream_flow_utils.py")
+    for marker in [
+        "build_loop_trace_started_event",
+        "build_loop_trace_plan_normalized_event",
+        "build_loop_trace_step_started_event",
+        "build_loop_trace_correction_event",
+        "build_loop_trace_completed_event",
+    ]:
         assert marker in src
 
 

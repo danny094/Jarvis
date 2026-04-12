@@ -106,8 +106,21 @@ async def chat(request: Request):
                         created_at = datetime.utcnow().isoformat() + "Z"
                         chunk_type = metadata.get("type", "content")
                         
+                        # Final stream event must remain terminal for clients/harness.
+                        if is_done:
+                            response_data = {
+                                "model": model,
+                                "created_at": created_at,
+                                "message": {"role": "assistant", "content": ""},
+                                "done": True,
+                                "done_reason": metadata.get("done_reason", "stop"),
+                                "memory_used": metadata.get("memory_used", False),
+                            }
+                            if metadata.get("type"):
+                                response_data["type"] = metadata.get("type")
+
                         # Live Thinking Stream
-                        if chunk_type == "thinking_stream":
+                        elif chunk_type == "thinking_stream":
                             response_data = {
                                 "model": model,
                                 "created_at": created_at,
@@ -124,15 +137,13 @@ async def chat(request: Request):
                                 "done": False,
                             }
                         
-                        # Final Done
-                        elif is_done:
+                        # Generic typed event passthrough
+                        elif chunk_type and chunk_type != "content" and metadata:
                             response_data = {
                                 "model": model,
                                 "created_at": created_at,
-                                "message": {"role": "assistant", "content": ""},
-                                "done": True,
-                                "done_reason": metadata.get("done_reason", "stop"),
-                                "memory_used": metadata.get("memory_used", False),
+                                **metadata,
+                                "done": bool(metadata.get("done", False)),
                             }
                         
                         # Content Chunk

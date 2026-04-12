@@ -18,6 +18,9 @@ const SKILL_TOOLS = new Set(["run_skill", "create_skill", "autonomous_skill_task
 const PLAN_EVENT_TYPES = new Set([
     "planning_start", "planning_step", "planning_done", "planning_error",
     "sequential_start", "sequential_step", "sequential_done", "sequential_error",
+    "loop_trace_started", "loop_trace_plan_normalized", "loop_trace_step_started",
+    "loop_trace_correction", "loop_trace_completed",
+    "task_loop_update",
 ]);
 const CRON_FEEDBACK_POLL_MS = 3000;
 const cronFeedbackLastSeenByConversation = new Map();
@@ -256,11 +259,27 @@ export async function handleUserMessage(text, options = {}) {
     let seqThinkingId = null;      // Box 2: "Thinking" (deepseek thinking stream)
     let planBoxId = null;          // Box 3: "Planmodus" (master + sequential events)
     let sawDirectPlanEvent = false;
+    let sawTaskLoopEvent = false;
     let botMsgId = null;
     let fullResponse = "";
+    const segmentedResponses = [];
+    let taskLoopBotMsgId = null;
+    let taskLoopBuffer = "";
+    let taskLoopSegmentBoundary = false;
     let usedModel = model;
     let controlBlockId = null;
     let doneReason = null;
+
+    function finalizeTaskLoopSegment() {
+        if (!taskLoopBotMsgId) return;
+        Render.updateMessage(taskLoopBotMsgId, taskLoopBuffer, false);
+        if (taskLoopBuffer.trim()) {
+            segmentedResponses.push(taskLoopBuffer.trimEnd());
+        }
+        taskLoopBotMsgId = null;
+        taskLoopBuffer = "";
+        taskLoopSegmentBoundary = false;
+    }
 
     try {
         if (useDeepJob) {
@@ -458,9 +477,19 @@ export async function handleUserMessage(text, options = {}) {
 
             if (PLAN_EVENT_TYPES.has(chunk.type)) {
                 sawDirectPlanEvent = true;
-                const planActivity = String(chunk.type).startsWith("sequential_")
+                const planType = String(chunk.type || "");
+                if (planType === "task_loop_update") {
+                    sawTaskLoopEvent = true;
+                    finalizeTaskLoopSegment();
+                    taskLoopSegmentBoundary = true;
+                }
+                const planActivity = planType.startsWith("sequential_")
                     ? "I'm working through sequential steps..."
-                    : "I'm planning the next steps...";
+                    : planType.startsWith("loop_trace_")
+                        ? "I'm tracing and correcting the loop..."
+                        : planType === "task_loop_update"
+                            ? "I'm working on the next step..."
+                        : "I'm planning the next steps...";
                 touchActivity(planActivity);
                 if (!planBoxId) {
                     planBoxId = Plan.createPlanBox(baseMsgId);
@@ -542,6 +571,19 @@ export async function handleUserMessage(text, options = {}) {
             // Regular Content
             if (chunk.type === "content" && chunk.content) {
                 touchActivity("I'm writing the response...");
+                if (sawTaskLoopEvent) {
+                    Pending.removePendingBubble();
+                    const contentChunk = String(chunk.content || "");
+                    if (taskLoopSegmentBoundary || !taskLoopBotMsgId) {
+                        taskLoopBotMsgId = Render.renderMessage("assistant", "", true);
+                        taskLoopBuffer = "";
+                        taskLoopSegmentBoundary = false;
+                    }
+                    taskLoopBuffer += contentChunk;
+                    Render.updateMessage(taskLoopBotMsgId, taskLoopBuffer, true);
+                    if (chunk.model) usedModel = chunk.model;
+                    continue;
+                }
                 if (!botMsgId) {
                     Pending.removePendingBubble();
                     botMsgId = Render.renderMessage("assistant", "", true);
@@ -564,6 +606,7 @@ export async function handleUserMessage(text, options = {}) {
                 if (chunk.model) usedModel = chunk.model;
                 doneReason = chunk.done_reason || doneReason;
                 if (chunk.code_model_used) UI.showCodeModelIndicator();
+                finalizeTaskLoopSegment();
                 if (planBoxId) {
                     Plan.finalizePlanBox(planBoxId, `done_reason=${doneReason || "stop"}`);
                 }
@@ -575,8 +618,11 @@ export async function handleUserMessage(text, options = {}) {
         if (botMsgId) {
             Render.updateMessage(botMsgId, fullResponse, false);
         }
-        if (fullResponse) {
-            State.addMessage({ role: "assistant", content: fullResponse });
+        const finalResponses = segmentedResponses.length ? segmentedResponses : (fullResponse ? [fullResponse] : []);
+        if (finalResponses.length) {
+            for (const responseText of finalResponses) {
+                State.addMessage({ role: "assistant", content: responseText });
+            }
             State.saveChatToStorage();
 
             // Auto-append to daily protocol (fire and forget)
@@ -585,7 +631,7 @@ export async function handleUserMessage(text, options = {}) {
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     user_message: text,
-                    ai_response: fullResponse,
+                    ai_response: finalResponses.join("\n\n"),
                     timestamp: new Date().toISOString(),
                     conversation_id: conversationId,
                 })

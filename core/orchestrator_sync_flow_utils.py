@@ -97,6 +97,22 @@ async def process_request(
             log_info_fn("[Orchestrator] Returning confirmation result")
             return confirmation_result
 
+    from core.orchestrator_modules.task_loop import maybe_handle_task_loop_sync
+    task_loop_response = await maybe_handle_task_loop_sync(
+        orch,
+        request,
+        user_text,
+        conversation_id,
+        core_chat_response_cls=core_chat_response_cls,
+        log_info_fn=log_info_fn,
+        log_warn_fn=log_warn_fn,
+        tone_signal=tone_signal,
+    )
+    if task_loop_response is not None:
+        orch.lifecycle.finish_task(req_id, {"task_loop": True})
+        orch._post_task_processing()
+        return task_loop_response
+
     # ===============================================================
     # STEP 1.1: CONTEXT COMPRESSION (non-stream, deep-aware)
     # ===============================================================

@@ -36,6 +36,11 @@ Frontend (`api.js`) forwards any typed event (`data.type`) unchanged to `chat.js
 - `thinking_stream`
 - `sequential_start`
 - `sequential_step`
+- `loop_trace_started`
+- `loop_trace_plan_normalized`
+- `loop_trace_step_started`
+- `loop_trace_correction`
+- `loop_trace_completed`
 - `content`
 - `done`
 

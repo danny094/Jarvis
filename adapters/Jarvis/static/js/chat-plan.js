@@ -127,6 +127,97 @@ function buildEventView(eventType, payload) {
             }),
         };
     }
+    if (eventType === "loop_trace_started") {
+        return {
+            title: "Loop-Trace gestartet",
+            badge: "start",
+            detail: toText({
+                objective: p.objective,
+                intent: p.intent,
+                resolution_strategy: p.resolution_strategy,
+                suggested_tools: p.suggested_tools,
+                needs_memory: p.needs_memory,
+                needs_sequential_thinking: p.needs_sequential_thinking,
+            }),
+        };
+    }
+    if (eventType === "loop_trace_plan_normalized") {
+        return {
+            title: "Plan normalisiert",
+            badge: "step",
+            detail: toText({
+                mode: p.mode,
+                reason: p.reason,
+                resolution_strategy: p.resolution_strategy,
+                suggested_tools: p.suggested_tools,
+                needs_memory: p.needs_memory,
+                corrections: p.corrections,
+            }),
+        };
+    }
+    if (eventType === "loop_trace_step_started") {
+        return {
+            title: p.phase ? `Loop-Schritt (${p.phase})` : "Loop-Schritt",
+            badge: "step",
+            detail: toText({
+                summary: p.summary,
+                details: p.details,
+            }),
+        };
+    }
+    if (eventType === "loop_trace_correction") {
+        return {
+            title: "Korrektur angewendet",
+            badge: "step",
+            detail: toText({
+                stage: p.stage,
+                summary: p.summary,
+                reasons: p.reasons,
+                details: p.details,
+            }),
+        };
+    }
+    if (eventType === "loop_trace_completed") {
+        return {
+            title: "Loop-Trace abgeschlossen",
+            badge: "done",
+            detail: toText({
+                response_mode: p.response_mode,
+                model: p.model,
+                correction_count: p.correction_count,
+                summary: p.summary,
+            }),
+        };
+    }
+    if (eventType === "task_loop_update") {
+        const state = p.state || "";
+        const stepIndex = p.task_loop?.step_index ?? "";
+        const pendingStep = p.task_loop?.pending_step || "";
+        const doneReason = p.done_reason || "";
+        const isFinal = Boolean(p.is_final);
+
+        const badge = isFinal
+            ? (doneReason === "task_loop_completed" ? "done" : "warn")
+            : "step";
+
+        const title = isFinal
+            ? (doneReason === "task_loop_completed"
+                ? "Task-Loop abgeschlossen"
+                : `Task-Loop gestoppt (${doneReason})`)
+            : stepIndex !== ""
+                ? `Schritt ${stepIndex}`
+                : "Task-Loop läuft";
+
+        return {
+            title,
+            badge,
+            detail: toText({
+                state,
+                pending_step: pendingStep || undefined,
+                done_reason: doneReason || undefined,
+            }),
+        };
+    }
     return {
         title: eventType || "plan_event",
         badge: "step",
@@ -202,10 +293,22 @@ export function appendPlanEvent(planId, eventType, payload = {}) {
 
     const stepNo = state.count + 1;
     state.count = stepNo;
-    if (eventType === "planning_error" || eventType === "sequential_error") {
+    if (
+        eventType === "planning_error"
+        || eventType === "sequential_error"
+        || (
+            eventType === "task_loop_update"
+            && Boolean(payload?.is_final)
+            && String(payload?.done_reason || "") !== "task_loop_completed"
+        )
+    ) {
         state.hasError = true;
     }
-    if (eventType === "planning_done") {
+    if (
+        eventType === "planning_done"
+        || eventType === "loop_trace_completed"
+        || (eventType === "task_loop_update" && Boolean(payload?.is_final))
+    ) {
         state.finished = true;
     }
 

@@ -1,4 +1,5 @@
 {
-  "THINKING_MODEL": "compat-model:3b",
-  "CONTROL_MODEL": "ctrl:3b"
+  "THINKING_MODEL": "ministral-3:8b",
+  "CONTROL_MODEL": "ministral-3:3b",
+  "OUTPUT_MODEL": "ministral-3:3b"
 }

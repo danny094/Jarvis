@@ -35,6 +35,7 @@ from core.control_contract import (
 from core.plan_runtime_bridge import (
     append_runtime_tool_results,
     get_runtime_grounding_evidence,
+    get_runtime_grounding_value,
     get_runtime_tool_confidence,
     set_runtime_direct_response,
     set_runtime_grounding_evidence,
@@ -42,6 +43,14 @@ from core.plan_runtime_bridge import (
     set_runtime_tool_confidence,
     set_runtime_tool_failure,
     set_runtime_tool_results,
+)
+from core.loop_trace import (
+    build_loop_trace_completed_event,
+    build_loop_trace_correction_event,
+    build_loop_trace_plan_normalized_event,
+    build_loop_trace_started_event,
+    build_loop_trace_step_started_event,
+    is_internal_loop_analysis_prompt,
 )
 from core.host_runtime_policy import (
     build_direct_host_runtime_response,
@@ -93,6 +102,17 @@ def _build_thinking_ui_payload(plan: Optional[Dict[str, Any]], **overrides: Any)
         "skill_catalog_policy_mode": skill_trace.get("policy_mode"),
         "skill_catalog_required_tools": list(skill_trace.get("required_tools") or []),
         "skill_catalog_force_sections": list(skill_trace.get("force_sections") or []),
+        "loop_trace_mode": base.get("_loop_trace_mode"),
+        "loop_trace_reason": (
+            (base.get("_loop_trace_normalization") or {}).get("reason")
+            if isinstance(base.get("_loop_trace_normalization"), dict)
+            else None
+        ),
+        "loop_trace_corrections": (
+            list((base.get("_loop_trace_normalization") or {}).get("corrections") or [])
+            if isinstance(base.get("_loop_trace_normalization"), dict)
+            else []
+        ),
     }
     payload.update(overrides)
     return {key: value for key, value in payload.items() if value is not None}
@@ -148,6 +168,8 @@ async def process_stream_with_events(
     forced_response_mode = orch._requested_response_mode(request)
     request_retrieval_cache: Dict[str, Any] = {}
     tone_signal = await orch._classify_tone_signal(user_text, request.messages)
+    _emit_loop_trace = is_internal_loop_analysis_prompt(user_text)
+    _loop_trace_started_emitted = False
     
     # ═══════════════════════════════════════════════════
     # STEP 0: INTENT CONFIRMATION
@@ -169,6 +191,22 @@ async def process_stream_with_events(
                 return
         except Exception as e:
             log_info_fn(f"[Orchestrator] Intent check skipped: {e}")
+
+    from core.orchestrator_modules.task_loop import is_task_loop_request, stream_task_loop_events
+    if is_task_loop_request(user_text, request):
+        orch.lifecycle.finish_task(req_id_str, {"task_loop": True, "stream": True})
+        orch._post_task_processing()
+        async for event in stream_task_loop_events(
+            orch,
+            request,
+            user_text,
+            conversation_id,
+            log_info_fn=log_info_fn,
+            log_warn_fn=log_warn_fn,
+            tone_signal=tone_signal,
+        ):
+            yield event
+        return
     
     # ═══════════════════════════════════════════════════
     # STEP 0.5: CHUNKING (large inputs)
@@ -396,6 +434,9 @@ async def process_stream_with_events(
                         source="live",
                     ),
                 })
+    if _emit_loop_trace:
+        yield ("", False, build_loop_trace_started_event(user_text, thinking_plan))
+        _loop_trace_started_emitted = True
     # ═══════════════════════════════════════════════════
     # PLAN FINALIZATION + RESPONSE MODE
     # ═══════════════════════════════════════════════════
@@ -406,6 +447,14 @@ async def process_stream_with_events(
         conversation_id, log_info_fn,
     )
     log_info_fn(f"[Orchestrator] response_mode={response_mode_stream} (stream)")
+    _loop_trace_normalized = build_loop_trace_plan_normalized_event(thinking_plan)
+    if _loop_trace_normalized:
+        _emit_loop_trace = True
+        if not _loop_trace_started_emitted:
+            yield ("", False, build_loop_trace_started_event(user_text, thinking_plan))
+            _loop_trace_started_emitted = True
+    if _loop_trace_normalized:
+        yield ("", False, _loop_trace_normalized)
     yield ("", False, {"type": "response_mode", "mode": response_mode_stream})
     
     # ═══════════════════════════════════════════════════
@@ -485,6 +534,15 @@ async def process_stream_with_events(
     # ═══════════════════════════════════════════════════
     if thinking_plan.get('needs_sequential_thinking') or thinking_plan.get('sequential_thinking_required'):
         log_info_fn("[Orchestrator] Sequential Thinking detected")
+        if _emit_loop_trace:
+            yield ("", False, build_loop_trace_step_started_event(
+                phase="sequential_thinking",
+                summary="Sequential analysis gestartet",
+                details={
+                    "complexity": thinking_plan.get("sequential_complexity", 0),
+                    "reasoning_type": thinking_plan.get("reasoning_type"),
+                },
+            ))
         try:
             sequential_input = user_text
             if chunking_context and chunking_context.get("aggregated_summary"):
@@ -2101,18 +2159,61 @@ async def process_stream_with_events(
     
     log_info_fn(f"[Orchestrator] Output: {len(full_response)} chars")
 
+    _analysis_guard_evaluation = get_runtime_grounding_value(
+        verified_plan,
+        key="analysis_guard_evaluation",
+        default={},
+    )
+    _analysis_guard_violation = get_runtime_grounding_value(
+        verified_plan,
+        key="analysis_guard_violation",
+        default={},
+    )
+    if _emit_loop_trace and isinstance(_analysis_guard_evaluation, dict) and (
+        _analysis_guard_evaluation.get("applicable")
+        or _analysis_guard_evaluation.get("skipped_reason")
+    ):
+        yield ("", False, build_loop_trace_step_started_event(
+            phase="output_postcheck",
+            summary="Analyse-Guard im Livepfad geprueft",
+            details={
+                "applicable": bool(_analysis_guard_evaluation.get("applicable")),
+                "trigger_source": _analysis_guard_evaluation.get("trigger_source"),
+                "skipped_reason": _analysis_guard_evaluation.get("skipped_reason"),
+                "violated": bool(_analysis_guard_evaluation.get("violated")),
+                "checked_chars": int(_analysis_guard_evaluation.get("checked_chars") or 0),
+            },
+        ))
+    if isinstance(_analysis_guard_violation, dict) and _analysis_guard_violation.get("violated"):
+        if _emit_loop_trace:
+            yield ("", False, build_loop_trace_correction_event(
+                stage="output_postcheck",
+                summary="Unbelegte Runtime-/Memory-/Status-Behauptungen wurden entfernt.",
+                reasons=list(_analysis_guard_violation.get("reasons") or []),
+                details={
+                    "matches": list(_analysis_guard_violation.get("matches") or []),
+                },
+            ))
+
     repaired_response = await orch._apply_conversation_consistency_guard(
         conversation_id=conversation_id,
         verified_plan=verified_plan,
         answer=full_response,
     )
-    if repaired_response != full_response:
+    _consistency_repaired = repaired_response != full_response
+    if _consistency_repaired:
         full_response = repaired_response
         if full_response:
             yield (full_response, False, {
                 "type": "response_repair",
                 "reason": "consistency_guard",
             })
+            if _emit_loop_trace:
+                yield ("", False, build_loop_trace_correction_event(
+                    stage="consistency_guard",
+                    summary="Antwort wurde nach dem Schreiben konsistent korrigiert.",
+                    reasons=["consistency_guard"],
+                ))
     if isinstance(verified_plan.get("_ctx_trace"), dict) and isinstance(
         verified_plan["_ctx_trace"].get("skill_catalog"), dict
     ):
@@ -2153,6 +2254,19 @@ async def process_stream_with_events(
     )
     if ws_done:
         yield ("", False, ws_done)
+
+    _correction_count = 0
+    if isinstance(_analysis_guard_violation, dict) and _analysis_guard_violation.get("violated"):
+        _correction_count += 1
+    if _consistency_repaired:
+        _correction_count += 1
+    if _emit_loop_trace:
+        yield ("", False, build_loop_trace_completed_event(
+            response_mode=response_mode_stream,
+            model=resolved_output_model_stream,
+            correction_count=_correction_count,
+            summary="Loop-Trace abgeschlossen",
+        ))
 
     yield (
         "",

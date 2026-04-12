@@ -1,5 +1,7 @@
 from typing import Any, Callable, Dict, List
 
+from core.loop_trace import normalize_internal_loop_analysis_plan
+
 
 _ALLOWED_RESOLUTION_STRATEGIES = {
     "container_inventory",
@@ -607,6 +609,18 @@ def coerce_thinking_plan_schema(
                 plan["needs_memory"] = False
                 plan["is_fact_query"] = False
                 fixes.append("guard:drop_empty_memory_for_domain_or_tool_intent")
+
+    pre_trace_fixes = list(plan.get("_schema_coercion") or [])
+    plan = normalize_internal_loop_analysis_plan(
+        plan,
+        user_text=user_text,
+        contains_explicit_tool_intent=explicit_tool_intent,
+        has_memory_recall_signal=recall_signal,
+    )
+    post_trace_fixes = list(plan.get("_schema_coercion") or [])
+    for item in post_trace_fixes:
+        if item not in pre_trace_fixes and item not in fixes:
+            fixes.append(item)
 
     if fixes:
         plan["_schema_coercion"] = fixes[-12:]

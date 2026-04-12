@@ -273,3 +273,34 @@ async def test_sync_path_total_workspace_entries():
         f"Sync-Pfad sollte ≥3 Workspace-Entries schreiben, hat {total}. "
         f"Calls: {orch._save_workspace_entry.call_args_list}"
     )
+
+
+@pytest.mark.asyncio
+async def test_sync_path_task_loop_short_circuits_before_pipeline():
+    """Expliziter Task-Loop startet frueh und waechst nicht in Thinking/Control/Output."""
+    from core.task_loop.store import get_task_loop_store
+
+    conversation_id = "conv-sync-task-loop"
+    get_task_loop_store().clear(conversation_id)
+    thinking_plan = _make_thinking_plan()
+    verification = _make_verification()
+    orch = _make_orch(thinking_plan, verification)
+    request = _make_request(conversation_id=conversation_id)
+    request.get_last_user_message.return_value = "Task-Loop: Bitte schrittweise einen Plan machen"
+
+    response = await _run_sync(orch, request)
+
+    assert response.done_reason == "task_loop_completed"
+    assert "Task-Loop gestartet" in response.content
+    orch.thinking.analyze.assert_awaited_once()
+    orch._execute_control_layer.assert_not_awaited()
+    orch.output.generate.assert_not_awaited()
+    entry_types = [
+        call_args.kwargs.get("entry_type")
+        if call_args.kwargs
+        else call_args[0][2]
+        for call_args in orch._save_workspace_entry.call_args_list
+    ]
+    assert "task_loop_started" in entry_types
+    assert "task_loop_reflection" in entry_types
+    assert "task_loop_completed" in entry_types

@@ -46,6 +46,30 @@ verification live in the linked Obsidian notes.
   no tokens, no session data, and no real host identifiers.
   Source: [2026-04-07-obsidian-doc-leak-audit.md](docs/obsidian/2026-04-07-obsidian-doc-leak-audit.md)
 
+## Task Loop / Loop Trace
+
+- Internal loop-analysis prompts now pass through a dedicated loop-trace
+  normalizer, so runtime-tool drift, memory drift, and wrong strategy hints are
+  corrected before the Task Loop or output guard runs.
+  Source: [2026-04-09-trion-multistep-loop-implementationsplan.md](docs/obsidian/2026-04-09-trion-multistep-loop-implementationsplan.md)
+- The stream path now exposes loop-trace and task-loop progress as first-class
+  events (`loop_trace_*`, `task_loop_update`), and the existing WebUI plan box
+  renders those steps without introducing a second UI system.
+  Source: [2026-04-09-trion-multistep-loop-implementationsplan.md](docs/obsidian/2026-04-09-trion-multistep-loop-implementationsplan.md)
+- Task Loop content is no longer limited to static step templates. The stream
+  path now supports a per-step `Control + Output` runtime slice that builds a
+  step contract, verifies it with `ControlLayer.verify(...)`, and generates the
+  visible step response through `OutputLayer.generate_stream(...)`.
+  Source: [2026-04-09-trion-multistep-loop-implementationsplan.md](docs/obsidian/2026-04-09-trion-multistep-loop-implementationsplan.md)
+- The WebUI chat renderer was hardened for live Task Loop output: step bubbles
+  are kept separate, and streaming updates now use a lightweight incremental
+  render path instead of rebuilding the full HTML on every token.
+  Source: [2026-04-09-trion-multistep-loop-implementationsplan.md](docs/obsidian/2026-04-09-trion-multistep-loop-implementationsplan.md)
+- A duplicate outer timeout around per-step streaming was removed. The
+  `OutputLayer` remains the single timeout authority for step output, which
+  prevents mid-stream task-loop aborts and incomplete HTTP responses.
+  Source: [2026-04-09-trion-multistep-loop-implementationsplan.md](docs/obsidian/2026-04-09-trion-multistep-loop-implementationsplan.md)
+
 ## Current Index
 
 - Open issues / next steps:

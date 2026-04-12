@@ -12,7 +12,7 @@ services:
     - VALIDATOR_URL=http://validator-service:8000
     - SKILL_SERVER_URL=http://trion-skill-server:8088
     - THINKING_MODEL=ministral-3:8b
-    - CONTROL_MODEL=ministral-3:8b
+    - CONTROL_MODEL=ministral-3:3b
     - OUTPUT_MODEL=ministral-3:3b
     - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
     - ENABLE_CONTROL_LAYER=true
@@ -27,6 +27,7 @@ services:
     volumes:
     - ./config:/app/config:ro
     - ./personas:/app/personas
+    - ./adapters/lobechat:/app/adapters/lobechat:ro
     - ./core:/app/core:ro
     - ./intelligence_modules:/app/intelligence_modules:ro
     - ./mcp_registry.py:/app/mcp_registry.py:ro
@@ -94,7 +95,7 @@ services:
     - DOCUMENT_PROCESSOR_URL=http://document-processor:8087
     - SKILL_SERVER_URL=http://trion-skill-server:8088
     - THINKING_MODEL=ministral-3:8b
-    - CONTROL_MODEL=ministral-3:8b
+    - CONTROL_MODEL=ministral-3:3b
     - OUTPUT_MODEL=ministral-3:3b
     - EMBEDDING_MODEL=hellord/mxbai-embed-large-v1:f16
     - ENABLE_CONTROL_LAYER=true
@@ -116,6 +117,7 @@ services:
     - RUNTIME_HARDWARE_URL=http://host.docker.internal:8420
     volumes:
     - ./personas:/app/personas
+    - ./adapters/lobechat:/app/adapters/lobechat:ro
     - ./core:/app/core:ro
     - ./intelligence_modules:/app/intelligence_modules:ro
     - ./custom_mcps:/app/custom_mcps

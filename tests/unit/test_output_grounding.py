@@ -192,6 +192,72 @@ def test_non_skill_catalog_tail_repair_stays_unbuffered():
     ) is False
 
 
+def test_task_loop_step_runtime_stays_unbuffered_even_with_analysis_guard():
+    layer = OutputLayer()
+    plan = {
+        "intent": "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+        "needs_sequential_thinking": True,
+        "_loop_trace_mode": "internal_loop_analysis",
+        "_task_loop_step_runtime": True,
+        "is_fact_query": False,
+    }
+    assert layer._should_buffer_stream_postcheck(
+        plan,
+        {
+            "stream_postcheck_mode": "tail_repair",
+            "forbid_new_numeric_claims": True,
+            "forbid_unverified_qualitative_claims": True,
+        },
+        postcheck_enabled=True,
+    ) is False
+
+
+def test_analysis_turn_prompt_includes_guard_rules():
+    layer = OutputLayer()
+    plan = {
+        "intent": "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+        "needs_sequential_thinking": True,
+        "is_fact_query": False,
+    }
+    with patch("core.layers.output.load_grounding_policy", return_value=_policy()):
+        prompt = layer.build_system_prompt(plan, memory_data="")
+    assert "### ANALYSE-GUARD:" in prompt
+    assert "konzeptionelle Analyse ohne Runtime-Nachweise" in prompt
+    assert "Erfinde keine abgeschlossenen Checks" in prompt
+
+
+def test_stream_postcheck_enabled_for_analysis_turn_guard():
+    layer = OutputLayer()
+    plan = {
+        "intent": "Pruefe kurz den neuen Multistep Loop",
+        "needs_sequential_thinking": True,
+        "is_fact_query": False,
+    }
+    precheck = {
+        "policy": _policy()["output"],
+        "is_fact_query": False,
+        "has_tool_usage": False,
+        "verified_plan": plan,
+    }
+    assert layer._stream_postcheck_enabled(precheck) is True
+
+
+def test_stream_postcheck_enabled_for_internal_loop_trace_guard_without_sequential_flag():
+    layer = OutputLayer()
+    plan = {
+        "intent": "Pruefe kurz den neuen Multistep Loop",
+        "_loop_trace_mode": "internal_loop_analysis",
+        "is_fact_query": False,
+    }
+    precheck = {
+        "policy": _policy()["output"],
+        "is_fact_query": False,
+        "has_tool_usage": False,
+        "verified_plan": plan,
+    }
+    assert layer._stream_postcheck_enabled(precheck) is True
+
+
 def test_output_budget_caps_interactive_analytical_query():
     layer = OutputLayer()
     plan = {
@@ -246,7 +312,140 @@ def test_grounding_postcheck_keeps_answer_when_numeric_claims_are_supported():
     answer = "System läuft auf RTX 2060 SUPER mit 8 GB VRAM."
     checked = layer._grounding_postcheck(answer, plan, precheck)
     assert checked == answer
-    assert _grounding(plan, "violation_detected", False) is not True
+
+
+def test_analysis_turn_postcheck_repairs_memory_and_runtime_drift():
+    layer = OutputLayer()
+    plan = {
+        "intent": "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+        "needs_sequential_thinking": True,
+        "is_fact_query": False,
+    }
+    layer._set_runtime_grounding_value(
+        plan,
+        None,
+        "analysis_guard_user_text",
+        "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+    )
+    layer._set_runtime_grounding_value(
+        plan,
+        None,
+        "analysis_guard_memory_present",
+        False,
+    )
+    precheck = {
+        "policy": _policy()["output"],
+        "evidence": [],
+        "is_fact_query": False,
+        "has_tool_usage": False,
+        "verified_plan": plan,
+    }
+    answer = (
+        "Hier ist ein sicherer Zwischenstand basierend auf den Fakten aus deinem Gedaechtnis. "
+        "VRAM und RAM sind im gruenen Bereich."
+    )
+    checked = layer._grounding_postcheck(answer, plan, precheck)
+    assert checked.startswith("Sicherer Zwischenstand:")
+    assert "ohne ausgefuehrte Tools oder Runtime-Checks" in checked
+    assert _grounding(plan, "repair_used", False) is True
+    violation = _grounding(plan, "analysis_guard_violation", {})
+    assert "unsupported_memory_claim" in violation.get("reasons", [])
+    assert "runtime_resources" in violation.get("reasons", [])
+    assert "runtime_health" in violation.get("reasons", [])
+
+
+def test_analysis_turn_postcheck_repairs_fabricated_completion_claims():
+    layer = OutputLayer()
+    plan = {
+        "intent": "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+        "needs_sequential_thinking": True,
+        "is_fact_query": False,
+    }
+    layer._set_runtime_grounding_value(
+        plan,
+        None,
+        "analysis_guard_user_text",
+        "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+    )
+    precheck = {
+        "policy": _policy()["output"],
+        "evidence": [],
+        "is_fact_query": False,
+        "has_tool_usage": False,
+        "verified_plan": plan,
+    }
+    answer = (
+        "1. Schritt 1 erledigt.\n"
+        "2. Schritt 2 abgeschlossen.\n"
+        "Systemcheck im gruenen Bereich."
+    )
+    checked = layer._grounding_postcheck(answer, plan, precheck)
+    assert checked.startswith("Sicherer Zwischenstand:")
+    violation = _grounding(plan, "analysis_guard_violation", {})
+    assert "fabricated_completion_claim" in violation.get("reasons", [])
+    assert _grounding(plan, "violation_detected", False) is True
+
+
+def test_analysis_turn_postcheck_repairs_internal_loop_trace_prompt_without_sequential_flag():
+    layer = OutputLayer()
+    plan = {
+        "intent": "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+        "_loop_trace_mode": "internal_loop_analysis",
+        "is_fact_query": False,
+    }
+    layer._set_runtime_grounding_value(
+        plan,
+        None,
+        "analysis_guard_user_text",
+        "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+    )
+    precheck = {
+        "policy": _policy()["output"],
+        "evidence": [],
+        "is_fact_query": False,
+        "has_tool_usage": False,
+        "verified_plan": plan,
+    }
+    answer = "Systemcheck im gruenen Bereich. Schritt 1 abgeschlossen."
+    checked = layer._grounding_postcheck(answer, plan, precheck)
+    assert checked.startswith("Sicherer Zwischenstand:")
+    assert _grounding(plan, "repair_used", False) is True
+    evaluation = _grounding(plan, "analysis_guard_evaluation", {})
+    assert evaluation.get("applicable") is True
+    assert evaluation.get("trigger_source") == "loop_trace_mode"
+    violation = _grounding(plan, "analysis_guard_violation", {})
+    assert "runtime_health" in violation.get("reasons", [])
+    assert "fabricated_completion_claim" in violation.get("reasons", [])
+
+
+def test_analysis_turn_postcheck_records_guard_evaluation_for_clean_internal_loop_trace_prompt():
+    layer = OutputLayer()
+    plan = {
+        "intent": "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+        "_loop_trace_mode": "internal_loop_analysis",
+        "is_fact_query": False,
+    }
+    layer._set_runtime_grounding_value(
+        plan,
+        None,
+        "analysis_guard_user_text",
+        "Pruefe kurz den neuen Multistep Loop und zeige sichere Zwischenstaende",
+    )
+    precheck = {
+        "policy": _policy()["output"],
+        "evidence": [],
+        "is_fact_query": False,
+        "has_tool_usage": False,
+        "verified_plan": plan,
+    }
+    answer = "Sicherer Zwischenstand: Ich kann den naechsten Schritt konzeptionell ableiten."
+    checked = layer._grounding_postcheck(answer, plan, precheck)
+    assert checked == answer
+    evaluation = _grounding(plan, "analysis_guard_evaluation", {})
+    assert evaluation.get("applicable") is True
+    assert evaluation.get("trigger_source") == "loop_trace_mode"
+    assert evaluation.get("violated") is False
+    assert int(evaluation.get("checked_chars") or 0) == len(answer)
 
 
 def test_container_inventory_postcheck_repair_uses_structured_container_fallback():

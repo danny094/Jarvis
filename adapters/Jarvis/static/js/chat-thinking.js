@@ -153,6 +153,15 @@ export function finalizeThinking(thinkingId, thinking) {
         if (thinking.skill_catalog_tool_route_reason && thinking.skill_catalog_tool_route_reason !== "none") {
             metaRows.push(renderMetaRow("Route Reason", thinking.skill_catalog_tool_route_reason, "text-amber-300"));
         }
+        if (thinking.loop_trace_mode) {
+            metaRows.push(renderMetaRow("Loop Mode", thinking.loop_trace_mode, "text-cyan-300"));
+        }
+        if (thinking.loop_trace_reason) {
+            metaRows.push(renderMetaRow("Loop Reason", thinking.loop_trace_reason, "text-amber-300"));
+        }
+        if (Array.isArray(thinking.loop_trace_corrections) && thinking.loop_trace_corrections.length) {
+            metaRows.push(renderMetaRow("Plan Fixes", `${thinking.loop_trace_corrections.length}`, "text-cyan-300"));
+        }
         metaRows.push(renderMetaRow("Fact Query", thinking.is_fact_query ? "yes" : "no"));
         metaRows.push(renderMetaRow("Uses History", thinking.needs_chat_history ? "yes" : "no"));
         if (thinking.response_length_hint) {
@@ -190,6 +199,9 @@ export function finalizeThinking(thinkingId, thinking) {
             skill_catalog_force_sections: Array.isArray(thinking.skill_catalog_force_sections) ? thinking.skill_catalog_force_sections : [],
             skill_catalog_tool_route: thinking.skill_catalog_tool_route || null,
             skill_catalog_tool_route_reason: thinking.skill_catalog_tool_route_reason || null,
+            loop_trace_mode: thinking.loop_trace_mode || null,
+            loop_trace_reason: thinking.loop_trace_reason || null,
+            loop_trace_corrections: Array.isArray(thinking.loop_trace_corrections) ? thinking.loop_trace_corrections : [],
             source: thinking.source,
         };
         streamEl.textContent = JSON.stringify(finalTrace, null, 2);

@@ -35,6 +35,11 @@ from core.llm_provider_client import complete_chat, resolve_role_provider, strea
 from core.persona import get_persona
 from core.grounding_policy import load_grounding_policy
 from core.control_contract import ControlDecision, is_interactive_tool_status
+from core.output_analysis_guard import (
+    build_analysis_turn_safe_fallback,
+    evaluate_analysis_turn_answer,
+    is_analysis_turn_guard_applicable,
+)
 from core.plan_runtime_bridge import (
     get_policy_final_instruction,
     get_policy_warnings,
@@ -1646,6 +1651,12 @@ class OutputLayer:
             verified_plan, execution_result, "repair_used", False
         )
         self._set_runtime_grounding_value(
+            verified_plan, execution_result, "analysis_guard_evaluation", {}
+        )
+        self._set_runtime_grounding_value(
+            verified_plan, execution_result, "analysis_guard_violation", {}
+        )
+        self._set_runtime_grounding_value(
             verified_plan,
             execution_result,
             "successful_evidence",
@@ -1700,6 +1711,8 @@ class OutputLayer:
                 "response": "",
                 "evidence": evidence,
                 "is_fact_query": is_fact_query,
+                "has_tool_usage": has_tool_usage,
+                "verified_plan": verified_plan,
                 "policy": output_cfg,
             }
 
@@ -1730,6 +1743,8 @@ class OutputLayer:
                 "response": "",
                 "evidence": evidence,
                 "is_fact_query": is_fact_query,
+                "has_tool_usage": has_tool_usage,
+                "verified_plan": verified_plan,
                 "policy": output_cfg,
             }
 
@@ -1762,6 +1777,8 @@ class OutputLayer:
                     "response": self._build_tool_failure_fallback(evidence),
                     "evidence": evidence,
                     "is_fact_query": is_fact_query,
+                    "has_tool_usage": has_tool_usage,
+                    "verified_plan": verified_plan,
                     "policy": output_cfg,
                 }
             fallback_mode = str(output_cfg.get("fallback_mode", "explicit_uncertainty"))
@@ -1778,6 +1795,8 @@ class OutputLayer:
                 "response": self._build_grounding_fallback(evidence, mode=fallback_mode),
                 "evidence": evidence,
                 "is_fact_query": is_fact_query,
+                "has_tool_usage": has_tool_usage,
+                "verified_plan": verified_plan,
                 "policy": output_cfg,
             }
 
@@ -1796,6 +1815,8 @@ class OutputLayer:
                 "response": self._build_grounding_fallback(evidence, mode="summarize_evidence"),
                 "evidence": evidence,
                 "is_fact_query": is_fact_query,
+                "has_tool_usage": has_tool_usage,
+                "verified_plan": verified_plan,
                 "policy": output_cfg,
             }
         if strict_mode in {"hybrid", "hybrid_model"}:
@@ -1809,6 +1830,8 @@ class OutputLayer:
             "response": "",
             "evidence": evidence,
             "is_fact_query": is_fact_query,
+            "has_tool_usage": has_tool_usage,
+            "verified_plan": verified_plan,
             "policy": output_cfg,
         }
 
@@ -1877,12 +1900,97 @@ class OutputLayer:
         output_cfg = (precheck or {}).get("policy") or {}
         evidence = (precheck or {}).get("evidence") or []
         is_fact_query = bool((precheck or {}).get("is_fact_query", False))
-        if not (is_fact_query and evidence):
-            return answer
 
         evidence_text_parts = self._collect_evidence_text_parts(evidence)
         evidence_blob = "\n".join(evidence_text_parts)
         fallback_mode = str(output_cfg.get("fallback_mode", "explicit_uncertainty"))
+        analysis_guard_result = evaluate_analysis_turn_answer(
+            answer,
+            verified_plan=verified_plan,
+            output_cfg=output_cfg,
+            user_text=str(
+                get_runtime_grounding_value(
+                    verified_plan,
+                    key="analysis_guard_user_text",
+                    default="",
+                )
+                or ""
+            ),
+            memory_data_present=bool(
+                get_runtime_grounding_value(
+                    verified_plan,
+                    key="analysis_guard_memory_present",
+                    default=False,
+                )
+            ),
+            evidence_text=evidence_blob,
+            has_tool_usage=bool((precheck or {}).get("has_tool_usage", False)),
+            is_fact_query=is_fact_query,
+        )
+        self._set_runtime_grounding_value(
+            verified_plan,
+            execution_result,
+            "analysis_guard_evaluation",
+            analysis_guard_result,
+        )
+        if analysis_guard_result.get("applicable") or str(verified_plan.get("_loop_trace_mode") or "").strip():
+            log_info(
+                "[OutputLayer] Analysis turn guard evaluated: "
+                f"applicable={bool(analysis_guard_result.get('applicable'))} "
+                f"trigger={analysis_guard_result.get('trigger_source') or 'none'} "
+                f"skipped_reason={analysis_guard_result.get('skipped_reason') or 'none'} "
+                f"violated={bool(analysis_guard_result.get('violated'))} "
+                f"checked_chars={int(analysis_guard_result.get('checked_chars') or 0)}"
+            )
+        if analysis_guard_result.get("violated"):
+            self._set_runtime_grounding_value(
+                verified_plan,
+                execution_result,
+                "violation_detected",
+                True,
+            )
+            self._set_runtime_grounding_value(
+                verified_plan,
+                execution_result,
+                "fallback_used",
+                True,
+            )
+            self._set_runtime_grounding_value(
+                verified_plan,
+                execution_result,
+                "repair_attempted",
+                True,
+            )
+            self._set_runtime_grounding_value(
+                verified_plan,
+                execution_result,
+                "repair_used",
+                True,
+            )
+            self._set_runtime_grounding_value(
+                verified_plan,
+                execution_result,
+                "analysis_guard_violation",
+                analysis_guard_result,
+            )
+            log_warning(
+                "[OutputLayer] Analysis turn guard repair used: "
+                f"reasons={analysis_guard_result.get('reasons')}"
+            )
+            return build_analysis_turn_safe_fallback(
+                verified_plan,
+                user_text=str(
+                    get_runtime_grounding_value(
+                        verified_plan,
+                        key="analysis_guard_user_text",
+                        default="",
+                    )
+                    or ""
+                ),
+                reasons=list(analysis_guard_result.get("reasons") or []),
+            )
+        if not (is_fact_query and evidence):
+            return answer
 
         # Strict-Mode: evidence vorhanden, aber kein extrahierbarer Content
         _strict_no_content = bool(evidence and not evidence_text_parts)
@@ -2093,6 +2201,8 @@ class OutputLayer:
     ) -> bool:
         if not postcheck_enabled:
             return False
+        if bool((verified_plan or {}).get("_task_loop_step_runtime")):
+            return False
         mode = cls._resolve_stream_postcheck_mode(precheck_policy)
         if mode == "off":
             return False
@@ -2100,12 +2210,28 @@ class OutputLayer:
             return True
         # skill_catalog_context and strict container contracts keep repair
         # invisible to the user while still preserving postcheck/trace observability.
-        return cls._is_skill_catalog_context_plan(verified_plan) or cls._is_container_query_contract_plan(verified_plan)
+        return (
+            cls._is_skill_catalog_context_plan(verified_plan)
+            or cls._is_container_query_contract_plan(verified_plan)
+            or is_analysis_turn_guard_applicable(
+                verified_plan,
+                output_cfg=precheck_policy,
+                has_tool_usage=bool(str(get_runtime_tool_results(verified_plan) or "").strip()),
+                is_fact_query=bool(verified_plan.get("is_fact_query", False)),
+            )
+        )
 
     def _stream_postcheck_enabled(self, precheck: Dict[str, Any]) -> bool:
         policy = (precheck or {}).get("policy") or {}
         if self._resolve_stream_postcheck_mode(policy) == "off":
             return False
+        if is_analysis_turn_guard_applicable(
+            (precheck or {}).get("verified_plan") or {},
+            output_cfg=policy,
+            has_tool_usage=bool((precheck or {}).get("has_tool_usage", False)),
+            is_fact_query=bool((precheck or {}).get("is_fact_query", False)),
+        ):
+            return True
         return bool(
             precheck.get("is_fact_query")
             and (
@@ -2329,6 +2455,18 @@ class OutputLayer:
                 )
             ):
                 prompt_parts.append("Antwort darf natürlich formuliert sein, muss aber vollständig evidenzgebunden bleiben.")
+        elif is_analysis_turn_guard_applicable(
+            verified_plan,
+            output_cfg=load_grounding_policy().get("output") or {},
+            has_tool_usage=has_tool_usage,
+            is_fact_query=is_fact_query,
+        ):
+            prompt_parts.append("\n### ANALYSE-GUARD:")
+            prompt_parts.append("Behandle diese Antwort als konzeptionelle Analyse ohne Runtime-Nachweise.")
+            prompt_parts.append("Behaupte keine Gedaechtnis-, Hardware-, VRAM/RAM-, Container-, Blueprint- oder Systemstatus-Fakten, sofern sie nicht explizit im Kontext stehen.")
+            prompt_parts.append("Markiere unbelegte Punkte klar als 'nicht verifiziert'.")
+            prompt_parts.append("Erfinde keine abgeschlossenen Checks, Systempruefungen oder bereits erledigten Schritte.")
+            prompt_parts.append("Wenn nur ein sicherer Zwischenstand moeglich ist, sage das direkt.")
 
         if self._is_container_query_contract_plan(verified_plan):
             prompt_parts.extend(self._build_container_prompt_rules(verified_plan))
@@ -2577,6 +2715,18 @@ class OutputLayer:
         messages = self._build_messages(
             user_text, verified_plan, memory_data,
             memory_required_but_missing, chat_history
+        )
+        self._set_runtime_grounding_value(
+            verified_plan,
+            execution_result,
+            "analysis_guard_user_text",
+            user_text,
+        )
+        self._set_runtime_grounding_value(
+            verified_plan,
+            execution_result,
+            "analysis_guard_memory_present",
+            bool(str(memory_data or "").strip()),
         )
         precheck = self._grounding_precheck(verified_plan, memory_data, execution_result=execution_result)
         if str(precheck.get("mode", "")).strip().lower() in {

@@ -2,6 +2,8 @@ import { log } from "./debug.js";
 import { createInteractiveCodeBlock, initCodeBlock } from "./code-block.js";
 import { getModel } from "./chat-state.js";
 
+const STREAM_RENDER_STATE = new Map();
+
 // ═══════════════════════════════════════════════════════════
 // MESSAGE RENDERING
 // ═══════════════════════════════════════════════════════════
@@ -99,6 +101,63 @@ function formatContentWithCodeBlocks(text) {
     return html;
 }
 
+function ensureStreamingShell(contentEl) {
+    if (!contentEl) return null;
+    if (contentEl.dataset.streamingShell === "true") {
+        return {
+            textEl: contentEl.querySelector('[data-stream-text="true"]'),
+            cursorEl: contentEl.querySelector('[data-stream-cursor="true"]'),
+        };
+    }
+
+    contentEl.innerHTML = `
+        <div class="whitespace-pre-wrap leading-relaxed" data-stream-root="true">
+            <span data-stream-text="true"></span><span data-stream-cursor="true" class="inline-block w-2 h-4 bg-accent-secondary ml-1 animate-pulse">▋</span>
+        </div>
+    `;
+    contentEl.dataset.streamingShell = "true";
+    return {
+        textEl: contentEl.querySelector('[data-stream-text="true"]'),
+        cursorEl: contentEl.querySelector('[data-stream-cursor="true"]'),
+    };
+}
+
+function applyStreamingMessageContent(messageId, content, isStreaming = true) {
+    const contentEl = document.getElementById(`content-${messageId}`);
+    if (!contentEl) return;
+    const shell = ensureStreamingShell(contentEl);
+    if (!shell?.textEl || !shell?.cursorEl) return;
+    shell.textEl.textContent = content || "";
+    shell.cursorEl.style.display = isStreaming ? "inline-block" : "none";
+}
+
+function queueStreamingMessageRender(messageId, content) {
+    const current = STREAM_RENDER_STATE.get(messageId) || {};
+    current.content = content;
+    if (current.rafId) {
+        STREAM_RENDER_STATE.set(messageId, current);
+        return;
+    }
+    current.rafId = requestAnimationFrame(() => {
+        const pending = STREAM_RENDER_STATE.get(messageId);
+        if (!pending) return;
+        applyStreamingMessageContent(messageId, pending.content, true);
+        STREAM_RENDER_STATE.set(messageId, {
+            content: pending.content,
+            rafId: 0,
+        });
+    });
+    STREAM_RENDER_STATE.set(messageId, current);
+}
+
+function clearStreamingMessageRender(messageId) {
+    const pending = STREAM_RENDER_STATE.get(messageId);
+    if (pending?.rafId) {
+        cancelAnimationFrame(pending.rafId);
+    }
+    STREAM_RENDER_STATE.delete(messageId);
+}
+
 export function renderMessage(role, content, isStreaming = false, executionResults = {}) {
     const messagesList = document.getElementById("messages-list");
     const welcome = document.getElementById("welcome-message");
@@ -122,15 +181,13 @@ export function renderMessage(role, content, isStreaming = false, executionResul
             </div>
          </div>`;
 
-    const cursor = isStreaming ? '<span class="inline-block w-2 H-4 bg-accent-secondary ml-1 animate-pulse">▋</span>' : '';
-
     const modelBadge = (!isUser && getModel()) ?
         `<div class="text-[10px] text-gray-500 mb-1 ml-1 font-mono opacity-50 group-hover:opacity-100 transition-opacity">
             ${getModel()}
          </div>` : '';
 
-    const contentHtml = isStreaming ?
-        formatContent(content) + cursor :
+    const contentHtml = isStreaming && !isUser ?
+        "" :
         formatContentWithCodeBlocks(content);
 
     div.innerHTML = isUser ? `
@@ -164,6 +221,10 @@ export function renderMessage(role, content, isStreaming = false, executionResul
 
     messagesList.appendChild(div);
 
+    if (!isUser && isStreaming) {
+        applyStreamingMessageContent(messageId, content, true);
+    }
+
     // Init icons and code blocks
     if (window.lucide) window.lucide.createIcons({ icons: window.lucide.icons, nameAttr: "data-lucide" });
     if (!isStreaming) {
@@ -186,11 +247,11 @@ export function updateMessage(messageId, content, isStreaming = false) {
     const contentEl = document.getElementById(`content-${messageId}`);
     if (!contentEl) return;
 
-    const cursor = isStreaming ? '<span class="inline-block w-2 H-4 bg-accent-secondary ml-1 animate-pulse">▋</span>' : '';
-
     if (isStreaming) {
-        contentEl.innerHTML = formatContent(content) + cursor;
+        queueStreamingMessageRender(messageId, content);
     } else {
+        clearStreamingMessageRender(messageId);
+        delete contentEl.dataset.streamingShell;
         contentEl.innerHTML = formatContentWithCodeBlocks(content);
 
         // Highlight logic
