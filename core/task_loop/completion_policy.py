@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from intelligence_modules.prompt_manager import load_prompt
+
 from core.task_loop.contracts import TaskLoopSnapshot
 
 
@@ -29,10 +31,10 @@ def completion_detail(snapshot: TaskLoopSnapshot) -> str:
 
 
 def build_completion_message(snapshot: TaskLoopSnapshot) -> str:
-    return (
-        "\nFinaler Planstatus:\n"
-        + _format_completion_plan(snapshot)
-        + "\n\nTask-Loop abgeschlossen."
+    return "\n" + load_prompt(
+        "task_loop",
+        "status",
+        plan_status=_format_completion_plan(snapshot),
     )
 
 

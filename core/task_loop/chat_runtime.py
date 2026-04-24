@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional
 
+from intelligence_modules.prompt_manager import load_prompt
+
 from core.task_loop.contracts import (
     TERMINAL_STATES,
     StopReason,
@@ -390,10 +392,7 @@ def continue_chat_task_loop(
     if not resume_text and _needs_concrete_input(snapshot):
         waiting = replace(
             snapshot,
-            last_user_visible_answer=(
-                "Fuer diesen Schritt brauche ich eine konkrete Antwort — "
-                "bitte beantworte die offene Frage direkt."
-            ),
+            last_user_visible_answer=load_prompt("task_loop", "clarification"),
         )
         events = [make_task_loop_event(TaskLoopEventType.WAITING_FOR_USER, waiting)]
         _, workspace_updates = _persist_events(

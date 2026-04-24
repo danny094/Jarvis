@@ -33,6 +33,11 @@ from core.layers.output.grounding.stream import (
 )
 from core.layers.output.grounding.state import set_runtime_grounding_value
 from core.layers.output.prompt.tool_injection import extract_selected_tool_names
+from core.layers.output.prompt.notices import (
+    output_grounding_correction_marker,
+    output_notice,
+    output_truncation_note,
+)
 
 
 def generate_stream_sync(
@@ -97,10 +102,7 @@ def generate_stream_sync(
             f"[OutputLayer] Sync stream path only supports ollama right now "
             f"(provider={provider}, model={model})"
         )
-        yield (
-            "Cloud-Provider ist aktiv. Dieser Legacy-Sync-Stream ist nur für Ollama verfügbar. "
-            "Bitte nutze den normalen Streaming-Chatpfad."
-        )
+        yield output_notice("output_sync_cloud_provider")
         return
 
     postcheck_policy = precheck.get("policy") or {}
@@ -139,7 +141,7 @@ def generate_stream_sync(
             f"endpoint_source={route['endpoint_source']}"
         )
         if route["hard_error"]:
-            yield "Fehler: Output-Compute nicht verfuegbar."
+            yield output_notice("output_error_sync_compute_unavailable")
             return
         endpoint = route["endpoint"] or ollama_base
 
@@ -187,12 +189,7 @@ def generate_stream_sync(
                             continue
 
         if truncated:
-            trunc_note = (
-                "\n\n[Antwort gekürzt: Interaktiv-Budget erreicht. "
-                "Wenn du willst, führe ich direkt fort.]"
-                if response_mode != "deep"
-                else "\n\n[Antwort gekürzt: Deep-Mode Output-Budget erreicht.]"
-            )
+            trunc_note = output_truncation_note(response_mode)
             if buffer_for_postcheck:
                 buffered_chunks.append(trunc_note)
             else:
@@ -216,7 +213,7 @@ def generate_stream_sync(
                     for part in buffered_chunks:
                         yield part
             elif changed:
-                yield "\n\n[Grounding-Korrektur]\n"
+                yield output_grounding_correction_marker()
                 yield checked
 
         log_info(
@@ -226,4 +223,4 @@ def generate_stream_sync(
 
     except Exception as e:
         log_error(f"[OutputLayer] Sync stream error: {e}")
-        yield f"Fehler: {str(e)}"
+        yield output_notice("output_error_sync_generic", error=str(e))

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from intelligence_modules.prompt_manager import load_prompt
+
 
 def _text(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
@@ -33,29 +35,16 @@ def _validation_answer(
 ) -> str:
     objective = _objective(meta, step)
     if step_index == 1:
-        return (
-            f"Pruefziel: {objective}. Erfolgskriterium: Der Loop liefert einen "
-            "sichtbaren Plan, erzeugt nachvollziehbare Zwischenstaende, reflektiert "
-            "Stopbedingungen und bleibt im Chat-only Rahmen ohne Tools, Shell oder Writes."
-        )
+        return load_prompt("task_loop", "chat_validation_step_1", objective=objective)
     if step_index == 2:
-        return (
-            "Beobachtbare Kriterien: Planpunkte muessen zur Anfrage passen; jeder "
-            "Zwischenstand muss einen konkreten Befund statt nur eine Statusfloskel "
-            "enthalten; riskante Folgepfade muessen vor Ausfuehrung stoppen."
-        )
+        return load_prompt("task_loop", "chat_validation_step_2")
     if step_index == 3:
-        return (
-            f"Befund: Der aktuelle Pfad bleibt sicher, weil keine externe Aktion "
-            f"ausgefuehrt wird. {_prior_context(completed_steps)} Stop wuerde bei "
-            "riskantem Tool-/Shell-/Write-Pfad, unklarem Ziel, fehlendem Fortschritt, "
-            "Wiederholung oder Step-/Error-Limit greifen."
+        return load_prompt(
+            "task_loop",
+            "chat_validation_step_3",
+            prior_context=_prior_context(completed_steps),
         )
-    return (
-        "Zusammenfassung: Die Pruefung ist als Chat-only Zwischenstand abgeschlossen. "
-        "Naechster Produktpfad: die Zwischenstaende weiter von reinen Templates loesen "
-        "und spaeter echte Tool-/Shell-Schritte erst hinter Risk-Gates aktivieren."
-    )
+    return load_prompt("task_loop", "chat_validation_fallback")
 
 
 def _implementation_answer(
@@ -66,28 +55,16 @@ def _implementation_answer(
 ) -> str:
     objective = _objective(meta, step)
     if step_index == 1:
-        return (
-            f"Zielbild: {objective}. Der sichere erste Schnitt ist ein kleiner, "
-            "beobachtbarer Chat-Loop, der Zustand, Plan, Zwischenstand und Stopgrund "
-            "sauber trennt."
-        )
+        return load_prompt("task_loop", "chat_implementation_step_1", objective=objective)
     if step_index == 2:
-        return (
-            "Umsetzungsschnitt: Planer, Runner, Reflection und Gates bleiben getrennt. "
-            "Der naechste sichere Schritt darf nur Chat-Zustand und sichtbare Antwort "
-            "veraendern, keine Tools oder Shell ausfuehren."
-        )
+        return load_prompt("task_loop", "chat_implementation_step_2")
     if step_index == 3:
-        return (
-            f"Gate-Bewertung: {_prior_context(completed_steps)} Automatisch weiter "
-            "geht nur, solange der Schritt safe ist. Bei User-Entscheidung, riskantem "
-            "Tool, Write, Shell, Wiederholung oder Fehlerlimit wird pausiert."
+        return load_prompt(
+            "task_loop",
+            "chat_implementation_step_3",
+            prior_context=_prior_context(completed_steps),
         )
-    return (
-        "Naechster Implementierungsschnitt: echte Ausfuehrungssignale und bessere "
-        "Plan-Revisionen anbinden, ohne den Orchestrator-Monolithen weiter wachsen "
-        "zu lassen."
-    )
+    return load_prompt("task_loop", "chat_implementation_fallback")
 
 
 def _analysis_answer(
@@ -98,29 +75,16 @@ def _analysis_answer(
 ) -> str:
     objective = _objective(meta, step)
     if step_index == 1:
-        return (
-            f"Fragestellung: {objective}. Die Antwort muss klaeren, was belastbar aus "
-            "dem aktuellen Chat-Kontext folgt und wo der Loop stoppen oder nachfragen "
-            "muss."
-        )
+        return load_prompt("task_loop", "chat_analysis_step_1", objective=objective)
     if step_index == 2:
-        return (
-            "Einflussfaktoren: expliziter Multistep-Start, Planqualitaet, sichtbare "
-            "Zwischenstaende, Reflection, Risk-Gates, Progress-Erkennung und harte "
-            "Limits fuer Steps, Errors und Wiederholung."
-        )
+        return load_prompt("task_loop", "chat_analysis_step_2")
     if step_index == 3:
-        return (
-            f"Unsicherheiten: {_prior_context(completed_steps)} Ohne externe Pruefung "
-            "bleibt der Befund auf Chat-Kontext begrenzt. Stoppen ist korrekt, wenn "
-            "Kontext fehlt, Risiko entsteht oder kein konkreter naechster Schritt "
-            "ableitbar ist."
+        return load_prompt(
+            "task_loop",
+            "chat_analysis_step_3",
+            prior_context=_prior_context(completed_steps),
         )
-    return (
-        "Zwischenfazit: Der sichere Analysepfad ist abgeschlossen. Der naechste "
-        "sinnvolle Schritt ist, die erkannte Luecke gezielt zu beheben statt den Loop "
-        "blind weiterlaufen zu lassen."
-    )
+    return load_prompt("task_loop", "chat_analysis_fallback")
 
 
 def _default_answer(
@@ -131,24 +95,16 @@ def _default_answer(
 ) -> str:
     objective = _objective(meta, step)
     if step_index == 1:
-        return (
-            f"Aufgabe: {objective}. Erfolg heisst, dass der naechste Schritt konkret, "
-            "sicher und fuer den User nachvollziehbar ist."
-        )
+        return load_prompt("task_loop", "chat_default_step_1", objective=objective)
     if step_index == 2:
-        return (
-            "Naechster sicherer Schritt: im Chat bleiben, den kleinsten sinnvollen "
-            "Fortschritt benennen und externe Nebenwirkungen ausklammern."
-        )
+        return load_prompt("task_loop", "chat_default_step_2")
     if step_index == 3:
-        return (
-            f"Stoppruefung: {_prior_context(completed_steps)} Kein riskanter Pfad wird "
-            "automatisch ausgefuehrt; bei Unsicherheit oder Wiederholung wird pausiert."
+        return load_prompt(
+            "task_loop",
+            "chat_default_step_3",
+            prior_context=_prior_context(completed_steps),
         )
-    return (
-        "Status: Die Aufgabe ist im sicheren Chat-Rahmen sortiert. Der naechste "
-        "Pfad ist klar genug, um gezielt weiterzuplanen oder bei Bedarf nachzufragen."
-    )
+    return load_prompt("task_loop", "chat_default_fallback")
 
 
 def answer_for_chat_step(

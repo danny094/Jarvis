@@ -72,6 +72,19 @@ verification live in the linked Obsidian notes.
 
 ## Current Refactor Stand
 
+- Prompt text centralization was started as a bounded architecture step:
+  `intelligence_modules/prompt_manager/` now loads Markdown templates from
+  `intelligence_modules/prompts/`, while behavior and routing logic stay in
+  Python.
+  Source: [prompts.md](docs/obsidian/prompts.md)
+- Output, Task Loop, Control, Thinking, and Persona prompt texts were moved out
+  of their runtime modules into central prompt templates, including contract
+  tests for the migrated prompt surfaces.
+  Source: [prompts.md](docs/obsidian/prompts.md)
+- Current verification for this prompt migration is green:
+  `333 passed, 9 warnings` across the focused Prompt Manager, Output, Task
+  Loop, Control, Thinking, and Persona test set.
+  Source: [prompts.md](docs/obsidian/prompts.md)
 - The former root `config.py` monolith was split into the modular `config/`
   package (`infra`, `models`, `pipeline`, `output`, `autonomy`, `context`,
   `features`, `digest`, `skills`), and the legacy file was removed.

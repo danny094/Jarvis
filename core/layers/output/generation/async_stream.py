@@ -32,6 +32,11 @@ from core.layers.output.grounding.stream import (
 )
 from core.layers.output.grounding.state import set_runtime_grounding_value
 from core.layers.output.prompt.tool_injection import extract_selected_tool_names
+from core.layers.output.prompt.notices import (
+    output_grounding_correction_marker,
+    output_notice,
+    output_truncation_note,
+)
 
 
 async def generate_stream(
@@ -136,7 +141,7 @@ async def generate_stream(
                 f"endpoint_source={route['endpoint_source']}"
             )
             if route["hard_error"]:
-                yield "Entschuldigung, Output-Compute ist aktuell nicht verfügbar."
+                yield output_notice("output_error_compute_unavailable")
                 return
             endpoint = route["endpoint"] or ollama_base
         else:
@@ -182,12 +187,7 @@ async def generate_stream(
                 yield chunk
 
         if truncated:
-            trunc_note = (
-                "\n\n[Antwort gekürzt: Interaktiv-Budget erreicht. "
-                "Wenn du willst, führe ich direkt fort.]"
-                if response_mode != "deep"
-                else "\n\n[Antwort gekürzt: Deep-Mode Output-Budget erreicht.]"
-            )
+            trunc_note = output_truncation_note(response_mode)
             if buffer_for_postcheck:
                 buffered_chunks.append(trunc_note)
             else:
@@ -212,7 +212,7 @@ async def generate_stream(
                         yield part
             elif changed:
                 # Stream-first: TTFT bleibt niedrig, Korrektur wird angehängt.
-                yield "\n\n[Grounding-Korrektur]\n"
+                yield output_grounding_correction_marker()
                 yield checked
 
         log_info(
@@ -222,19 +222,19 @@ async def generate_stream(
 
     except httpx.TimeoutException:
         log_error(f"[OutputLayer] Stream Timeout nach {timeout_s:.0f}s")
-        yield "Entschuldigung, die Anfrage hat zu lange gedauert."
+        yield output_notice("output_error_timeout")
     except httpx.HTTPStatusError as e:
         log_error(f"[OutputLayer] Stream HTTP Error: {e.response.status_code}")
-        yield f"Entschuldigung, Server-Fehler: {e.response.status_code}"
+        yield output_notice("output_error_server", status_code=e.response.status_code)
     except (httpx.ReadError, httpx.RemoteProtocolError) as e:
         log_error(f"[OutputLayer] Stream disconnected: {e}")
-        yield "Verbindung zum Model wurde unterbrochen. Bitte Anfrage erneut senden."
+        yield output_notice("output_error_disconnected")
     except httpx.ConnectError as e:
         log_error(f"[OutputLayer] Connection Error: {e}")
-        yield "Entschuldigung, konnte keine Verbindung zum Model herstellen."
+        yield output_notice("output_error_connect")
     except Exception as e:
         log_error(f"[OutputLayer] Error: {type(e).__name__}: {e}")
-        yield f"Entschuldigung, es gab einen Fehler: {str(e)}"
+        yield output_notice("output_error_generic", error=str(e))
 
 
 async def generate(

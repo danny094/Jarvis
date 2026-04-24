@@ -11,6 +11,8 @@ Drei Query-Klassen mit je eigenen Prompt-Regeln und Postcheck-Invarianten:
 import re
 from typing import Any, Dict, List
 
+from intelligence_modules.prompt_manager import load_prompt
+
 from core.layers.output.analysis.qualitative import normalize_semantic_text
 
 
@@ -72,64 +74,25 @@ def build_container_prompt_rules(verified_plan: Dict[str, Any]) -> List[str]:
         if str(tool or "").strip()
     ]
     truth_mode = str(policy.get("truth_mode") or "").strip().lower()
-    prompt_lines = [
-        "\n### CONTAINER-ANTWORTMODUS:",
-        "Containerantworten muessen Runtime-Inventar, Blueprint-Katalog und Session-Binding sichtbar getrennt halten.",
-        "Blueprint-Katalog, Runtime-Inventar und Binding niemals unmarkiert in denselben Antworttopf werfen.",
-        "Statische Profile oder Taxonomie duerfen erklaeren, aber keine Live-Bindung oder Runtime-Fakten erfinden.",
-    ]
+    required_tools_line = ""
     if required_tools:
-        prompt_lines.append(
+        required_tools_line = (
             "Verbindlicher Container-Contract fuer diesen Turn: Aussagen nur auf "
             f"{', '.join(f'`{tool}`' for tool in required_tools)}"
             + (" und Session-State" if query_class == "container_state_binding" else "")
             + " stuetzen."
         )
+    truth_mode_line = ""
     if truth_mode:
-        prompt_lines.append(f"truth_mode fuer diesen Turn: `{truth_mode}`.")
+        truth_mode_line = f"truth_mode fuer diesen Turn: `{truth_mode}`."
 
-    if query_class == "container_inventory":
-        prompt_lines.extend([
-            "Pflichtreihenfolge: `Laufende Container`, dann `Gestoppte Container`, dann `Einordnung`.",
-            "Im Abschnitt `Laufende Container` nur aktuell laufende Container aus Runtime-Inventar nennen.",
-            "Im Abschnitt `Gestoppte Container` nur verifizierte installierte, aber nicht laufende Container nennen.",
-            "Keine Blueprints, keine Startempfehlungen und keine Capability-Liste als Hauptantwort einmischen.",
-            "Keine ungefragten Betriebsdiagnosen, keine Fehlerursachen und keine Zeitinterpretationen aus Exit-Status ableiten.",
-            "Wenn kein laufender oder gestoppter Container verifiziert ist, das explizit als Runtime-Befund sagen statt zu raten.",
-            "Blueprints nur in einem explizit markierten Zusatzblock `Verfuegbare Blueprints` nennen, wenn der User diese Ebene ausdruecklich mitfragt und dafuer belegte Blueprint-Evidence vorliegt.",
-            "Die Antwort MUSS mit dem Literal `Laufende Container:` beginnen.",
-            "\n### VERPFLICHTENDES ANTWORTGERUEST:",
-            "Laufende Container: <verifizierter Runtime-Befund zu aktuell laufenden Containern oder explizites None>.",
-            "Gestoppte Container: <verifizierter Runtime-Befund zu installierten, aber nicht laufenden Containern oder explizites None>.",
-            "Einordnung: <klare Trennung zwischen Runtime-Inventar und Blueprint-Katalog>.",
-        ])
-    elif query_class == "container_blueprint_catalog":
-        prompt_lines.extend([
-            "Pflichtreihenfolge: `Verfuegbare Blueprints`, dann `Einordnung`.",
-            "Im Abschnitt `Verfuegbare Blueprints` nur startbare oder katalogisierte Blueprint-Typen nennen.",
-            "Keine Behauptung ueber aktuell laufende oder installierte Container machen, wenn dafuer nur `blueprint_list` vorliegt.",
-            "Keine Session-Bindung, keinen aktiven Container und keine Runtime-Statusaussage als Hauptantwort behaupten.",
-            "Keine zusaetzlichen Runtime-Inventar-, Running-/Stopped- oder Empty-State-Aussagen machen, wenn kein `container_list`-Beleg vorliegt.",
-            "Die Antwort MUSS mit dem Literal `Verfuegbare Blueprints:` beginnen.",
-            "\n### VERPFLICHTENDES ANTWORTGERUEST:",
-            "Verfuegbare Blueprints: <verifizierter Katalog-Befund aus Blueprint-Evidence>.",
-            "Einordnung: <klare Trennung zwischen Blueprint-Katalog und aktuellem Runtime-Inventar>.",
-        ])
-    else:
-        prompt_lines.extend([
-            "Pflichtreihenfolge: `Aktiver Container`, dann `Binding/Status`, dann `Einordnung`.",
-            "Im Abschnitt `Aktiver Container` nur den verifizierten aktiven oder gebundenen Container nennen, sonst explizit `nicht verifiziert` sagen.",
-            "Im Abschnitt `Binding/Status` nur Session-Binding oder Runtime-Status des aktiven Ziels beschreiben.",
-            "Keine Blueprint-Katalog-Liste und keine generische Capability-Liste als Ersatzhauptantwort geben.",
-            "Statische Profiltexte duerfen erklaeren, aber keinen Bindungsbeweis ersetzen.",
-            "Keine Zeitspannen, Fehlerdiagnosen, Ursachenvermutungen oder impliziten Neustart-/Startempfehlungen anfuegen, wenn diese nicht explizit belegt oder angefragt sind.",
-            "Die Antwort MUSS mit dem Literal `Aktiver Container:` beginnen.",
-            "\n### VERPFLICHTENDES ANTWORTGERUEST:",
-            "Aktiver Container: <verifizierter Binding-Befund oder explizites nicht verifiziert>.",
-            "Binding/Status: <Session-Binding oder Runtime-Status des aktiven Ziels, ohne Blueprint-Katalogdrift>.",
-            "Einordnung: <klare Trennung zwischen Binding, Runtime-Inventar und Blueprint-Katalog>.",
-        ])
-    return prompt_lines
+    rendered = load_prompt(
+        "contracts",
+        query_class,
+        required_tools_line=required_tools_line,
+        truth_mode_line=truth_mode_line,
+    )
+    return [line for line in rendered.splitlines() if line.strip()]
 
 
 def extract_container_contract_snapshot(

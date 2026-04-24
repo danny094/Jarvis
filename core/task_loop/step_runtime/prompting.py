@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from intelligence_modules.prompt_manager import load_prompt
+
 from core.task_loop.action_resolution.read_first_policy import split_read_vs_action_tools
 from core.task_loop.contracts import (
     TaskLoopSnapshot,
@@ -345,24 +347,26 @@ def build_task_loop_step_prompt(
     system_addon_block = _system_addon_context_block(step_request)
     response_style = response_style_block(step_type)
 
-    return (
-        f"Task-Loop Schritt {current_step_index}/{total_steps}\n\n"
-        f"Aufgabe: {objective}\n"
-        f"Aktueller Schritt: {step_title}\n"
-        f"Schritt-Typ: {step_type.value}\n"
-        f"Ziel dieses Schritts: {goal or 'Konkreten Zwischenstand fuer diesen Schritt liefern.'}\n"
-        f"Erfolgskriterium: {done_criteria or 'Der Schritt liefert einen klaren, belastbaren Zwischenstand.'}\n"
-        f"Bisherige Schritte: {completed_text}\n\n"
-        f"{verified_context_block}"
-        f"{system_addon_block}"
-        f"{next_step_guard_block}"
-        f"{auto_clarify_block}"
-        f"{claim_guard_block(step_type=step_type)}"
-        f"{focus_block(step_type, suggested_tools)}"
-        f"{output_shape_block(step_type)}"
-        f"{response_style}"
-        "Bleibe knapp und beim aktuellen Schritt.\n"
-    )
+    return load_prompt(
+        "task_loop",
+        "step_runtime",
+        current_step_index=current_step_index,
+        total_steps=total_steps,
+        objective=objective,
+        step_title=step_title,
+        step_type=step_type.value,
+        goal=goal or "Konkreten Zwischenstand fuer diesen Schritt liefern.",
+        done_criteria=done_criteria or "Der Schritt liefert einen klaren, belastbaren Zwischenstand.",
+        completed_text=completed_text,
+        verified_context_block=verified_context_block,
+        system_addon_block=system_addon_block,
+        next_step_guard_block=next_step_guard_block,
+        auto_clarify_block=auto_clarify_block,
+        claim_guard_block=claim_guard_block(step_type=step_type),
+        focus_block=focus_block(step_type, suggested_tools),
+        output_shape_block=output_shape_block(step_type),
+        response_style=response_style,
+    ) + "\n"
 
 
 __all__ = [

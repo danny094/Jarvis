@@ -39,6 +39,26 @@ from core.output_analysis_guard import (
     evaluate_analysis_turn_answer,
     is_analysis_turn_guard_applicable,
 )
+from core.layers.output.contracts.container import (
+    build_container_safe_fallback,
+    evaluate_container_contract_leakage,
+    is_container_query_contract_plan,
+)
+from core.layers.output.contracts.skill_catalog import (
+    build_skill_catalog_safe_fallback,
+    evaluate_skill_catalog_semantic_leakage,
+    is_skill_catalog_context_plan,
+    update_skill_catalog_trace,
+)
+from core.layers.output.grounding.fallback import (
+    build_grounding_fallback,
+    build_tool_failure_fallback,
+)
+from core.layers.output.prompt.notices import (
+    output_grounding_correction_marker,
+    output_notice,
+    output_truncation_note,
+)
 from core.plan_runtime_bridge import (
     get_policy_final_instruction,
     get_policy_warnings,
@@ -66,43 +86,6 @@ class OutputLayer:
         self.ollama_base = OLLAMA_BASE
 
     @staticmethod
-    def _skill_catalog_trace_state(
-        verified_plan: Dict[str, Any],
-        *,
-        create: bool = False,
-    ) -> Optional[Dict[str, Any]]:
-        if not OutputLayer._is_skill_catalog_context_plan(verified_plan):
-            return None
-        if not isinstance(verified_plan, dict):
-            return None
-        ctx_trace = verified_plan.get("_ctx_trace")
-        if not isinstance(ctx_trace, dict):
-            if not create:
-                return None
-            ctx_trace = {}
-            verified_plan["_ctx_trace"] = ctx_trace
-        skill_trace = ctx_trace.get("skill_catalog")
-        if not isinstance(skill_trace, dict):
-            if not create:
-                return None
-            skill_trace = {}
-            ctx_trace["skill_catalog"] = skill_trace
-        return skill_trace
-
-    @staticmethod
-    def _update_skill_catalog_trace(
-        verified_plan: Dict[str, Any],
-        **fields: Any,
-    ) -> None:
-        skill_trace = OutputLayer._skill_catalog_trace_state(verified_plan, create=True)
-        if not isinstance(skill_trace, dict):
-            return
-        for key, value in fields.items():
-            if value is None:
-                continue
-            skill_trace[str(key)] = value
-
-    @staticmethod
     def _normalize_semantic_text(text: str) -> str:
         raw = str(text or "").lower()
         return (
@@ -111,251 +94,6 @@ class OutputLayer:
             .replace("ü", "ue")
             .replace("ß", "ss")
         )
-
-    @staticmethod
-    def _is_skill_catalog_context_plan(verified_plan: Dict[str, Any]) -> bool:
-        if not isinstance(verified_plan, dict):
-            return False
-        resolution_strategy = str(
-            verified_plan.get("_authoritative_resolution_strategy")
-            or verified_plan.get("resolution_strategy")
-            or ""
-        ).strip().lower()
-        return resolution_strategy == "skill_catalog_context" or bool(
-            verified_plan.get("_skill_catalog_context")
-        ) or bool(
-            verified_plan.get("_skill_catalog_policy")
-        )
-
-    @staticmethod
-    def _get_container_query_policy(verified_plan: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(verified_plan, dict):
-            return {}
-        policy = (
-            verified_plan.get("_container_query_policy")
-            if isinstance(verified_plan.get("_container_query_policy"), dict)
-            else {}
-        )
-        if policy:
-            return policy
-        strategy = str(
-            verified_plan.get("_authoritative_resolution_strategy")
-            or verified_plan.get("resolution_strategy")
-            or ""
-        ).strip().lower()
-        if strategy in {
-            "container_inventory",
-            "container_blueprint_catalog",
-            "container_state_binding",
-        }:
-            return {"query_class": strategy}
-        return {}
-
-    @staticmethod
-    def _is_container_query_contract_plan(verified_plan: Dict[str, Any]) -> bool:
-        policy = OutputLayer._get_container_query_policy(verified_plan)
-        return str(policy.get("query_class") or "").strip().lower() in {
-            "container_inventory",
-            "container_blueprint_catalog",
-            "container_state_binding",
-        }
-
-    @staticmethod
-    def _build_container_prompt_rules(verified_plan: Dict[str, Any]) -> List[str]:
-        policy = OutputLayer._get_container_query_policy(verified_plan)
-        query_class = str(policy.get("query_class") or "").strip().lower()
-        if query_class not in {
-            "container_inventory",
-            "container_blueprint_catalog",
-            "container_state_binding",
-        }:
-            return []
-
-        required_tools = [
-            str(tool or "").strip()
-            for tool in list(policy.get("required_tools") or [])
-            if str(tool or "").strip()
-        ]
-        truth_mode = str(policy.get("truth_mode") or "").strip().lower()
-        prompt_lines = [
-            "\n### CONTAINER-ANTWORTMODUS:",
-            "Containerantworten muessen Runtime-Inventar, Blueprint-Katalog und Session-Binding sichtbar getrennt halten.",
-            "Blueprint-Katalog, Runtime-Inventar und Binding niemals unmarkiert in denselben Antworttopf werfen.",
-            "Statische Profile oder Taxonomie duerfen erklaeren, aber keine Live-Bindung oder Runtime-Fakten erfinden.",
-        ]
-        if required_tools:
-            prompt_lines.append(
-                "Verbindlicher Container-Contract fuer diesen Turn: Aussagen nur auf "
-                f"{', '.join(f'`{tool}`' for tool in required_tools)}"
-                + (" und Session-State" if query_class == "container_state_binding" else "")
-                + " stuetzen."
-            )
-        if truth_mode:
-            prompt_lines.append(f"truth_mode fuer diesen Turn: `{truth_mode}`.")
-
-        if query_class == "container_inventory":
-            prompt_lines.extend(
-                [
-                    "Pflichtreihenfolge: `Laufende Container`, dann `Gestoppte Container`, dann `Einordnung`.",
-                    "Im Abschnitt `Laufende Container` nur aktuell laufende Container aus Runtime-Inventar nennen.",
-                    "Im Abschnitt `Gestoppte Container` nur verifizierte installierte, aber nicht laufende Container nennen.",
-                    "Keine Blueprints, keine Startempfehlungen und keine Capability-Liste als Hauptantwort einmischen.",
-                    "Keine ungefragten Betriebsdiagnosen, keine Fehlerursachen und keine Zeitinterpretationen aus Exit-Status ableiten.",
-                    "Wenn kein laufender oder gestoppter Container verifiziert ist, das explizit als Runtime-Befund sagen statt zu raten.",
-                    "Blueprints nur in einem explizit markierten Zusatzblock `Verfuegbare Blueprints` nennen, wenn der User diese Ebene ausdruecklich mitfragt und dafuer belegte Blueprint-Evidence vorliegt.",
-                    "Die Antwort MUSS mit dem Literal `Laufende Container:` beginnen.",
-                    "\n### VERPFLICHTENDES ANTWORTGERUEST:",
-                    "Laufende Container: <verifizierter Runtime-Befund zu aktuell laufenden Containern oder explizites None>.",
-                    "Gestoppte Container: <verifizierter Runtime-Befund zu installierten, aber nicht laufenden Containern oder explizites None>.",
-                    "Einordnung: <klare Trennung zwischen Runtime-Inventar und Blueprint-Katalog>.",
-                ]
-            )
-        elif query_class == "container_blueprint_catalog":
-            prompt_lines.extend(
-                [
-                    "Pflichtreihenfolge: `Verfuegbare Blueprints`, dann `Einordnung`.",
-                    "Im Abschnitt `Verfuegbare Blueprints` nur startbare oder katalogisierte Blueprint-Typen nennen.",
-                    "Keine Behauptung ueber aktuell laufende oder installierte Container machen, wenn dafuer nur `blueprint_list` vorliegt.",
-                    "Keine Session-Bindung, keinen aktiven Container und keine Runtime-Statusaussage als Hauptantwort behaupten.",
-                    "Keine zusaetzlichen Runtime-Inventar-, Running-/Stopped- oder Empty-State-Aussagen machen, wenn kein `container_list`-Beleg vorliegt.",
-                    "Die Antwort MUSS mit dem Literal `Verfuegbare Blueprints:` beginnen.",
-                    "\n### VERPFLICHTENDES ANTWORTGERUEST:",
-                    "Verfuegbare Blueprints: <verifizierter Katalog-Befund aus Blueprint-Evidence>.",
-                    "Einordnung: <klare Trennung zwischen Blueprint-Katalog und aktuellem Runtime-Inventar>.",
-                ]
-            )
-        else:
-            prompt_lines.extend(
-                [
-                    "Pflichtreihenfolge: `Aktiver Container`, dann `Binding/Status`, dann `Einordnung`.",
-                    "Im Abschnitt `Aktiver Container` nur den verifizierten aktiven oder gebundenen Container nennen, sonst explizit `nicht verifiziert` sagen.",
-                    "Im Abschnitt `Binding/Status` nur Session-Binding oder Runtime-Status des aktiven Ziels beschreiben.",
-                    "Keine Blueprint-Katalog-Liste und keine generische Capability-Liste als Ersatzhauptantwort geben.",
-                    "Statische Profiltexte duerfen erklaeren, aber keinen Bindungsbeweis ersetzen.",
-                    "Keine Zeitspannen, Fehlerdiagnosen, Ursachenvermutungen oder impliziten Neustart-/Startempfehlungen anfuegen, wenn diese nicht explizit belegt oder angefragt sind.",
-                    "Die Antwort MUSS mit dem Literal `Aktiver Container:` beginnen.",
-                    "\n### VERPFLICHTENDES ANTWORTGERUEST:",
-                    "Aktiver Container: <verifizierter Binding-Befund oder explizites nicht verifiziert>.",
-                    "Binding/Status: <Session-Binding oder Runtime-Status des aktiven Ziels, ohne Blueprint-Katalogdrift>.",
-                    "Einordnung: <klare Trennung zwischen Binding, Runtime-Inventar und Blueprint-Katalog>.",
-                ]
-            )
-        return prompt_lines
-
-    @staticmethod
-    def _build_skill_catalog_prompt_rules(verified_plan: Dict[str, Any]) -> List[str]:
-        ctx = (
-            verified_plan.get("_skill_catalog_context")
-            if isinstance(verified_plan, dict)
-            else {}
-        )
-        ctx = ctx if isinstance(ctx, dict) else {}
-        policy = (
-            verified_plan.get("_skill_catalog_policy")
-            if isinstance(verified_plan, dict)
-            else {}
-        )
-        policy = policy if isinstance(policy, dict) else {}
-        installed_count = OutputLayer._to_int(ctx.get("installed_count"))
-        required_tools = [
-            str(tool or "").strip()
-            for tool in list(policy.get("required_tools") or [])
-            if str(tool or "").strip()
-        ]
-        force_sections = [
-            str(section or "").strip()
-            for section in list(policy.get("force_sections") or [])
-            if str(section or "").strip()
-        ]
-        if not force_sections:
-            force_sections = ["Runtime-Skills", "Einordnung"]
-        followup_heading = (
-            "Wunsch-Skills"
-            if "Wunsch-Skills" in force_sections
-            else "Nächster Schritt"
-        )
-
-        prompt_lines = [
-            "\n### SKILL-SEMANTIK:",
-            "`list_skills` beschreibt nur installierte Runtime-Skills, nicht die komplette Fähigkeitswelt.",
-            "Trenne in der Antwort Runtime-Skills, Draft Skills und Built-in Tools explizit, wenn mehr als eine Ebene gemeint ist.",
-            "Built-in Tools dürfen nicht als installierte Skills formuliert werden.",
-            "Session- oder System-Skills nur nennen, wenn sie im Kontext ausdrücklich belegt sind.",
-            "Allgemeine Agentenfähigkeiten dürfen nicht als Skill-Liste ausgegeben werden.",
-            "Vermeide anthropomorphe Metaphern oder Persona-Zusätze in faktischen Skill-Antworten.",
-            "\n### SKILL-KATALOG-ANTWORTMODUS:",
-            "Antworte für diesen Strategy-Typ in markierten Kurzabschnitten.",
-            f"Pflichtreihenfolge: `Runtime-Skills`, dann `Einordnung`, danach optional `{followup_heading}`.",
-            "Der erste Satz im Abschnitt `Runtime-Skills` muss den Runtime-Befund als autoritativen Inventar-Befund benennen.",
-            "Im Abschnitt `Runtime-Skills` keine Built-in Tools, keine allgemeinen Fähigkeiten, keine Draft-Skills und keine Wunsch-/Aktionsanteile nennen.",
-            "Wenn du Built-in Tools erwähnst, dann ausschließlich im explizit markierten Abschnitt `Einordnung`.",
-            "Keine unmarkierte Freitext-Liste mit Fähigkeiten, Tools oder Persona-Eigenschaften anhängen.",
-        ]
-        if required_tools:
-            prompt_lines.append(
-                "Verbindlicher Skill-Catalog-Contract fuer diesen Turn: "
-                f"Inventar-Aussagen nur auf {', '.join(f'`{tool}`' for tool in required_tools)} stützen."
-            )
-        if installed_count == 0:
-            prompt_lines.append(
-                "Wenn keine Runtime-Skills vorhanden sind, formuliere das explizit als Runtime-Befund, z. B. `Im Runtime-Skill-System sind aktuell keine installierten Skills vorhanden.`"
-            )
-        elif installed_count is not None:
-            prompt_lines.append(
-                f"Der Runtime-Befund muss sich auf den verifizierten Snapshot beziehen: aktuell {installed_count} installierte Runtime-Skills."
-            )
-        strategy_hints = verified_plan.get("strategy_hints") if isinstance(verified_plan, dict) else []
-        normalized_hints = {
-            str(hint or "").strip().lower()
-            for hint in (strategy_hints if isinstance(strategy_hints, list) else [])
-            if str(hint or "").strip()
-        }
-        needs_draft_explanation = bool(policy.get("draft_explanation_required")) or bool(
-            "draft_skills" in normalized_hints
-            or "tools_vs_skills" in normalized_hints
-            or OutputLayer._to_int(ctx.get("draft_count")) is not None
-        )
-        if bool(policy.get("followup_split_required")) or "fact_then_followup" in normalized_hints:
-            prompt_lines.append(
-                "Wenn die User-Frage Faktinventar und Wunsch-/Brainstorming-Teil kombiniert, hat der faktische Inventarteil Vorrang."
-            )
-            prompt_lines.append(
-                "Gib Brainstorming oder Wunsch-Skills erst nach `Runtime-Skills` und `Einordnung` in einem klar markierten Anschlussblock aus."
-            )
-            if followup_heading == "Wunsch-Skills":
-                prompt_lines.append(
-                    "Der Anschlussblock muss `Wunsch-Skills` heißen und Vorschläge klar von verifizierten Inventarfakten trennen."
-                )
-            else:
-                prompt_lines.append(
-                    "Der Anschlussblock darf nur `Wunsch-Skills` oder `Nächster Schritt` heißen und muss Vorschläge klar von verifizierten Inventarfakten trennen."
-                )
-        if str(policy.get("mode") or "").strip().lower() == "inventory_read_only":
-            prompt_lines.append(
-                "Im Modus `inventory_read_only` keine ungefragten Skill-Erstellungs-, Ausführungs- oder sonstigen Aktionsangebote anhängen."
-            )
-        prompt_lines.append(
-            "Die Antwort MUSS mit dem Literal `Runtime-Skills:` beginnen. Kein anderer Vorspann, keine Einleitung, keine alternative Ueberschrift davor."
-        )
-        prompt_lines.append(
-            "Wenn die Frage nach Draft-Skills fragt, antworte trotzdem zuerst mit dem Runtime-Befund im Abschnitt `Runtime-Skills` und erklaere Drafts erst danach."
-        )
-
-        answer_schema = [
-            "\n### VERPFLICHTENDES ANTWORTGERUEST:",
-            "Runtime-Skills: <verifizierter Runtime-Befund aus Snapshot/Tool-Ergebnis>.",
-            "Einordnung: <klare Trennung zwischen Runtime-Skills, Draft-Skills und Built-in Tools>.",
-        ]
-        if needs_draft_explanation:
-            answer_schema.append(
-                "Einordnung muss bei diesem Turn explizit sagen, ob Draft-Skills verifiziert sind und warum `list_skills` sie nicht anzeigt."
-            )
-        if "Wunsch-Skills" in force_sections or bool(policy.get("followup_split_required")):
-            answer_schema.append(
-                f"{followup_heading}: <optional; Wunsch-Skills oder Vorschläge klar getrennt von Inventarfakten>."
-            )
-        prompt_lines.extend(answer_schema)
-        return prompt_lines
 
     @staticmethod
     def _extract_numeric_tokens(text: str) -> List[str]:
@@ -881,709 +619,16 @@ class OutputLayer:
         return fact
 
     @staticmethod
-    def _collect_skill_catalog_fact_lines(item: Dict[str, Any]) -> List[str]:
-        if not isinstance(item, dict):
-            return []
-
-        lines: List[str] = []
-        key_facts = item.get("key_facts")
-        if isinstance(key_facts, list):
-            lines.extend(str(raw or "").strip() for raw in key_facts if str(raw or "").strip())
-
-        structured = item.get("structured")
-        if isinstance(structured, dict):
-            output_text = str(structured.get("output") or structured.get("result") or "").strip()
-            if output_text:
-                lines.extend(str(raw or "").strip() for raw in output_text.splitlines() if str(raw or "").strip())
-        return lines
-
-    @staticmethod
-    def _extract_skill_catalog_snapshot(
-        verified_plan: Dict[str, Any],
-        evidence: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        ctx = (
-            verified_plan.get("_skill_catalog_context")
-            if isinstance(verified_plan, dict)
-            else {}
-        )
-        ctx = ctx if isinstance(ctx, dict) else {}
-        snapshot = {
-            "installed_count": OutputLayer._to_int(ctx.get("installed_count")),
-            "draft_count": None,
-            "available_count": OutputLayer._to_int(ctx.get("available_count")),
-            "installed_names": [],
-            "draft_names": [],
-            "selected_docs": str(ctx.get("selected_docs") or "").strip(),
-            "session_skills_verified": bool(ctx.get("session_skills_verified")),
-            "draft_inventory_verified": False,
-        }
-
-        for item in evidence:
-            if not isinstance(item, dict):
-                continue
-            tool_name = str(item.get("tool_name") or "").strip()
-            status = str(item.get("status") or "").strip().lower()
-            structured = item.get("structured")
-            if tool_name == "list_skills" and isinstance(structured, dict):
-                if snapshot["installed_count"] is None:
-                    snapshot["installed_count"] = OutputLayer._to_int(structured.get("installed_count"))
-                if snapshot["available_count"] is None:
-                    snapshot["available_count"] = OutputLayer._to_int(structured.get("available_count"))
-                raw_names = structured.get("installed_names")
-                if isinstance(raw_names, list) and not snapshot["installed_names"]:
-                    snapshot["installed_names"] = [
-                        str(raw or "").strip()
-                        for raw in raw_names
-                        if str(raw or "").strip()
-                    ][:8]
-            elif tool_name == "list_draft_skills" and status == "ok" and isinstance(structured, dict):
-                snapshot["draft_inventory_verified"] = True
-                if snapshot["draft_count"] is None:
-                    snapshot["draft_count"] = OutputLayer._to_int(structured.get("draft_count"))
-                raw_names = structured.get("draft_names")
-                if isinstance(raw_names, list) and not snapshot["draft_names"]:
-                    snapshot["draft_names"] = [
-                        str(raw or "").strip()
-                        for raw in raw_names
-                        if str(raw or "").strip()
-                    ][:8]
-
-            for line in OutputLayer._collect_skill_catalog_fact_lines(item):
-                low = line.lower()
-                if tool_name == "list_skills":
-                    if low.startswith("installed_count:") and snapshot["installed_count"] is None:
-                        snapshot["installed_count"] = OutputLayer._to_int(line.split(":", 1)[1].strip())
-                    elif low.startswith("available_count:") and snapshot["available_count"] is None:
-                        snapshot["available_count"] = OutputLayer._to_int(line.split(":", 1)[1].strip())
-                    elif low.startswith("installed_names:") and not snapshot["installed_names"]:
-                        rhs = line.split(":", 1)[1].strip()
-                        if rhs:
-                            snapshot["installed_names"] = [
-                                part.strip() for part in rhs.split(",") if str(part or "").strip()
-                            ][:8]
-                elif tool_name == "list_draft_skills" and status == "ok":
-                    snapshot["draft_inventory_verified"] = True
-                    if low.startswith("draft_count:") and snapshot["draft_count"] is None:
-                        snapshot["draft_count"] = OutputLayer._to_int(line.split(":", 1)[1].strip())
-                    elif low.startswith("draft_names:") and not snapshot["draft_names"]:
-                        rhs = line.split(":", 1)[1].strip()
-                        if rhs:
-                            snapshot["draft_names"] = [
-                                part.strip() for part in rhs.split(",") if str(part or "").strip()
-                            ][:8]
-                elif tool_name not in {"skill_addons"}:
-                    normalized = OutputLayer._normalize_semantic_text(line)
-                    if "session-skill" in normalized or "system-skill" in normalized:
-                        snapshot["session_skills_verified"] = True
-        return snapshot
-
-    @staticmethod
-    def _build_skill_catalog_safe_fallback(
-        verified_plan: Dict[str, Any],
-        evidence: List[Dict[str, Any]],
-    ) -> str:
-        snapshot = OutputLayer._extract_skill_catalog_snapshot(verified_plan, evidence)
-        policy = (
-            verified_plan.get("_skill_catalog_policy")
-            if isinstance(verified_plan, dict)
-            else {}
-        )
-        policy = policy if isinstance(policy, dict) else {}
-        installed_count = snapshot.get("installed_count")
-        draft_count = snapshot.get("draft_count")
-        installed_names = snapshot.get("installed_names") or []
-        draft_names = snapshot.get("draft_names") or []
-        draft_inventory_verified = bool(snapshot.get("draft_inventory_verified"))
-        force_sections = [
-            str(section or "").strip()
-            for section in list(policy.get("force_sections") or [])
-            if str(section or "").strip()
-        ]
-        followup_heading = (
-            "Wunsch-Skills"
-            if "Wunsch-Skills" in force_sections
-            else "Nächster Schritt"
-        )
-
-        if installed_count == 0:
-            runtime_line = "Runtime-Skills: Im Runtime-Skill-System sind aktuell keine installierten Skills vorhanden."
-        elif isinstance(installed_count, int) and installed_count > 0:
-            runtime_line = (
-                f"Runtime-Skills: Im Runtime-Skill-System sind aktuell {installed_count} installierte Skills vorhanden."
-            )
-            if installed_names:
-                runtime_line = runtime_line[:-1] + f": {', '.join(installed_names[:6])}."
-        else:
-            runtime_line = "Runtime-Skills: Der Runtime-Skill-Befund liegt verifiziert vor, aber ohne belastbare Zaehlung im Snapshot."
-
-        classification_parts = [
-            "Das bezieht sich nur auf installierte Runtime-Skills.",
-            "Built-in Tools und allgemeine Systemfaehigkeiten sind davon getrennt und werden nicht als installierte Skills gezaehlt.",
-        ]
-        if draft_inventory_verified and isinstance(draft_count, int):
-            if draft_count == 0:
-                classification_parts.append("Zusaetzlich sind aktuell keine Draft-Skills verifiziert.")
-            elif draft_names:
-                classification_parts.append(
-                    f"Getrennt davon sind aktuell {draft_count} Draft-Skills verifiziert: {', '.join(draft_names[:6])}."
-                )
-            else:
-                classification_parts.append(
-                    f"Getrennt davon sind aktuell {draft_count} Draft-Skills verifiziert."
-                )
-
-        strategy_hints = verified_plan.get("strategy_hints") if isinstance(verified_plan, dict) else []
-        normalized_hints = {
-            str(hint or "").strip().lower()
-            for hint in (strategy_hints if isinstance(strategy_hints, list) else [])
-            if str(hint or "").strip()
-        }
-        if (
-            draft_inventory_verified
-            or "draft_skills" in normalized_hints
-            or "tools_vs_skills" in normalized_hints
-        ):
-            if draft_inventory_verified:
-                classification_parts.append(
-                    "`list_skills` zeigt nur installierte Runtime-Skills; Draft-Skills werden dort deshalb nicht aufgefuehrt."
-                )
-            else:
-                classification_parts.append(
-                    "`list_skills` zeigt nur installierte Runtime-Skills; ob Draft-Skills in diesem Turn verifiziert vorhanden sind, ist ohne `list_draft_skills`-Evidence nicht belegt."
-                )
-        response = runtime_line + "\nEinordnung: " + " ".join(classification_parts)
-        if "fact_then_followup" in normalized_hints:
-            response += (
-                f"\n{followup_heading}: Wenn du Wunsch-Skills priorisieren willst, "
-                "nenne einen konkreten Use-Case; dann trenne ich Inventar und gewünschte Erweiterungen sauber."
-            )
-        return response
-
-    @staticmethod
-    def _extract_container_contract_snapshot(
-        verified_plan: Dict[str, Any],
-        evidence: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        policy = OutputLayer._get_container_query_policy(verified_plan)
-        snapshot: Dict[str, Any] = {
-            "query_class": str(policy.get("query_class") or "").strip().lower(),
-            "truth_mode": str(policy.get("truth_mode") or "").strip().lower(),
-            "containers": [],
-            "blueprints": [],
-            "binding_present": None,
-            "active_container": {},
-        }
-        for item in evidence or []:
-            if not isinstance(item, dict):
-                continue
-            tool_name = str(item.get("tool_name") or "").strip().lower()
-            status = str(item.get("status") or "").strip().lower()
-            structured = item.get("structured")
-            if status != "ok" or not isinstance(structured, dict):
-                continue
-            if tool_name == "container_list":
-                rows = structured.get("containers")
-                if isinstance(rows, list) and not snapshot["containers"]:
-                    snapshot["containers"] = [row for row in rows if isinstance(row, dict)]
-            elif tool_name == "container_inspect":
-                if not snapshot["active_container"] and str(structured.get("container_id") or "").strip():
-                    snapshot["active_container"] = {
-                        "container_id": str(structured.get("container_id") or "").strip(),
-                        "name": str(structured.get("name") or "").strip(),
-                        "blueprint_id": str(structured.get("blueprint_id") or "").strip(),
-                        "status": str(structured.get("status") or "").strip(),
-                        "running": bool(structured.get("running")),
-                    }
-            elif tool_name == "blueprint_list":
-                rows = structured.get("blueprints")
-                if isinstance(rows, list) and not snapshot["blueprints"]:
-                    snapshot["blueprints"] = [row for row in rows if isinstance(row, dict)]
-            elif tool_name == "conversation_state":
-                binding_present = structured.get("binding_present")
-                if isinstance(binding_present, bool):
-                    snapshot["binding_present"] = binding_present
-        return snapshot
-
-    @staticmethod
-    def _build_container_safe_fallback(
-        verified_plan: Dict[str, Any],
-        evidence: List[Dict[str, Any]],
-    ) -> str:
-        snapshot = OutputLayer._extract_container_contract_snapshot(verified_plan, evidence)
-        query_class = str(snapshot.get("query_class") or "").strip().lower()
-        containers = list(snapshot.get("containers") or [])
-        blueprints = list(snapshot.get("blueprints") or [])
-        binding_present = snapshot.get("binding_present")
-        active_container = snapshot.get("active_container") if isinstance(snapshot.get("active_container"), dict) else {}
-
-        if query_class == "container_inventory":
-            running = [row for row in containers if str(row.get("state") or row.get("status") or "").strip().lower() == "running"]
-            stopped = [row for row in containers if row not in running]
-            if running:
-                running_line = "Laufende Container: " + ", ".join(
-                    str(row.get("blueprint_id") or row.get("name") or "unbekannt").strip()
-                    for row in running[:6]
-                    if str(row.get("blueprint_id") or row.get("name") or "").strip()
-                ) + "."
-            else:
-                running_line = "Laufende Container: Keine laufenden Container verifiziert."
-            if stopped:
-                stopped_line = "Gestoppte Container: " + ", ".join(
-                    str(row.get("blueprint_id") or row.get("name") or "unbekannt").strip()
-                    for row in stopped[:8]
-                    if str(row.get("blueprint_id") or row.get("name") or "").strip()
-                ) + "."
-            else:
-                stopped_line = "Gestoppte Container: Keine gestoppten Container verifiziert."
-            return (
-                running_line
-                + "\n"
-                + stopped_line
-                + "\nEinordnung: Das ist ein Runtime-Inventar-Befund und keine Blueprint-Liste."
-            )
-
-        if query_class == "container_blueprint_catalog":
-            if blueprints:
-                catalog_line = "Verfuegbare Blueprints: " + ", ".join(
-                    str(row.get("name") or row.get("id") or "unbekannt").strip()
-                    for row in blueprints[:8]
-                    if str(row.get("name") or row.get("id") or "").strip()
-                ) + "."
-            else:
-                catalog_line = "Verfuegbare Blueprints: Keine Blueprints verifiziert."
-            return (
-                catalog_line
-                + "\nEinordnung: Das ist ein Blueprint-Katalog-Befund; daraus folgt keine Aussage ueber aktuell laufende oder installierte Container."
-            )
-
-        if query_class == "container_state_binding":
-            active_label = str(
-                active_container.get("blueprint_id")
-                or active_container.get("name")
-                or active_container.get("container_id")
-                or ""
-            ).strip()
-            active_line = "Aktiver Container: nicht verifiziert."
-            if active_label:
-                active_line = f"Aktiver Container: {active_label}."
-            elif binding_present is True:
-                active_line = "Aktiver Container: Ein aktives Binding ist verifiziert, aber ohne belastbaren Containernamen im Snapshot."
-            running = [row for row in containers if str(row.get("state") or row.get("status") or "").strip().lower() == "running"]
-            active_status = str(active_container.get("status") or "").strip().lower()
-            if active_label and binding_present is True:
-                binding_line = (
-                    f"Binding/Status: Ein aktives Session-Binding auf {active_label} ist verifiziert; "
-                    f"Runtime-Status: {active_status or 'unbekannt'}."
-                )
-            elif active_label:
-                binding_line = (
-                    f"Binding/Status: Runtime-Status des aktiven Ziels {active_label}: "
-                    f"{active_status or 'unbekannt'}."
-                )
-            elif binding_present is False and not running:
-                binding_line = "Binding/Status: Fuer diesen Check ist kein aktives Session-Binding verifiziert; laufende TRION-managed Container sind derzeit nicht belegt."
-            elif running:
-                binding_line = "Binding/Status: Laufende TRION-managed Container: " + ", ".join(
-                    str(row.get("blueprint_id") or row.get("name") or "unbekannt").strip()
-                    for row in running[:6]
-                    if str(row.get("blueprint_id") or row.get("name") or "").strip()
-                ) + "."
-            else:
-                binding_line = "Binding/Status: Fuer diesen Check liegt kein belastbarer Binding-/Status-Befund vor."
-            return (
-                active_line
-                + "\n"
-                + binding_line
-                + "\nEinordnung: Binding, Runtime-Inventar und Blueprint-Katalog bleiben getrennt."
-            )
-
-        return ""
-
-    @staticmethod
-    def _locate_skill_catalog_sections(answer: str) -> Dict[str, int]:
-        text = str(answer or "")
-        patterns = {
-            "runtime_skills": r"(^|\n)\s*(?:#{1,6}\s*)?runtime[- ]skills\b\s*:?",
-            "einordnung": r"(^|\n)\s*(?:#{1,6}\s*)?einordnung\b\s*:?",
-            "next_step": r"(^|\n)\s*(?:#{1,6}\s*)?(?:naechster|nächster)\s+schritt\b\s*:?",
-            "wish_skills": r"(^|\n)\s*(?:#{1,6}\s*)?wunsch[- ]skills\b\s*:?",
-        }
-        hits: Dict[str, int] = {}
-        for key, pattern in patterns.items():
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                hits[key] = match.start()
-        return hits
-
-    @staticmethod
-    def _evaluate_skill_catalog_semantic_leakage(
-        answer: str,
-        verified_plan: Dict[str, Any],
-        evidence: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        if not OutputLayer._is_skill_catalog_context_plan(verified_plan):
-            return {"violated": False}
-
-        answer_text = str(answer or "").strip()
-        if not answer_text:
-            return {"violated": False}
-
-        answer_lower = answer_text.lower()
-        normalized = OutputLayer._normalize_semantic_text(answer_text)
-        sections = OutputLayer._locate_skill_catalog_sections(answer_text)
-        runtime_idx = sections.get("runtime_skills", -1)
-        einordnung_idx = sections.get("einordnung", -1)
-        followup_idx = min(
-            [idx for idx in [sections.get("next_step", -1), sections.get("wish_skills", -1)] if idx >= 0],
-            default=-1,
-        )
-        verified_session_evidence = bool(
-            OutputLayer._extract_skill_catalog_snapshot(verified_plan, evidence).get("session_skills_verified")
-        )
-        skill_snapshot = OutputLayer._extract_skill_catalog_snapshot(verified_plan, evidence)
-        draft_inventory_verified = bool(skill_snapshot.get("draft_inventory_verified"))
-        strategy_hints = verified_plan.get("strategy_hints") if isinstance(verified_plan, dict) else []
-        normalized_hints = {
-            str(hint or "").strip().lower()
-            for hint in (strategy_hints if isinstance(strategy_hints, list) else [])
-            if str(hint or "").strip()
-        }
-
-        if runtime_idx < 0:
-            return {
-                "violated": True,
-                "reason": "missing_runtime_section",
-                "details": "runtime section missing",
-            }
-
-        free_persona_patterns = [
-            r"ich habe trotzdem grundlegende faehigkeiten",
-            r"grundlegende faehigkeiten",
-            r"eigenes denken",
-            r"mein koerper",
-            r"\bich kann denken\b",
-        ]
-        for pattern in free_persona_patterns:
-            if re.search(pattern, normalized):
-                return {
-                    "violated": True,
-                    "reason": "free_self_description",
-                    "details": pattern,
-                }
-
-        session_patterns = [
-            r"session-skills?",
-            r"system-skills?",
-            r"session-/system-skills?",
-            r"skill\.md",
-            r"codex-skills?",
-        ]
-        if not verified_session_evidence:
-            for pattern in session_patterns:
-                if re.search(pattern, normalized):
-                    return {
-                        "violated": True,
-                        "reason": "unverified_session_system_skills",
-                        "details": pattern,
-                    }
-
-        tool_markers = [
-            r"\bbuilt-?in\b",
-            r"\btools?\b",
-            r"\bmcp\b",
-            r"\bmemory\b",
-            r"skill-erstellung",
-            r"faehigkeiten",
-        ]
-        for pattern in tool_markers:
-            match = re.search(pattern, normalized)
-            if not match:
-                continue
-            marker_pos = answer_lower.find(match.group(0).lower())
-            if einordnung_idx < 0 or (marker_pos >= 0 and marker_pos < einordnung_idx):
-                return {
-                    "violated": True,
-                    "reason": "runtime_tool_category_leakage",
-                    "details": match.group(0),
-                }
-
-        if "tools_vs_skills" in normalized_hints and einordnung_idx >= 0:
-            section_end = followup_idx if followup_idx > einordnung_idx else len(answer_text)
-            classification_text = answer_text[einordnung_idx:section_end]
-            classification_normalized = OutputLayer._normalize_semantic_text(classification_text)
-            has_built_in_boundary = bool(
-                re.search(r"\bbuilt-?in\b", classification_normalized)
-                or re.search(r"\btools?\b", classification_normalized)
-            )
-            capability_style_examples = bool(
-                re.search(r"\b(zum beispiel|beispielsweise|etwa)\b", classification_normalized)
-            )
-            core_ability_framing = bool(
-                re.search(
-                    r"basis-infrastruktur|kernfaehig|direkt in meiner|gehoeren zu meinen",
-                    classification_normalized,
-                )
-            )
-            if has_built_in_boundary and capability_style_examples and core_ability_framing:
-                return {
-                    "violated": True,
-                    "reason": "built_in_capability_style_drift",
-                    "details": "capability-style built-in/self description in tools-vs-skills turn",
-                }
-
-        policy = (
-            verified_plan.get("_skill_catalog_policy")
-            if isinstance(verified_plan, dict)
-            else {}
-        )
-        policy = policy if isinstance(policy, dict) else {}
-        if str(policy.get("mode") or "").strip().lower() == "inventory_read_only":
-            action_offer_patterns = [
-                r"moechtest du[, ]+dass ich",
-                r"möchtest du[, ]+dass ich",
-                r"soll ich (?:einen|einen speziellen|einen neuen)?\s*skill",
-                r"ich kann (?:dir |auch )?(?:einen|einen speziellen|einen neuen)?\s*skill (?:entwickeln|erstellen|bauen|schreiben)",
-                r"(?:einen|einen speziellen|einen neuen)?\s*skill (?:entwickeln|erstellen|bauen|schreiben)",
-                r"hast du eine konkrete aufgabe im sinn",
-                r"wenn du willst[, ]+",
-            ]
-            for pattern in action_offer_patterns:
-                if re.search(pattern, normalized):
-                    return {
-                        "violated": True,
-                        "reason": "unsolicited_action_offer",
-                        "details": pattern,
-                    }
-
-        if not draft_inventory_verified:
-            has_draft_reference = bool(
-                re.search(r"draft[- ]skills?", normalized)
-                or re.search(r"\bdrafts?\b", normalized)
-            )
-            draft_state_claim = bool(
-                re.search(
-                    r"draft[- ]skills?\s+sind aktuell|keine\s+draft[- ]skills?|draft[- ]skills?:|verifiziert|verfuegbar|vorhanden|explizit",
-                    normalized,
-                )
-            )
-            if has_draft_reference and draft_state_claim:
-                return {
-                    "violated": True,
-                    "reason": "draft_claim_without_inventory_evidence",
-                    "details": "draft state claim without list_draft_skills evidence",
-                }
-
-        if "fact_then_followup" in normalized_hints:
-            brainstorming_patterns = [
-                r"haette gerne",
-                r"hätte gerne",
-                r"haettest du gerne",
-                r"hättest du gerne",
-                r"wuensche",
-                r"wünsche",
-                r"wuensch",
-                r"wünsch",
-                r"waere hilfreich",
-                r"wäre hilfreich",
-                r"priorisieren",
-                r"fehlen wuerde",
-                r"fehlen würde",
-            ]
-            if any(re.search(pattern, answer_text, re.IGNORECASE) for pattern in brainstorming_patterns):
-                if followup_idx < 0:
-                    return {
-                        "violated": True,
-                        "reason": "followup_not_split",
-                        "details": "brainstorm content without marked follow-up section",
-                    }
-
-        return {"violated": False}
-
-    @staticmethod
-    def _evaluate_container_contract_leakage(
-        answer: str,
-        verified_plan: Dict[str, Any],
-        evidence: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        if not OutputLayer._is_container_query_contract_plan(verified_plan):
-            return {"violated": False}
-
-        answer_text = str(answer or "").strip()
-        if not answer_text:
-            return {"violated": False}
-
-        snapshot = OutputLayer._extract_container_contract_snapshot(verified_plan, evidence)
-        query_class = str(snapshot.get("query_class") or "").strip().lower()
-        answer_norm = OutputLayer._normalize_semantic_text(answer_text)
-        tool_names = {
-            str((item or {}).get("tool_name") or "").strip().lower()
-            for item in evidence
-            if isinstance(item, dict)
-        }
-
-        if query_class == "container_blueprint_catalog" and "container_list" not in tool_names:
-            runtime_markers = (
-                "laufende container",
-                "running container",
-                "running containers",
-                "gestoppte container",
-                "stopped container",
-                "stopped containers",
-                "aktiver container",
-                "session-binding",
-                "session binding",
-                "runtime-inventar: leer",
-                "keine laufenden container",
-            )
-            if any(marker in answer_norm for marker in runtime_markers):
-                return {
-                    "violated": True,
-                    "reason": "blueprint_runtime_leakage",
-                }
-
-        if query_class == "container_state_binding":
-            unsupported_action_markers = (
-                "frage gerne",
-                "wenn du willst",
-                "starte ",
-                "start-instruktion",
-                "manuelle container-start",
-                "neu starten",
-            )
-            if any(marker in answer_norm for marker in unsupported_action_markers):
-                return {
-                    "violated": True,
-                    "reason": "binding_action_leakage",
-                }
-            unsupported_time_markers = (
-                " vor etwa ",
-                " seit ",
-                " tage",
-                " tagen",
-                " stunden",
-                " minuten",
-            )
-            normalized_padded = f" {answer_norm} "
-            if any(marker in normalized_padded for marker in unsupported_time_markers):
-                return {
-                    "violated": True,
-                    "reason": "binding_time_leakage",
-                }
-            allowed_binding_ids = set()
-            active_container = snapshot.get("active_container") if isinstance(snapshot.get("active_container"), dict) else {}
-            for candidate in (
-                active_container.get("blueprint_id"),
-                active_container.get("name"),
-                active_container.get("container_id"),
-            ):
-                normalized = OutputLayer._normalize_semantic_text(str(candidate or "").strip())
-                if normalized:
-                    allowed_binding_ids.add(normalized)
-            for row in containers:
-                if not isinstance(row, dict):
-                    continue
-                for candidate in (
-                    row.get("blueprint_id"),
-                    row.get("name"),
-                    row.get("container_id"),
-                ):
-                    normalized = OutputLayer._normalize_semantic_text(str(candidate or "").strip())
-                    if normalized:
-                        allowed_binding_ids.add(normalized)
-            answer_ids = {
-                OutputLayer._normalize_semantic_text(match.group(0))
-                for match in re.finditer(r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b", answer_norm)
-            }
-            ignored_binding_ids = {
-                "session-binding",
-                "container-state",
-                "runtime-status",
-            }
-            leaked_ids = sorted(
-                candidate
-                for candidate in answer_ids
-                if candidate
-                and candidate not in ignored_binding_ids
-                and candidate not in allowed_binding_ids
-            )
-            if leaked_ids:
-                return {
-                    "violated": True,
-                    "reason": "binding_profile_leakage",
-                    "details": ", ".join(leaked_ids[:4]),
-                }
-
-        return {"violated": False}
-
-    @staticmethod
     def _build_grounding_fallback(
         evidence: List[Dict[str, Any]],
         *,
         mode: str = "explicit_uncertainty",
     ) -> str:
-        mode = str(mode or "explicit_uncertainty").strip().lower()
-        usable = []
-        for item in evidence:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("status", "")).strip().lower() != "ok":
-                continue
-            tool = str(item.get("tool_name", "tool")).strip()
-            fact = OutputLayer._summarize_evidence_item(item)
-            if fact:
-                usable.append((tool, fact))
-            if len(usable) >= 3:
-                break
-
-        if mode == "summarize_evidence" and usable:
-            lines = [f"- {tool}: {fact}" for tool, fact in usable]
-            return "Verifizierte Ergebnisse:\n" + "\n".join(lines)
-
-        if usable:
-            lines = [f"- {tool}: {fact}" for tool, fact in usable]
-            return (
-                "Ich kann nur verifizierte Fakten aus den Tool-Ergebnissen ausgeben.\n"
-                + "\n".join(lines)
-                + "\nNicht belegbare Zusatzangaben lasse ich weg."
-            )
-
-        return (
-            "Ich habe aktuell keinen verifizierten Tool-Nachweis für eine belastbare Faktenantwort. "
-            "Bitte Tool-Abfrage erneut ausführen."
-        )
+        return build_grounding_fallback(evidence, mode=mode)
 
     @staticmethod
     def _build_tool_failure_fallback(evidence: List[Dict[str, Any]]) -> str:
-        issues = []
-        for item in evidence:
-            if not isinstance(item, dict):
-                continue
-            status = str(item.get("status", "")).strip().lower()
-            if status not in {"error", "skip", "partial", "unavailable", "routing_block"}:
-                continue
-            if status == "routing_block":
-                continue
-            tool = str(item.get("tool_name", "tool")).strip()
-            fact = OutputLayer._summarize_evidence_item(item)
-            if not fact:
-                continue
-            issues.append((tool, status, fact))
-            if len(issues) >= 3:
-                break
-
-        if not issues:
-            return (
-                "Tool-Ausführung war nicht erfolgreich, aber die Fehlermeldung ist unvollständig. "
-                "Bitte Anfrage mit denselben Parametern erneut ausführen."
-            )
-
-        lines = [f"- {tool} [{status}]: {fact}" for tool, status, fact in issues]
-        return (
-            "Tool-Ausführung fehlgeschlagen:\n"
-            + "\n".join(lines)
-            + "\nBitte Parameter korrigieren oder den vorgeschlagenen sicheren Fallback bestätigen."
-        )
+        return build_tool_failure_fallback(evidence)
 
     def _grounding_precheck(
         self,
@@ -1677,7 +722,7 @@ class OutputLayer:
         self._set_runtime_grounding_value(
             verified_plan, execution_result, "tool_execution_failed", False
         )
-        if self._is_skill_catalog_context_plan(verified_plan):
+        if is_skill_catalog_context_plan(verified_plan):
             skill_ctx = verified_plan.get("_skill_catalog_context")
             skill_ctx = skill_ctx if isinstance(skill_ctx, dict) else {}
             selected_doc_ids = list(skill_ctx.get("selected_doc_ids") or [])
@@ -1687,7 +732,7 @@ class OutputLayer:
                     for part in str(skill_ctx.get("selected_docs") or "").split(",")
                     if str(part or "").strip()
                 ]
-            self._update_skill_catalog_trace(
+            update_skill_catalog_trace(
                 verified_plan,
                 selected_hints=list(verified_plan.get("strategy_hints") or []),
                 selected_docs=selected_doc_ids,
@@ -1857,8 +902,8 @@ class OutputLayer:
         self._set_runtime_grounding_value(
             verified_plan, execution_result, "repair_attempted", True
         )
-        if self._is_container_query_contract_plan(verified_plan):
-            repaired = self._build_container_safe_fallback(verified_plan, evidence)
+        if is_container_query_contract_plan(verified_plan):
+            repaired = build_container_safe_fallback(verified_plan, evidence)
             repaired_text = str(repaired or "").strip()
             if repaired_text:
                 self._set_runtime_grounding_value(
@@ -1997,7 +1042,7 @@ class OutputLayer:
                 f"fact_query evidence present but no extractable content; "
                 f"tools={[e.get('tool_name') for e in evidence]}"
             )
-        if self._is_skill_catalog_context_plan(verified_plan):
+        if is_skill_catalog_context_plan(verified_plan):
             skill_ctx = verified_plan.get("_skill_catalog_context")
             skill_ctx = skill_ctx if isinstance(skill_ctx, dict) else {}
             selected_doc_ids = list(skill_ctx.get("selected_doc_ids") or [])
@@ -2007,7 +1052,7 @@ class OutputLayer:
                     for part in str(skill_ctx.get("selected_docs") or "").split(",")
                     if str(part or "").strip()
                 ]
-            self._update_skill_catalog_trace(
+            update_skill_catalog_trace(
                 verified_plan,
                 selected_hints=list(verified_plan.get("strategy_hints") or []),
                 selected_docs=selected_doc_ids,
@@ -2045,7 +1090,7 @@ class OutputLayer:
                     return repaired
                 return self._build_grounding_fallback(evidence, mode=fallback_mode)
 
-        skill_catalog_result = self._evaluate_skill_catalog_semantic_leakage(
+        skill_catalog_result = evaluate_skill_catalog_semantic_leakage(
             answer=answer,
             verified_plan=verified_plan,
             evidence=evidence,
@@ -2069,11 +1114,11 @@ class OutputLayer:
                 "skill_catalog_violation",
                 skill_catalog_result
             )
-            self._update_skill_catalog_trace(
+            update_skill_catalog_trace(
                 verified_plan,
                 postcheck=f"repaired:{skill_catalog_result.get('reason')}",
             )
-            repaired = self._build_skill_catalog_safe_fallback(verified_plan, evidence)
+            repaired = build_skill_catalog_safe_fallback(verified_plan, evidence)
             repaired_text = str(repaired or "").strip()
             if repaired_text:
                 self._set_runtime_grounding_value(
@@ -2087,13 +1132,13 @@ class OutputLayer:
                     f"reason={skill_catalog_result.get('reason')}"
                 )
                 return repaired_text
-            self._update_skill_catalog_trace(
+            update_skill_catalog_trace(
                 verified_plan,
                 postcheck="fallback_summary",
             )
             return self._build_grounding_fallback(evidence, mode="summarize_evidence")
 
-        container_result = self._evaluate_container_contract_leakage(
+        container_result = evaluate_container_contract_leakage(
             answer=answer,
             verified_plan=verified_plan,
             evidence=evidence,
@@ -2111,7 +1156,7 @@ class OutputLayer:
                 "fallback_used",
                 True
             )
-            repaired = self._build_container_safe_fallback(verified_plan, evidence)
+            repaired = build_container_safe_fallback(verified_plan, evidence)
             repaired_text = str(repaired or "").strip()
             if repaired_text:
                 self._set_runtime_grounding_value(
@@ -2174,8 +1219,8 @@ class OutputLayer:
                     return repaired
                 return self._build_grounding_fallback(evidence, mode=fallback_mode)
 
-        if self._is_skill_catalog_context_plan(verified_plan):
-            self._update_skill_catalog_trace(
+        if is_skill_catalog_context_plan(verified_plan):
+            update_skill_catalog_trace(
                 verified_plan,
                 postcheck="passed",
             )
@@ -2208,8 +1253,8 @@ class OutputLayer:
         # skill_catalog_context and strict container contracts keep repair
         # invisible to the user while still preserving postcheck/trace observability.
         return (
-            cls._is_skill_catalog_context_plan(verified_plan)
-            or cls._is_container_query_contract_plan(verified_plan)
+            is_skill_catalog_context_plan(verified_plan)
+            or is_container_query_contract_plan(verified_plan)
             or is_analysis_turn_guard_applicable(
                 verified_plan,
                 output_cfg=precheck_policy,
@@ -2388,31 +1433,16 @@ class OutputLayer:
         memory_required_but_missing: bool = False,
         chat_history: list = None
     ) -> List[Dict[str, str]]:
-        """Baut Messages-Array für /api/chat (statt prompt für /api/generate)."""
-        
-        needs_chat_history = verified_plan.get("needs_chat_history", False)
-        system_prompt = self.build_system_prompt(
-            verified_plan, memory_data, memory_required_but_missing,
-            needs_chat_history=needs_chat_history
-        )
-        
-        messages = [{"role": "system", "content": system_prompt}]
-        
-        # Chat-History einbauen
-        if chat_history and len(chat_history) > 1:
-            history_to_show = chat_history[-11:-1] if len(chat_history) > 11 else chat_history[:-1]
-            for msg in history_to_show:
-                role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
-                content = msg.content
-                if role == "user":
-                    messages.append({"role": "user", "content": content})
-                elif role == "assistant":
-                    messages.append({"role": "assistant", "content": content})
-        
-        # Aktuelle User-Nachricht — single-truth: no duplicate tool/protocol injection here.
-        messages.append({"role": "user", "content": user_text})
+        """Delegate to core.layers.output.prompt.system_prompt."""
+        from core.layers.output.prompt.system_prompt import build_messages
 
-        return messages
+        return build_messages(
+            user_text,
+            verified_plan,
+            memory_data=memory_data,
+            memory_required_but_missing=memory_required_but_missing,
+            chat_history=chat_history,
+        )
     
     # ═══════════════════════════════════════════════════════════
     # ASYNC STREAMING WITH TOOL LOOP
@@ -2530,7 +1560,7 @@ class OutputLayer:
                     f"endpoint_source={route['endpoint_source']}"
                 )
                 if route["hard_error"]:
-                    yield "Entschuldigung, Output-Compute ist aktuell nicht verfügbar."
+                    yield output_notice("output_error_compute_unavailable")
                     return
                 endpoint = route["endpoint"] or self.ollama_base
             else:
@@ -2577,12 +1607,7 @@ class OutputLayer:
                     yield chunk
 
             if truncated:
-                trunc_note = (
-                    "\n\n[Antwort gekürzt: Interaktiv-Budget erreicht. "
-                    "Wenn du willst, führe ich direkt fort.]"
-                    if response_mode != "deep"
-                    else "\n\n[Antwort gekürzt: Deep-Mode Output-Budget erreicht.]"
-                )
+                trunc_note = output_truncation_note(response_mode)
                 if buffer_for_postcheck:
                     buffered_chunks.append(trunc_note)
                 else:
@@ -2619,7 +1644,7 @@ class OutputLayer:
                             yield part
                 elif changed:
                     # Stream-first behavior: preserve low TTFT, append correction only when needed.
-                    yield "\n\n[Grounding-Korrektur]\n"
+                    yield output_grounding_correction_marker()
                     yield checked
             
             log_info(
@@ -2629,19 +1654,19 @@ class OutputLayer:
                 
         except httpx.TimeoutException:
             log_error(f"[OutputLayer] Stream Timeout nach {timeout_s:.0f}s")
-            yield "Entschuldigung, die Anfrage hat zu lange gedauert."
+            yield output_notice("output_error_timeout")
         except httpx.HTTPStatusError as e:
             log_error(f"[OutputLayer] Stream HTTP Error: {e.response.status_code}")
-            yield f"Entschuldigung, Server-Fehler: {e.response.status_code}"
+            yield output_notice("output_error_server", status_code=e.response.status_code)
         except (httpx.ReadError, httpx.RemoteProtocolError) as e:
             log_error(f"[OutputLayer] Stream disconnected: {e}")
-            yield "Verbindung zum Model wurde unterbrochen. Bitte Anfrage erneut senden."
+            yield output_notice("output_error_disconnected")
         except httpx.ConnectError as e:
             log_error(f"[OutputLayer] Connection Error: {e}")
-            yield "Entschuldigung, konnte keine Verbindung zum Model herstellen."
+            yield output_notice("output_error_connect")
         except Exception as e:
             log_error(f"[OutputLayer] Error: {type(e).__name__}: {e}")
-            yield f"Entschuldigung, es gab einen Fehler: {str(e)}"
+            yield output_notice("output_error_generic", error=str(e))
 
     async def generate_stream_events(
         self,
@@ -2738,7 +1763,7 @@ class OutputLayer:
                     f"endpoint_source={route['endpoint_source']}"
                 )
                 if route["hard_error"]:
-                    yield {"type": "content", "chunk": "Entschuldigung, Output-Compute ist aktuell nicht verfügbar."}
+                    yield {"type": "content", "chunk": output_notice("output_error_compute_unavailable")}
                     return
                 endpoint = route["endpoint"] or self.ollama_base
             else:
@@ -2790,12 +1815,7 @@ class OutputLayer:
                     yield {"type": "content", "chunk": chunk}
 
             if truncated:
-                trunc_note = (
-                    "\n\n[Antwort gekürzt: Interaktiv-Budget erreicht. "
-                    "Wenn du willst, führe ich direkt fort.]"
-                    if response_mode != "deep"
-                    else "\n\n[Antwort gekürzt: Deep-Mode Output-Budget erreicht.]"
-                )
+                trunc_note = output_truncation_note(response_mode)
                 if buffer_for_postcheck:
                     buffered_chunks.append(trunc_note)
                 else:
@@ -2831,7 +1851,7 @@ class OutputLayer:
                         for part in buffered_chunks:
                             yield {"type": "content", "chunk": part}
                 elif changed:
-                    yield {"type": "content", "chunk": "\n\n[Grounding-Korrektur]\n"}
+                    yield {"type": "content", "chunk": output_grounding_correction_marker()}
                     yield {"type": "content", "chunk": checked}
 
             log_info(
@@ -2841,19 +1861,19 @@ class OutputLayer:
 
         except httpx.TimeoutException:
             log_error(f"[OutputLayer] Stream Timeout nach {timeout_s:.0f}s")
-            yield {"type": "content", "chunk": "Entschuldigung, die Anfrage hat zu lange gedauert."}
+            yield {"type": "content", "chunk": output_notice("output_error_timeout")}
         except httpx.HTTPStatusError as e:
             log_error(f"[OutputLayer] Stream HTTP Error: {e.response.status_code}")
-            yield {"type": "content", "chunk": f"Entschuldigung, Server-Fehler: {e.response.status_code}"}
+            yield {"type": "content", "chunk": output_notice("output_error_server", status_code=e.response.status_code)}
         except (httpx.ReadError, httpx.RemoteProtocolError) as e:
             log_error(f"[OutputLayer] Stream disconnected: {e}")
-            yield {"type": "content", "chunk": "Verbindung zum Model wurde unterbrochen. Bitte Anfrage erneut senden."}
+            yield {"type": "content", "chunk": output_notice("output_error_disconnected")}
         except httpx.ConnectError as e:
             log_error(f"[OutputLayer] Connection Error: {e}")
-            yield {"type": "content", "chunk": "Entschuldigung, konnte keine Verbindung zum Model herstellen."}
+            yield {"type": "content", "chunk": output_notice("output_error_connect")}
         except Exception as e:
             log_error(f"[OutputLayer] Error: {type(e).__name__}: {e}")
-            yield {"type": "content", "chunk": f"Entschuldigung, es gab einen Fehler: {str(e)}"}
+            yield {"type": "content", "chunk": output_notice("output_error_generic", error=str(e))}
     
     async def _chat_check_tools(
         self, 
@@ -2914,27 +1934,16 @@ class OutputLayer:
         memory_required_but_missing: bool = False,
         chat_history: list = None
     ) -> str:
-        """Legacy prompt builder für /api/generate Kompatibilität."""
-        needs_chat_history = verified_plan.get("needs_chat_history", False)
-        system_prompt = self.build_system_prompt(
-            verified_plan, memory_data, memory_required_but_missing,
-            needs_chat_history=needs_chat_history
+        """Delegate to core.layers.output.prompt.system_prompt."""
+        from core.layers.output.prompt.system_prompt import build_full_prompt
+
+        return build_full_prompt(
+            user_text,
+            verified_plan,
+            memory_data=memory_data,
+            memory_required_but_missing=memory_required_but_missing,
+            chat_history=chat_history,
         )
-        prompt_parts = [system_prompt]
-        
-        if chat_history and len(chat_history) > 1:
-            prompt_parts.append("\n\n### BISHERIGE KONVERSATION:")
-            history_to_show = chat_history[-11:-1] if len(chat_history) > 11 else chat_history[:-1]
-            for msg in history_to_show:
-                role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
-                if role == "user":
-                    prompt_parts.append(f"USER: {msg.content}")
-                elif role == "assistant":
-                    prompt_parts.append(f"ASSISTANT: {msg.content}")
-        
-        prompt_parts.append(f"\n\n### USER:\n{user_text}")
-        prompt_parts.append("\n\n### DEINE ANTWORT:")
-        return "\n".join(prompt_parts)
     
     # ═══════════════════════════════════════════════════════════
     # SYNC STREAMING (Legacy SSE-Kompatibilität)
@@ -2996,10 +2005,7 @@ class OutputLayer:
                 f"[OutputLayer] Sync stream path only supports ollama right now "
                 f"(provider={provider}, model={model})"
             )
-            yield (
-                "Cloud-Provider ist aktiv. Dieser Legacy-Sync-Stream ist nur für Ollama verfügbar. "
-                "Bitte nutze den normalen Streaming-Chatpfad."
-            )
+            yield output_notice("output_sync_cloud_provider")
             return
         postcheck_policy = precheck.get("policy") or {}
         postcheck_enabled = self._stream_postcheck_enabled(precheck)
@@ -3041,7 +2047,7 @@ class OutputLayer:
                 f"endpoint_source={route['endpoint_source']}"
             )
             if route["hard_error"]:
-                yield "Fehler: Output-Compute nicht verfuegbar."
+                yield output_notice("output_error_sync_compute_unavailable")
                 return
             endpoint = route["endpoint"] or self.ollama_base
 
@@ -3093,12 +2099,7 @@ class OutputLayer:
                                 continue
 
             if truncated:
-                trunc_note = (
-                    "\n\n[Antwort gekürzt: Interaktiv-Budget erreicht. "
-                    "Wenn du willst, führe ich direkt fort.]"
-                    if response_mode != "deep"
-                    else "\n\n[Antwort gekürzt: Deep-Mode Output-Budget erreicht.]"
-                )
+                trunc_note = output_truncation_note(response_mode)
                 if buffer_for_postcheck:
                     buffered_chunks.append(trunc_note)
                 else:
@@ -3134,7 +2135,7 @@ class OutputLayer:
                         for part in buffered_chunks:
                             yield part
                 elif changed:
-                    yield "\n\n[Grounding-Korrektur]\n"
+                    yield output_grounding_correction_marker()
                     yield checked
             
             log_info(
@@ -3144,7 +2145,7 @@ class OutputLayer:
             
         except Exception as e:
             log_error(f"[OutputLayer] Sync stream error: {e}")
-            yield f"Fehler: {str(e)}"
+            yield output_notice("output_error_sync_generic", error=str(e))
 
     async def generate(
         self,

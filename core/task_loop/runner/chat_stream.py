@@ -17,6 +17,7 @@ from core.task_loop.contracts import (
     transition_task_loop_step,
 )
 from core.task_loop.events import TaskLoopEventType, make_task_loop_event
+from core.task_loop.completion_policy import build_completion_message
 from core.task_loop.reflection import ReflectionAction, reflect_after_chat_step
 from core.task_loop.runner.chat_async import _run_chat_auto_loop_step_async
 from core.task_loop.runner.chat_sync import _effective_max_steps, _run_chat_auto_loop_step
@@ -30,7 +31,6 @@ from core.task_loop.runner.messages import (
 from core.task_loop.runner.snapshot_state import (
     _append_visible_content,
     _done_reason_for_stop,
-    _format_plan,
     _inject_follow_up_step,
     _merge_verified_artifacts,
     _prime_next_step,
@@ -589,7 +589,7 @@ async def _stream_chat_auto_loop_step_async(
     if decision.action is ReflectionAction.COMPLETED:
         completed = transition_task_loop(reflecting, TaskLoopState.COMPLETED)
         answered_events.append(make_task_loop_event(TaskLoopEventType.COMPLETED, completed))
-        tail = "\nFinaler Planstatus:\n" + _format_plan(completed) + "\n\nTask-Loop abgeschlossen."
+        tail = build_completion_message(completed)
         final_snapshot = replace(
             completed,
             last_user_visible_answer=_append_visible_content(current_content, streamed_step_content + tail),

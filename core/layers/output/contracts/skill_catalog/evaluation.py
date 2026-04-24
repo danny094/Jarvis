@@ -11,6 +11,8 @@ Prompt-Regeln, Postcheck und Safe-Fallback für Skill-Catalog-Turns.
 import re
 from typing import Any, Dict, List
 
+from intelligence_modules.prompt_manager import load_prompt
+
 from core.layers.output.analysis.qualitative import normalize_semantic_text, to_int
 from core.layers.output.contracts.skill_catalog.snapshot import extract_skill_catalog_snapshot
 from core.layers.output.contracts.skill_catalog.trace import is_skill_catalog_context_plan
@@ -52,33 +54,19 @@ def build_skill_catalog_prompt_rules(verified_plan: Dict[str, Any]) -> List[str]
         else "Nächster Schritt"
     )
 
-    prompt_lines = [
-        "\n### SKILL-SEMANTIK:",
-        "`list_skills` beschreibt nur installierte Runtime-Skills, nicht die komplette Fähigkeitswelt.",
-        "Trenne in der Antwort Runtime-Skills, Draft Skills und Built-in Tools explizit, wenn mehr als eine Ebene gemeint ist.",
-        "Built-in Tools dürfen nicht als installierte Skills formuliert werden.",
-        "Session- oder System-Skills nur nennen, wenn sie im Kontext ausdrücklich belegt sind.",
-        "Allgemeine Agentenfähigkeiten dürfen nicht als Skill-Liste ausgegeben werden.",
-        "Vermeide anthropomorphe Metaphern oder Persona-Zusätze in faktischen Skill-Antworten.",
-        "\n### SKILL-KATALOG-ANTWORTMODUS:",
-        "Antworte für diesen Strategy-Typ in markierten Kurzabschnitten.",
-        f"Pflichtreihenfolge: `Runtime-Skills`, dann `Einordnung`, danach optional `{followup_heading}`.",
-        "Der erste Satz im Abschnitt `Runtime-Skills` muss den Runtime-Befund als autoritativen Inventar-Befund benennen.",
-        "Im Abschnitt `Runtime-Skills` keine Built-in Tools, keine allgemeinen Fähigkeiten, keine Draft-Skills und keine Wunsch-/Aktionsanteile nennen.",
-        "Wenn du Built-in Tools erwähnst, dann ausschließlich im explizit markierten Abschnitt `Einordnung`.",
-        "Keine unmarkierte Freitext-Liste mit Fähigkeiten, Tools oder Persona-Eigenschaften anhängen.",
-    ]
+    required_tools_line = ""
     if required_tools:
-        prompt_lines.append(
+        required_tools_line = (
             "Verbindlicher Skill-Catalog-Contract fuer diesen Turn: "
             f"Inventar-Aussagen nur auf {', '.join(f'`{tool}`' for tool in required_tools)} stützen."
         )
+    installed_count_line = ""
     if installed_count == 0:
-        prompt_lines.append(
+        installed_count_line = (
             "Wenn keine Runtime-Skills vorhanden sind, formuliere das explizit als Runtime-Befund, z. B. `Im Runtime-Skill-System sind aktuell keine installierten Skills vorhanden.`"
         )
     elif installed_count is not None:
-        prompt_lines.append(
+        installed_count_line = (
             f"Der Runtime-Befund muss sich auf den verifizierten Snapshot beziehen: aktuell {installed_count} installierte Runtime-Skills."
         )
 
@@ -93,47 +81,51 @@ def build_skill_catalog_prompt_rules(verified_plan: Dict[str, Any]) -> List[str]
         or "tools_vs_skills" in normalized_hints
         or to_int(ctx.get("draft_count")) is not None
     )
-    if bool(policy.get("followup_split_required")) or "fact_then_followup" in normalized_hints:
-        prompt_lines.append(
+    followup_split_lines: List[str] = []
+    followup_split_required = bool(policy.get("followup_split_required")) or "fact_then_followup" in normalized_hints
+    if followup_split_required:
+        followup_split_lines.append(
             "Wenn die User-Frage Faktinventar und Wunsch-/Brainstorming-Teil kombiniert, hat der faktische Inventarteil Vorrang."
         )
-        prompt_lines.append(
+        followup_split_lines.append(
             "Gib Brainstorming oder Wunsch-Skills erst nach `Runtime-Skills` und `Einordnung` in einem klar markierten Anschlussblock aus."
         )
         if followup_heading == "Wunsch-Skills":
-            prompt_lines.append(
+            followup_split_lines.append(
                 "Der Anschlussblock muss `Wunsch-Skills` heißen und Vorschläge klar von verifizierten Inventarfakten trennen."
             )
         else:
-            prompt_lines.append(
+            followup_split_lines.append(
                 "Der Anschlussblock darf nur `Wunsch-Skills` oder `Nächster Schritt` heißen und muss Vorschläge klar von verifizierten Inventarfakten trennen."
             )
+    inventory_read_only_line = ""
     if str(policy.get("mode") or "").strip().lower() == "inventory_read_only":
-        prompt_lines.append(
+        inventory_read_only_line = (
             "Im Modus `inventory_read_only` keine ungefragten Skill-Erstellungs-, Ausführungs- oder sonstigen Aktionsangebote anhängen."
         )
-    prompt_lines.append(
-        "Die Antwort MUSS mit dem Literal `Runtime-Skills:` beginnen. Kein anderer Vorspann, keine Einleitung, keine alternative Ueberschrift davor."
-    )
-    prompt_lines.append(
-        "Wenn die Frage nach Draft-Skills fragt, antworte trotzdem zuerst mit dem Runtime-Befund im Abschnitt `Runtime-Skills` und erklaere Drafts erst danach."
-    )
 
-    answer_schema = [
-        "\n### VERPFLICHTENDES ANTWORTGERUEST:",
-        "Runtime-Skills: <verifizierter Runtime-Befund aus Snapshot/Tool-Ergebnis>.",
-        "Einordnung: <klare Trennung zwischen Runtime-Skills, Draft-Skills und Built-in Tools>.",
-    ]
+    draft_schema_line = ""
     if needs_draft_explanation:
-        answer_schema.append(
+        draft_schema_line = (
             "Einordnung muss bei diesem Turn explizit sagen, ob Draft-Skills verifiziert sind und warum `list_skills` sie nicht anzeigt."
         )
+    followup_schema_line = ""
     if "Wunsch-Skills" in force_sections or bool(policy.get("followup_split_required")):
-        answer_schema.append(
+        followup_schema_line = (
             f"{followup_heading}: <optional; Wunsch-Skills oder Vorschläge klar getrennt von Inventarfakten>."
         )
-    prompt_lines.extend(answer_schema)
-    return prompt_lines
+    rendered = load_prompt(
+        "contracts",
+        "skill_catalog",
+        followup_heading=followup_heading,
+        required_tools_line=required_tools_line,
+        installed_count_line=installed_count_line,
+        followup_split_lines="\n".join(followup_split_lines),
+        inventory_read_only_line=inventory_read_only_line,
+        draft_schema_line=draft_schema_line,
+        followup_schema_line=followup_schema_line,
+    )
+    return [line for line in rendered.splitlines() if line.strip()]
 
 
 def locate_skill_catalog_sections(answer: str) -> Dict[str, int]:

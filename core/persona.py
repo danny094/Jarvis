@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from utils.logger import log_info, log_error, log_warn
+from intelligence_modules.prompt_manager import load_prompt
 
 PERSONAS_DIR = Path(__file__).parent.parent / "personas"
 LEGACY_CONFIG_PATH = Path(__file__).parent.parent / "config" / "persona.yaml"
@@ -51,7 +52,7 @@ class Persona:
         parts = []
         
         # === IDENTITÄT ===
-        parts.append(f"Du bist {self.name}, {self.role}.")
+        parts.append(load_prompt("personas", "persona_identity", name=self.name, role=self.role))
         if self.core_philosophy:
             for p in self.core_philosophy:
                 parts.append(p)
@@ -60,106 +61,97 @@ class Persona:
         if user_profile and user_profile.get("name"):
             # Known user
             name = user_profile.get("name", "")
-            parts.append(f"\n### USER-PROFIL:")
-            parts.append(f"Name: {name}")
+            parts.append("\n" + load_prompt("personas", "persona_user_profile_header"))
+            parts.append(load_prompt("personas", "persona_profile_field", label="Name", value=name))
             if user_profile.get("profession"):
-                parts.append(f"Beruf: {user_profile['profession']}")
+                parts.append(load_prompt("personas", "persona_profile_field", label="Beruf", value=user_profile["profession"]))
             if user_profile.get("interests"):
-                parts.append(f"Interessen: {user_profile['interests']}")
+                parts.append(load_prompt("personas", "persona_profile_field", label="Interessen", value=user_profile["interests"]))
             if user_profile.get("language"):
-                parts.append(f"Sprache: {user_profile['language']}")
+                parts.append(load_prompt("personas", "persona_profile_field", label="Sprache", value=user_profile["language"]))
             if user_profile.get("tone"):
-                parts.append(f"Bevorzugter Ton: {user_profile['tone']}")
-            parts.append(f"Sprich {name} direkt mit 'du' an.")
+                parts.append(load_prompt("personas", "persona_profile_field", label="Bevorzugter Ton", value=user_profile["tone"]))
+            parts.append(load_prompt("personas", "persona_direct_address", name=name))
             if self.adaptation:
                 for a in self.adaptation:
-                    parts.append(f"- {a}")
+                    parts.append(load_prompt("personas", "persona_bullet", item=a))
         else:
             # Unknown user → Onboarding
             if self.onboarding:
-                parts.append("\n### ONBOARDING (Neuer User):")
+                parts.append("\n" + load_prompt("personas", "persona_onboarding_header"))
                 for o in self.onboarding:
-                    parts.append(f"- {o}")
+                    parts.append(load_prompt("personas", "persona_bullet", item=o))
         
         # === PERSÖNLICHKEIT ===
         if self.personality:
             traits = ", ".join(self.personality)
-            parts.append(f"\nDeine Persönlichkeit: {traits}.")
+            parts.append("\n" + load_prompt("personas", "persona_personality", traits=traits))
         
         # === STIL ===
-        parts.append(f"\nTon: {self.style}.")
-        parts.append(f"Antwortlänge: {self.verbosity}.")
+        parts.append("\n" + load_prompt("personas", "persona_tone", style=self.style))
+        parts.append(load_prompt("personas", "persona_verbosity", verbosity=self.verbosity))
         
         # === FÄHIGKEITEN ===
         if self.capabilities:
-            parts.append("\n### DEINE FÄHIGKEITEN:")
+            parts.append("\n" + load_prompt("personas", "persona_capabilities_header"))
             for cap in self.capabilities:
-                parts.append(f"- {cap}")
+                parts.append(load_prompt("personas", "persona_bullet", item=cap))
         
         # === TOOL-ZUGRIFF (dynamisch) ===
         if self.tool_awareness:
-            parts.append("\n### TOOL-ZUGRIFF:")
+            parts.append("\n" + load_prompt("personas", "persona_tool_access_header"))
             for ta in self.tool_awareness:
-                parts.append(f"- {ta}")
+                parts.append(load_prompt("personas", "persona_bullet", item=ta))
         
         # Dynamic Tools von MCP
         if dynamic_context and dynamic_context.get("tools"):
             tools = dynamic_context["tools"]
             if tools:
-                parts.append("\n### VERFÜGBARE TOOLS (live vom System geladen):")
+                parts.append("\n" + load_prompt("personas", "persona_live_tools_header"))
                 for tool in tools:
                     name = tool.get("name", "unknown")
                     desc = tool.get("description", "")
                     mcp = tool.get("mcp", "")
-                    parts.append(f"  • {name} [{mcp}]: {desc}")
+                    parts.append(
+                        load_prompt(
+                            "personas",
+                            "persona_live_tool_line",
+                            name=name,
+                            mcp=mcp,
+                            description=desc,
+                        )
+                    )
                 parts.append("")
-                parts.append("WICHTIG: Wenn du ein Tool nutzt, bekommst du das Ergebnis und formulierst daraus deine Antwort.")
-                parts.append("Sage NIEMALS 'Ich habe X gemacht' ohne ein echtes Tool-Ergebnis.")
-                parts.append("Wenn der User fragt wie du etwas gemacht hast, erkläre es ehrlich — du darfst sagen welche Tools du genutzt hast.")
+                parts.append(load_prompt("personas", "persona_tool_usage_rules"))
 
                 # Container Commander: Ressourcen-Hinweis
                 container_tools = [t for t in tools if t.get("mcp") == "container-commander"]
                 if container_tools:
                     parts.append("")
-                    parts.append("### CONTAINER-MANAGEMENT:")
-                    parts.append("Starte nur Container die du wirklich brauchst.")
-                    parts.append("Beende einen Container erst wenn die GESAMTE Aufgabe abgeschlossen ist — nicht nach jedem Einzelschritt.")
-                    parts.append("Multi-Step-Tasks (z.B. Download → Build → Run) brauchen denselben Container durch alle Schritte hindurch.")
-                    parts.append("Prüfe container_stats nur wenn Ressourcenprobleme auftreten — nicht nach jedem Schritt.")
-                    parts.append("Wenn container_id bereits bekannt ist: direkt exec_in_container nutzen, kein Neustart nötig.")
-                    parts.append("Nur wenn keine container_id bekannt ist: zuerst container_list, dann gezielt weiterarbeiten.")
+                    parts.append(load_prompt("personas", "persona_container_management"))
                 
                 # TRION Home: Persistentes Zuhause
                 home_tools = [t for t in tools if t.get("name", "").startswith("home_")]
                 if home_tools:
                     parts.append("")
-                    parts.append("### DEIN ZUHAUSE:")
-                    parts.append("Du hast ein persistentes Zuhause im Container 'trion-home'.")
-                    parts.append("Nutze es NATÜRLICH — kündige Tool-Calls nicht proaktiv an, formuliere Ergebnisse direkt als Aussagen.")
-                    parts.append("  • 'Merk dir das' → home_write nutzen, dann bestätigen ('Hab ich notiert!')")
-                    parts.append("  • 'Was hattest du notiert?' → home_read nutzen, Inhalt zusammenfassen")
-                    parts.append("  • 'Zeig mir meine Dateien' → home_list nutzen")
-                    parts.append("Deine Dateien überleben Neustarts. Speichere wichtige Infos dort!")
+                    parts.append(load_prompt("personas", "persona_trion_home"))
 
                 cron_tools = [t for t in tools if t.get("name", "").startswith("autonomy_cron_")]
                 if cron_tools:
                     parts.append("")
-                    parts.append("### GEPLANTE AUTONOMIE:")
-                    parts.append("Für wiederkehrende Aufgaben nutze autonomy_cron_* Tools.")
-                    parts.append("Erst prüfen (autonomy_cron_list_jobs/autonomy_cron_status), dann gezielt anlegen/ändern.")
-                    parts.append("Bei Änderungen immer kurz bestätigen, was aktiv, pausiert oder gelöscht wurde.")
+                    parts.append(load_prompt("personas", "persona_cron_autonomy"))
         
         # === REGELN ===
         if self.core_rules:
-            parts.append("\n### REGELN:")
+            parts.append("\n" + load_prompt("personas", "persona_rules_header"))
             for i, rule in enumerate(self.core_rules, 1):
-                parts.append(f"{i}. {rule}")
+                parts.append(load_prompt("personas", "persona_numbered_rule", index=i, rule=rule))
         
         # === PRIVACY ===
         if self.privacy_rules:
-            parts.append("\n### SICHERHEIT:")
+            parts.append("\n" + load_prompt("personas", "persona_privacy_header"))
             for rule in self.privacy_rules:
-                parts.append(f"- {rule}")
+                parts.append(load_prompt("personas", "persona_bullet", item=rule))
         
         return "\n".join(parts)
     

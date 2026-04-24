@@ -15,6 +15,7 @@ from core.task_loop.capabilities.container.context import (
     merge_container_context,
 )
 from core.task_loop.contracts import TaskLoopSnapshot
+from intelligence_modules.prompt_manager import load_prompt
 
 
 def build_container_parameter_context(
@@ -59,23 +60,25 @@ def build_container_parameter_context(
     requires_user_input = bool(missing_fields)
     waiting_message = ""
     if requires_user_input:
+        recognized_line = ""
+        if params:
+            recognized_line = load_prompt(
+                "task_loop",
+                "container_recognized_parameters",
+                recognized_params=", ".join(f"{key}={value}" for key, value in params.items()),
+            )
         if request_family == "python_container":
-            waiting_message = (
-                "Ich brauche noch Angaben fuer die Python-Container-Anfrage. "
-                "Bitte nenne mindestens den gewuenschten Blueprint oder die Basis, "
-                "die Python-Version, die Abhaengigkeiten (z.B. requirements.txt) "
-                "und ob es ein Build- oder Runtime-Container sein soll."
+            waiting_message = load_prompt(
+                "task_loop",
+                "container_python_missing_parameters",
+                recognized_line=recognized_line,
             )
         else:
-            waiting_message = (
-                "Ich brauche noch Angaben fuer die Container-Anfrage. "
-                "Bitte nenne mindestens den gewuenschten Blueprint oder ein Ressourcenprofil "
-                "(z.B. CPU, RAM, GPU oder Runtime)."
+            waiting_message = load_prompt(
+                "task_loop",
+                "container_generic_missing_parameters",
+                recognized_line=recognized_line,
             )
-        if params:
-            waiting_message += " Bereits erkannt: " + ", ".join(
-                f"{key}={value}" for key, value in params.items()
-            ) + "."
 
     return {
         "params": params,

@@ -15,6 +15,7 @@ from core.plan_runtime_bridge import get_policy_final_instruction, get_policy_wa
 from core.plan_runtime_bridge import get_runtime_grounding_value
 from core.grounding_policy import load_grounding_policy
 from core.output_analysis_guard import is_analysis_turn_guard_applicable
+from intelligence_modules.prompt_manager import load_prompt
 from core.layers.output.prompt.budget import normalize_length_hint, resolve_output_budgets
 from core.layers.output.prompt.tool_injection import resolve_tools_for_prompt
 from core.layers.output.contracts.container import (
@@ -62,22 +63,11 @@ def build_system_prompt(
 
     # 2. Anti-Halluzination
     if memory_required_but_missing:
-        prompt_parts.append("\n### ANTI-HALLUZINATION:")
-        prompt_parts.append(
-            "Die angefragte Information wurde explizit im Gedächtnis gesucht "
-            "und wurde NICHT gefunden."
-        )
-        prompt_parts.append(
-            "Du kennst die Antwort NICHT. "
-            "Sage klar: 'Das habe ich nicht gespeichert' oder 'Das weiß ich leider nicht.' "
-            "NIEMALS raten. NIEMALS Namen, Zahlen oder Fakten erfinden — "
-            "auch nicht als Beispiel, Platzhalter oder Schätzung."
-        )
+        prompt_parts.append(load_prompt("contracts", "output_anti_hallucination"))
 
     # 3. Chat-History
     if needs_chat_history:
-        prompt_parts.append("\n### CHAT-HISTORY:")
-        prompt_parts.append("Beantworte basierend auf der bisherigen Konversation.")
+        prompt_parts.append(load_prompt("contracts", "output_chat_history"))
 
     # 4. Control-Layer-Anweisung
     instruction = get_policy_final_instruction(verified_plan)
@@ -93,27 +83,23 @@ def build_system_prompt(
     is_fact_query = bool(verified_plan.get("is_fact_query", False))
     has_tool_usage = bool(str(get_runtime_tool_results(verified_plan) or "").strip())
     if is_fact_query or has_tool_usage:
-        prompt_parts.append("\n### OUTPUT-GROUNDING:")
-        prompt_parts.append("Nutze nur belegbare Fakten aus Kontext und Tool-Cards.")
-        prompt_parts.append("Wenn ein Fakt nicht belegt ist, markiere ihn als 'nicht verifiziert'.")
-        prompt_parts.append("Keine neuen Zahlen/Specs ohne expliziten Nachweis.")
-        prompt_parts.append("Tools wurden bereits ausgeführt. Gib KEINE neuen Tool-Aufrufe aus.")
-        prompt_parts.append("Gib niemals [TOOL-CALL]-Blöcke, JSON-Toolcalls oder Kommando-Pläne aus.")
-        prompt_parts.append("Antworte stattdessen direkt mit Ergebnis, Befund oder klarer Lücke.")
+        hybrid_mode_line = ""
         if bool(get_runtime_grounding_value(verified_plan, key="hybrid_mode", default=False)):
-            prompt_parts.append("Antwort darf natürlich formuliert sein, muss aber vollständig evidenzgebunden bleiben.")
+            hybrid_mode_line = "Antwort darf natürlich formuliert sein, muss aber vollständig evidenzgebunden bleiben."
+        prompt_parts.append(
+            load_prompt(
+                "contracts",
+                "output_grounding",
+                hybrid_mode_line=hybrid_mode_line,
+            )
+        )
     elif is_analysis_turn_guard_applicable(
         verified_plan,
         output_cfg=load_grounding_policy().get("output") or {},
         has_tool_usage=has_tool_usage,
         is_fact_query=is_fact_query,
     ):
-        prompt_parts.append("\n### ANALYSE-GUARD:")
-        prompt_parts.append("Behandle diese Antwort als konzeptionelle Analyse ohne Runtime-Nachweise.")
-        prompt_parts.append("Behaupte keine Gedaechtnis-, Hardware-, VRAM/RAM-, Container-, Blueprint- oder Systemstatus-Fakten, sofern sie nicht explizit im Kontext stehen.")
-        prompt_parts.append("Markiere unbelegte Punkte klar als 'nicht verifiziert'.")
-        prompt_parts.append("Erfinde keine abgeschlossenen Checks, Systempruefungen oder bereits erledigten Schritte.")
-        prompt_parts.append("Wenn nur ein sicherer Zwischenstand moeglich ist, sage das direkt.")
+        prompt_parts.append(load_prompt("contracts", "output_analysis_guard"))
 
     # 7. Container-Kontrakt
     if is_container_query_contract_plan(verified_plan):
@@ -143,17 +129,23 @@ def build_system_prompt(
     except Exception:
         tone_confidence = 0.0
 
-    prompt_parts.append("\n### ANTWORT-BUDGET:")
     if response_mode != "deep":
         prompt_parts.append(
-            f"Ziel (weich): ca. {soft_target} Zeichen. "
-            f"Harte Grenze: {hard_cap if hard_cap > 0 else 'deaktiviert'} Zeichen."
+            load_prompt(
+                "contracts",
+                "output_budget_interactive",
+                soft_target=soft_target,
+                hard_cap=hard_cap if hard_cap > 0 else "deaktiviert",
+            )
         )
-        prompt_parts.append("Priorisiere klare Antworten; bei Bedarf lieber in 2 kurzen Schritten antworten.")
     else:
         prompt_parts.append(
-            f"Deep-Modus Ziel (weich): ca. {soft_target} Zeichen. "
-            f"Harte Grenze: {hard_cap if hard_cap > 0 else 'deaktiviert'} Zeichen."
+            load_prompt(
+                "contracts",
+                "output_budget_deep",
+                soft_target=soft_target,
+                hard_cap=hard_cap if hard_cap > 0 else "deaktiviert",
+            )
         )
 
     # 11. Sequential Thinking
@@ -167,45 +159,45 @@ def build_system_prompt(
             for step in sequential_result.get("steps", [])[:10]:
                 prompt_parts.append(f"**Step {step.get('step', '?')}: {step.get('title', '')}**")
                 prompt_parts.append(step.get("thought", "")[:500])
-        prompt_parts.append("\nFASSE diese Analyse zusammen und formuliere eine klare Antwort.")
+        prompt_parts.append(load_prompt("contracts", "output_sequential_summary"))
 
     # 12. Stil
     style = verified_plan.get("suggested_response_style", "")
     if style:
-        prompt_parts.append(f"\n### STIL: Antworte {style}.")
+        prompt_parts.append(load_prompt("contracts", "output_style", style=style))
 
     # 13. Dialog-Führung
     if dialogue_act or response_tone:
-        prompt_parts.append("\n### DIALOG-FÜHRUNG:")
-        if dialogue_act:
-            prompt_parts.append(f"- dialogue_act: {dialogue_act}")
-        if response_tone:
-            prompt_parts.append(f"- response_tone: {response_tone}")
-        prompt_parts.append(f"- response_length_hint: {length_hint}")
-        prompt_parts.append(f"- tone_confidence: {tone_confidence:.2f}")
+        prompt_parts.append(load_prompt("contracts", "output_dialogue_header"))
+        prompt_parts.append(
+            load_prompt(
+                "contracts",
+                "output_dialogue_metadata",
+                dialogue_act=dialogue_act,
+                response_tone=response_tone,
+                length_hint=length_hint,
+                tone_confidence=f"{tone_confidence:.2f}",
+            )
+        )
 
         if response_tone == "mirror_user":
-            prompt_parts.append("Spiegle Ton und Energie des Users, ohne künstlich zu wirken.")
+            prompt_parts.append(load_prompt("contracts", "output_tone_mirror_user"))
         elif response_tone == "warm":
-            prompt_parts.append("Antworte warm, zugewandt und direkt.")
+            prompt_parts.append(load_prompt("contracts", "output_tone_warm"))
         elif response_tone == "formal":
-            prompt_parts.append("Antworte sachlich-formal und präzise.")
+            prompt_parts.append(load_prompt("contracts", "output_tone_formal"))
         else:
-            prompt_parts.append("Antworte neutral, klar und kooperativ.")
+            prompt_parts.append(load_prompt("contracts", "output_tone_neutral"))
 
         if dialogue_act in {"ack", "feedback"} and response_mode != "deep":
-            prompt_parts.append("Bei Bestätigung/Feedback: kurz antworten (1-3 Sätze), keine Bulletpoints.")
+            prompt_parts.append(load_prompt("contracts", "output_dialogue_ack_feedback"))
         elif dialogue_act == "smalltalk":
-            prompt_parts.append(
-                "Bei Smalltalk: keine erfundenen persönlichen Erlebnisse oder Nutzergeschichten behaupten."
-            )
-            prompt_parts.append(
-                "Wenn nach deinem \"Tag\" gefragt wird, transparent als Assistenzsystem ohne menschlichen Alltag antworten."
-            )
+            prompt_parts.append(load_prompt("contracts", "output_dialogue_smalltalk_experience_guard"))
+            prompt_parts.append(load_prompt("contracts", "output_dialogue_smalltalk_day_guard"))
         elif length_hint == "short":
-            prompt_parts.append("Halte die Antwort kurz.")
+            prompt_parts.append(load_prompt("contracts", "output_length_short"))
         elif length_hint == "long":
-            prompt_parts.append("Antwort darf ausführlicher sein, aber strukturiert bleiben.")
+            prompt_parts.append(load_prompt("contracts", "output_length_long"))
 
     return "\n".join(prompt_parts)
 
@@ -251,7 +243,7 @@ def build_full_prompt(
 ) -> str:
     """
     Legacy-Prompt für /api/generate (Ollama sync-Stream).
-    Format: system_prompt + BISHERIGE KONVERSATION + USER + DEINE ANTWORT
+    Format: system prompt plus optional history, current user block, and answer marker.
     """
     needs_chat_history = verified_plan.get("needs_chat_history", False)
     system_prompt = build_system_prompt(
@@ -261,7 +253,7 @@ def build_full_prompt(
     prompt_parts = [system_prompt]
 
     if chat_history and len(chat_history) > 1:
-        prompt_parts.append("\n\n### BISHERIGE KONVERSATION:")
+        prompt_parts.append(load_prompt("contracts", "output_legacy_history_header"))
         history_to_show = chat_history[-11:-1] if len(chat_history) > 11 else chat_history[:-1]
         for msg in history_to_show:
             role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
@@ -270,6 +262,6 @@ def build_full_prompt(
             elif role == "assistant":
                 prompt_parts.append(f"ASSISTANT: {msg.content}")
 
-    prompt_parts.append(f"\n\n### USER:\n{user_text}")
-    prompt_parts.append("\n\n### DEINE ANTWORT:")
+    prompt_parts.append(load_prompt("contracts", "output_legacy_user_block", user_text=user_text))
+    prompt_parts.append(load_prompt("contracts", "output_legacy_answer_header"))
     return "\n".join(prompt_parts)

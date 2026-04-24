@@ -10,6 +10,7 @@ Zwei Modi:
 from typing import Any, Dict, List
 
 from core.layers.output.grounding.evidence import summarize_evidence_item
+from core.layers.output.prompt.notices import output_notice
 
 
 def build_grounding_fallback(
@@ -39,20 +40,19 @@ def build_grounding_fallback(
 
     if mode == "summarize_evidence" and usable:
         lines = [f"- {tool}: {fact}" for tool, fact in usable]
-        return "Verifizierte Ergebnisse:\n" + "\n".join(lines)
+        return output_notice(
+            "grounding_fallback_evidence_summary",
+            evidence_lines="\n".join(lines),
+        )
 
     if usable:
         lines = [f"- {tool}: {fact}" for tool, fact in usable]
-        return (
-            "Ich kann nur verifizierte Fakten aus den Tool-Ergebnissen ausgeben.\n"
-            + "\n".join(lines)
-            + "\nNicht belegbare Zusatzangaben lasse ich weg."
+        return output_notice(
+            "grounding_fallback_verified_only",
+            evidence_lines="\n".join(lines),
         )
 
-    return (
-        "Ich habe aktuell keinen verifizierten Tool-Nachweis für eine belastbare Faktenantwort. "
-        "Bitte Tool-Abfrage erneut ausführen."
-    )
+    return output_notice("grounding_fallback_missing_evidence")
 
 
 def build_tool_failure_fallback(evidence: List[Dict[str, Any]]) -> str:
@@ -78,14 +78,10 @@ def build_tool_failure_fallback(evidence: List[Dict[str, Any]]) -> str:
             break
 
     if not issues:
-        return (
-            "Tool-Ausführung war nicht erfolgreich, aber die Fehlermeldung ist unvollständig. "
-            "Bitte Anfrage mit denselben Parametern erneut ausführen."
-        )
+        return output_notice("tool_failure_fallback_missing_detail")
 
     lines = [f"- {tool} [{status}]: {fact}" for tool, status, fact in issues]
-    return (
-        "Tool-Ausführung fehlgeschlagen:\n"
-        + "\n".join(lines)
-        + "\nBitte Parameter korrigieren oder den vorgeschlagenen sicheren Fallback bestätigen."
+    return output_notice(
+        "tool_failure_fallback_with_issues",
+        issue_lines="\n".join(lines),
     )

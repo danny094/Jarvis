@@ -4,6 +4,7 @@ import unicodedata
 from typing import Any
 
 from core.task_loop.contracts import TaskLoopSnapshot
+from intelligence_modules.prompt_manager import load_prompt
 
 
 def _normalize(value: Any) -> str:
@@ -150,14 +151,16 @@ def build_container_request_context(
             if label
         )
         if len(discovered) > 1:
-            waiting_message = (
-                "Ich habe mehrere verifizierte Blueprint-Optionen gefunden. "
-                f"Bitte waehle eine davon: {options}."
+            waiting_message = load_prompt(
+                "task_loop",
+                "container_blueprint_choice",
+                options=options,
             )
         else:
-            waiting_message = (
-                f"Verfuegbarer Blueprint: {options}. "
-                "Ich kann damit weiterarbeiten, wenn du willst, oder wir nehmen gemeinsam eine andere Option."
+            waiting_message = load_prompt(
+                "task_loop",
+                "container_single_blueprint_choice",
+                options=options,
             )
     else:
         waiting_message = ""
