@@ -112,6 +112,20 @@ verification live in the linked Obsidian notes.
   guidance, so the Output layer stays less mechanical while retaining
   grounding expectations.
   Source: local worktree diff after prompt centralization checkpoint
+- 2026-04-25: The Container Commander blueprint catalog now includes an
+  official `ubuntu-network` blueprint (`Ubuntu Network Sandbox`) with bridge
+  networking and common Linux/network tools. Existing Commander stores seed
+  missing built-in blueprints idempotently, so already initialized installs
+  receive the new Ubuntu blueprint without wiping user-defined blueprints.
+  Source: local worktree diff and Admin API blueprint verification
+- 2026-04-25: Task-Loop container blueprint selection now consumes existing
+  semantic candidate evidence (`_container_resolution` /
+  `_container_candidates`) instead of relying only on raw `blueprint_list`
+  ordering. Clear top matches are auto-selected, ambiguous cases ask with the
+  ranked top candidates, and explicit objective text like “Ubuntu Network
+  Sandbox starten” resolves to `ubuntu-network` even when it is not among the
+  first listed blueprints.
+  Source: local worktree diff and focused regression tests
 - A full `docker compose build` / recreate pass exposed and fixed two runtime
   packaging issues from the prompt-manager migration:
   `digest-worker` now receives `intelligence_modules` in both the
