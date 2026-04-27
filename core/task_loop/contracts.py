@@ -283,6 +283,7 @@ class TaskLoopSnapshot:
     error_count: int = 0
     no_progress_count: int = 0
     objective_summary: str = ""
+    system_state: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -309,6 +310,7 @@ class TaskLoopSnapshot:
             "error_count": int(self.error_count),
             "no_progress_count": int(self.no_progress_count),
             "objective_summary": self.objective_summary,
+            "system_state": dict(self.system_state),
         }
 
 

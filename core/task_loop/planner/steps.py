@@ -62,6 +62,7 @@ def _base_steps_for_kind(
     risk_level: RiskLevel,
     suggested_tools: List[str],
     capability_context: Optional[Dict[str, Any]] = None,
+    thinking_plan: Optional[Dict[str, Any]] = None,
 ) -> List[TaskLoopStep]:
     focus = _clip(intent, 120)
     objective_text = _keyword_text(objective)
@@ -75,7 +76,7 @@ def _base_steps_for_kind(
     if capability_type_from_tools(suggested_tools) == "container_manager":
         container_capability_context = build_container_context(
             user_text,
-            thinking_plan={"intent": intent, "suggested_tools": suggested_tools},
+            thinking_plan=thinking_plan or {"intent": intent, "suggested_tools": suggested_tools},
             selected_tools=suggested_tools,
             existing_context=capability_context,
         )
@@ -297,6 +298,7 @@ def build_task_loop_steps(
         risk_level=risk_level,
         suggested_tools=suggested_tools,
         capability_context=capability_context if isinstance(capability_context, dict) else None,
+        thinking_plan=plan,
     )
 
     if reasoning:
