@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from hashlib import sha256
 from typing import Any, Dict, Optional
 
@@ -12,6 +13,21 @@ from core.task_loop.contracts import (
 )
 from core.task_loop.planner.objective import clean_task_loop_objective
 from core.task_loop.planner.steps import build_task_loop_steps
+
+
+def _snapshot_system_state(thinking_plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    plan = thinking_plan if isinstance(thinking_plan, dict) else {}
+    state: Dict[str, Any] = {}
+    for key in (
+        "_active_container_capability_context",
+        "_container_capability_context",
+        "_global_active_containers",
+        "active_containers_context",
+    ):
+        value = plan.get(key)
+        if isinstance(value, (dict, list)):
+            state[key] = deepcopy(value)
+    return state
 
 
 def create_task_loop_snapshot_from_plan(
@@ -40,6 +56,7 @@ def create_task_loop_snapshot_from_plan(
         pending_step=first,
         risk_level=RiskLevel.SAFE,
         objective_summary=objective_summary,
+        system_state=_snapshot_system_state(thinking_plan),
     )
 
 

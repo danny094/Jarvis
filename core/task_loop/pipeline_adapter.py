@@ -12,6 +12,7 @@ async def build_task_loop_planning_context(
     orch: Any,
     user_text: str,
     *,
+    conversation_id: str = "",
     request: Any = None,
     forced_response_mode: Optional[str] = None,
     tone_signal: Optional[Dict[str, Any]] = None,
@@ -86,6 +87,24 @@ async def build_task_loop_planning_context(
                 user_text=user_text,
                 selected_tools=selected_tools,
             )
+        maybe_active_container_ctx = getattr(orch, "_maybe_build_active_container_capability_context", None)
+        if (
+            isinstance(plan, dict)
+            and callable(maybe_active_container_ctx)
+            and str(conversation_id or "").strip()
+        ):
+            try:
+                await maybe_active_container_ctx(
+                    user_text=user_text,
+                    conversation_id=str(conversation_id or "").strip(),
+                    verified_plan=plan,
+                )
+            except Exception as exc:
+                if log_warn_fn:
+                    log_warn_fn(
+                        "[TaskLoop] Active-container context for planning context skipped: "
+                        f"{exc}"
+                    )
         if (
             isinstance(plan, dict)
             and not plan.get("suggested_tools")

@@ -53,6 +53,25 @@ def _python_requested(user_text: str, intent: str, existing_context: Dict[str, A
     )
 
 
+def _active_container_known_fields(source: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    ctx = source.get("_active_container_capability_context")
+    if not isinstance(ctx, dict):
+        return {}
+    known: Dict[str, Any] = {}
+    container_id = str(ctx.get("container_id") or "").strip()
+    blueprint_id = str(ctx.get("blueprint_id") or "").strip()
+    image = str(ctx.get("image") or "").strip()
+    if container_id:
+        known["container_id"] = container_id
+    if blueprint_id:
+        known["blueprint"] = blueprint_id
+    if image:
+        known["image"] = image
+    return known
+
+
 def build_container_context(
     user_text: str,
     *,
@@ -67,6 +86,7 @@ def build_container_context(
 
     context = dict(existing_context or {})
     known_fields = dict(context.get("known_fields") or {})
+    known_fields.update(_active_container_known_fields(plan))
     known_fields.update(extract_container_capability_fields_from_text(user_text))
     intent = str(plan.get("intent") or "").strip()
     python_requested = _python_requested(user_text, intent, context)
@@ -91,6 +111,7 @@ def merge_container_context(
     if snapshot is not None:
         snapshot_context = extract_container_context(snapshot)
         known_fields.update(dict(snapshot_context.get("known_fields") or {}))
+        known_fields.update(_active_container_known_fields(dict(snapshot.system_state or {})))
         for artifact in reversed(list(snapshot.verified_artifacts or [])):
             if not isinstance(artifact, dict):
                 continue

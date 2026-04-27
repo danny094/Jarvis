@@ -258,6 +258,7 @@ async def maybe_handle_task_loop_sync(
         thinking_plan = await build_task_loop_planning_context(
             orch,
             user_text,
+            conversation_id=conversation_id,
             request=request,
             tone_signal=tone_signal,
             log_info_fn=log_info_fn,
@@ -329,6 +330,7 @@ async def maybe_build_task_loop_stream_events(
         thinking_plan = await build_task_loop_planning_context(
             orch,
             user_text,
+            conversation_id=conversation_id,
             request=request,
             tone_signal=tone_signal,
             log_info_fn=log_info_fn,
@@ -550,6 +552,7 @@ async def stream_task_loop_events(
         effective_plan = await build_task_loop_planning_context(
             orch,
             user_text,
+            conversation_id=conversation_id,
             request=request,
             tone_signal=tone_signal,
             log_info_fn=log_info_fn,
