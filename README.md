@@ -1,6 +1,15 @@
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/HDsSbSQaC)
 
+
+## I'd like to point out that trion/jarvis has ended the testing phase in this repository.
+
+Chaotic code, trial and error, and monolithic designs have technically demonstrated in the alpha version what works and what doesn't.
+
+The new, clean, functional trion 1.0 will be completely refactored and linked soon.
+
+
 # TRION
+
 
 TRION is a local-first autonomous AI system with a real runtime stack.
 It combines chat, tools, memory, container execution, and safety controls in one platform.
